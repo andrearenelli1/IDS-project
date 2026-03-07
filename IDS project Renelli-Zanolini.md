@@ -6,7 +6,7 @@ The first phase of the project consists of developing models for the main compon
 
 Each quadcopter measures two things, the time of return of a sonar pointed to the ground and the intensity of the ARTVA signal.
 
-![](file://C:\Users\Renelli\AppData\Roaming\marktext\images\2026-03-06-16-30-21-drone_model.jpg?msec=1772871770746)
+![drone_model](https://github.com/user-attachments/assets/eba4ee24-2e69-4a53-a723-b09b32d9f7c2)
 
 ---
 
@@ -64,7 +64,7 @@ The $h_i$ component acts as a bias, because for the same goal position on the ma
 
 - $d_a$ will change with the drone altitude and it is estimated through a measurement with a sonar under the drone $d_d$, that is intrinsically biased another time by unknown effects such as the mountain profile and the snow coverage after the avalanche. The bias on the quantity $d_d$ is not fixed, it depends on the drone position, and it decreases by getting closer to the goal location, in the limit $d_d = d_a$ when the drone is exactly above the buried person.
 
-![heightjpg](file://C:\Users\Renelli\Documents\UNIVERSITA'\5_anno1_sem\Intelligent%20Distributed%20Systems\height.jpg?msec=1772871770744)
+![height](https://github.com/user-attachments/assets/0ad41cef-68f6-45df-ace7-925f09665878)
 
 ### Bias and uncertainty on $X$ estimate
 
@@ -173,7 +173,8 @@ This is how a single drone estimates the distance from the victim, so it gets a 
 
 The following model extends the single-drone scenario to a collaborative multi-agent system (2 or 3 drones) that utilizes relative distance measurements (UWB) and distributed estimation algorithms to localize the victim.
 
-![multiagentjpg](file://C:\Users\Renelli\Documents\UNIVERSITA'\5_anno1_sem\Intelligent%20Distributed%20Systems\multi-agent.jpg?msec=1772878580803)
+![multi-agent](https://github.com/user-attachments/assets/7f7589da-5762-4902-9336-d0c925bd9843)
+
 
 ### 1. Multi-Agent State Definition
 
