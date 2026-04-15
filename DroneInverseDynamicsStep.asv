@@ -1,0 +1,38 @@
+function [s_next] = DroneInverseDynamicsStep(s, u, m, dt)
+% DroneMotionModel Summary of this function goes here
+%   Detailed explanation goes here
+
+
+%-----SANITY CHECKS-----
+assert(isvector(s) && numel(s)==6, 'State must be a 1x6 vector!!');
+
+if exist('m','var')
+    assert(m > 0, 'Mass must be positive!!');
+end
+if exist('dt','var')
+    assert(dt >= 0, 'Time step must be nonnegative!!');
+end
+if exist('u','var')
+    assert(isvector(u) && numel(u)==3, 'Control input must be a 1x3 vector!!');
+end
+
+%-----THRESHOLDS------
+Max_Acc  = 1e4; % arbitrary large acceleration threshold
+Max_dVel = 1e3;
+Max_dPos = 1e3;
+
+%-----ACCELERATION-----
+w = randn(1);           % noise on the model and input
+u_real = u + w;         % compute the actual force
+Acc = u_real./m; % compute the actual acceleration
+dVel = Acc.*dt; 
+if any(abs(dVel) > Max_dVel)
+    warning('Velocity increment is very large; check dt, u, or mass!!');
+end
+s_next(4:6) = s(4:6) + dVel;
+dPos = s_next(4:6).*dt + Acc.*dt*dt/2;
+if any(abs(dVel) > Max_dVel)
+    warning('Velocity increment is very large; check dt, u, or mass!!');
+end
+
+end
