@@ -20,7 +20,11 @@
 .tar
 .zip
 
-.tif
+# Media #
+############
+.mp4
+.png
+.gif
 
 # Logs and databases #
 ######################
