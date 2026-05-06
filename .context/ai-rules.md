@@ -75,3 +75,7 @@ Questa è una proprietà fondamentale del filtro IMDCL distribuito.
 | Terreno interrogabile | `terrain.z(x, y)` / `terrain.agl_z(x, y, agl)` |
 | Step MPC | `ag.ctrl.step(x_est, target)` |
 | Segnale ARTVA | `artva.signal(pos, noisy=True)` |
+
+## 9. Context update
+
+Dopo ogni modifica controllare se il contesto e il README.md sono ancora coerenti con il progetto.

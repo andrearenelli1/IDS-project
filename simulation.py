@@ -145,6 +145,23 @@ def _dcgd_refine(
         _dcgd_step(agents, drone_ids)
 
 
+def _support_waypoint_from_direction(
+    source_pos: np.ndarray,
+    direction_2d: np.ndarray | None,
+    terrain: Terrain,
+    step_m: float = TRACK_STEP_M,
+    agl: float = AGL_HEIGHT,
+) -> np.ndarray:
+    """Genera un waypoint di supporto lungo la direzione finale del drone."""
+    direction = np.asarray(direction_2d if direction_2d is not None else [1.0, 0.0], dtype=float)
+    norm = np.linalg.norm(direction)
+    direction = direction / norm if norm > 1e-9 else np.array([1.0, 0.0])
+
+    target_xy = np.asarray(source_pos, dtype=float)[:2] + step_m * direction
+    target_z  = terrain.agl_z(target_xy[0], target_xy[1], agl)
+    return np.array([target_xy[0], target_xy[1], target_z])
+
+
 # ============================================================================
 # Costruzione agenti
 # ============================================================================
@@ -299,6 +316,11 @@ def simulate(
                 ag.detected = True
                 ag.init_track_dir(lawnmower_orig[i])
                 ag.track_signal_prev = sig
+                ag.track_peak_signal  = sig
+                ag.track_peak_pos     = ag.x_est[:3].copy()
+                ag.track_peak_dir     = ag.track_dir.copy() if ag.track_dir is not None else None
+                ag.track_fail_count   = 1
+                ag.track_returning_to_peak = False
                 # Inizializza DCGD al centro del workspace
                 ag.source_est = np.array([cx_ws, cy_ws, terrain.z(cx_ws, cy_ws)])
                 print(
@@ -308,21 +330,6 @@ def simulate(
                 print(f"    Posizione reale   : {ag.x[:3].round(2)}")
                 print(f"    Posizione stimata : {ag.x_est[:3].round(2)}")
                 print(f"    Direzione iniziale: {ag.track_dir.round(3)}")
-
-                # Chiama droni vicini in supporto
-                dists    = {
-                    j: np.linalg.norm(agents[j].x[:3] - ag.x[:3])
-                    for j in drone_ids if j != i
-                }
-                partners = sorted(dists, key=dists.get)[:TRIANGULATE_N_PARTNERS]
-                for j in partners:
-                    if agents[j].state == DroneState.SEARCH:
-                        # Partner rimane in SEARCH: ha waypoint verso il drone detettore
-                        # Passerà a TRACK quando rileverà il segnale ARTVA ≥ TRACK_STOP_THR
-                        detector_pos_3d = np.array([ag.x_est[0], ag.x_est[1], terrain.agl_z(ag.x_est[0], ag.x_est[1], agl)])
-                        agents[j].waypoints = [detector_pos_3d]
-                        agents[j].wp_idx = 0
-                        print(f"    → Drone {j} in supporto verso drone {i} (dist={dists[j]:.1f} m)")
 
             # ── Stopping: segnale ≥ TRACK_STOP_THR → hovering ───────────
             if ag.state == DroneState.TRACK and not ag.track_stopped and sig >= TRACK_STOP_THR:
@@ -335,16 +342,49 @@ def simulate(
                     f"al passo {step} (t={t:.2f}s)  pos={ag.x[:3].round(1)}"
                 )
 
+                # Chiama droni vicini in supporto sul prolungamento dell'ultima direzione
+                dists = {
+                    j: np.linalg.norm(agents[j].x[:3] - ag.x[:3])
+                    for j in drone_ids if j != i
+                }
+                partners = sorted(dists, key=dists.get)[:TRIANGULATE_N_PARTNERS]
+                support_wp = _support_waypoint_from_direction(
+                    ag.x_est[:3], ag.track_dir, terrain, step_m=TRACK_STEP_M, agl=agl
+                )
+                for j in partners:
+                    if agents[j].state == DroneState.SEARCH:
+                        # Partner rimane in SEARCH: ha waypoint verso il punto lungo la direzione finale
+                        # del drone che si è appena fermato.
+                        # Passerà a TRACK quando rileverà il segnale ARTVA ≥ TRACK_STOP_THR
+                        agents[j].waypoints = [support_wp.copy()]
+                        agents[j].wp_idx = 0
+                        print(
+                            f"    → Drone {j} in supporto verso punto {support_wp[:2].round(1)} "
+                            f"lungo la direzione finale di drone {i} (dist={dists[j]:.1f} m)"
+                        )
+
             # ── Hill-climbing reattivo (solo droni TRACK non fermati) ────
             if ag.state == DroneState.TRACK and not ag.track_stopped and ag.track_dir is not None:
                 ag.track_time += 1
-                ag.update_track_dir(sig)
-                wp = track_next_waypoint(
-                    ag.x_est, ag.track_dir, terrain,
-                    step_m=TRACK_STEP_M, agl=agl,
-                )
-                ag.waypoints = [wp]
-                ag.wp_idx    = 0
+                ag.update_track_dir(ag.x_est, sig)
+
+                if ag.track_returning_to_peak and ag.track_peak_pos is not None:
+                    wp = ag.track_peak_pos.copy()
+                    if np.linalg.norm(ag.x_est[:3] - ag.track_peak_pos) < STOP_THRESH:
+                        ag.prepare_next_track_probe()
+                        wp = track_next_waypoint(
+                            ag.track_peak_pos, ag.track_dir, terrain,
+                            step_m=TRACK_STEP_M, agl=agl,
+                        )
+                    ag.waypoints = [wp]
+                    ag.wp_idx    = 0
+                else:
+                    wp = track_next_waypoint(
+                        ag.x_est, ag.track_dir, terrain,
+                        step_m=TRACK_STEP_M, agl=agl,
+                    )
+                    ag.waypoints = [wp]
+                    ag.wp_idx    = 0
 
         # ── 2. MPC step (usa stima IMDCL) ────────────────────────────────
         u_commands: Dict[int, np.ndarray] = {}
