@@ -433,11 +433,10 @@ def simulate(
                 ag      = agents[i]
                 dist    = np.linalg.norm(ag.x_est[:3] - ag.current_target())
                 est_err = np.linalg.norm(ag.x[:3] - ag.x_est[:3])
-                artva_s = ag.signal_log[-1][1] if ag.signal_log else float('nan')
                 st      = "SRCH" if ag.state == DroneState.SEARCH else (
                     "STOP" if ag.track_stopped else "TRCK"
                 )
-                row    += f"  {st}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m/S{artva_s:.2e}/"
+                row    += f"  {st}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m/"
             print(row)
 
         # ── 8. Stop: tutti i droni TRACK si sono fermati ─────────────────
