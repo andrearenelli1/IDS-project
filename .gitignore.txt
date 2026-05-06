@@ -25,6 +25,7 @@
 .mp4
 .png
 .gif
+.tif
 
 # Logs and databases #
 ######################
