@@ -602,6 +602,63 @@ class AgentIMDCL:
         self.Phi = np.eye(self._n)
 
     # ------------------------------------------------------------------
+    # 2e. Aggiornamento con misura assoluta (locale, nessuna comunicazione)
+    # ------------------------------------------------------------------
+
+    def apply_absolute_update(
+        self,
+        z: Vector,
+        H: Matrix,
+        R: Matrix,
+    ) -> None:
+        """
+        Aggiornamento EKF con una misura assoluta **locale** dell'agente stesso
+        (nessuna comunicazione richiesta).
+
+        Nel framework IMDCL una misura assoluta di un agente i è equivalente
+        a una misura relativa con a = b = i (landmark = master = stesso agente).
+        Il guadagno di Kalman si riduce alla forma standard:
+
+            K  = P · H^T · (H · P · H^T + R)^{-1}
+            x̂  ← x̂ + Φ · K · (z − H · x̂)
+            P  ← P  − Φ · K · (H · P · H^T + R) · K^T · Φ^T
+
+        Dopo l'aggiornamento Φ viene resettato a I (come per apply_update).
+
+        Il termine Π_{jl} **non viene modificato** perché la misura assoluta
+        riguarda solo questo agente: non crea correlazioni incrociate nuove
+        (cfr. paper §"Cooperative Localization via EKF", misure assolute).
+
+        Parameters
+        ----------
+        z : vettore di misura                  (m,)
+        H : matrice di osservazione ∂h/∂x      (m × n)
+        R : covarianza rumore di misura        (m × m)
+        """
+        z = np.asarray(z, dtype=float).ravel()
+        H = np.asarray(H, dtype=float)
+        R = np.asarray(R, dtype=float)
+
+        # Innovazione
+        innov = z - H @ self.x_hat                         # (m,)
+
+        # Covarianza dell'innovazione
+        S = H @ self.P @ H.T + R                           # (m × m)
+
+        # Guadagno di Kalman standard
+        K = self.P @ H.T @ np.linalg.inv(S)               # (n × m)
+
+        # Aggiornamento stato: x̂ ← x̂ + Φ K (z − H x̂)
+        self.x_hat = self.x_hat + self.Phi @ K @ innov
+
+        # Aggiornamento covarianza (Joseph form per stabilità numerica)
+        I_KH = np.eye(self._n) - self.Phi @ K @ H
+        self.P = I_KH @ self.P @ I_KH.T + self.Phi @ K @ R @ K.T @ self.Phi.T
+
+        # Reset Φ → I dopo ogni aggiornamento
+        self.Phi = np.eye(self._n)
+
+    # ------------------------------------------------------------------
     # Metodi ausiliari privati
     # ------------------------------------------------------------------
 

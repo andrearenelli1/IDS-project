@@ -22,8 +22,8 @@ Vincoli MPC aggiuntivi rispetto a mpc_drone.py
 
 TODO (versioni future)
 ----------------------
-  * Stima stato via IMDCL (imdcl.py) al posto della posizione reale
   * Grafo di comunicazione a raggio limitato + consensus
+  * Gestione dropout messaggi IMDCL (vedi [34] del paper)
 
 Dipendenze
 ----------
@@ -56,6 +56,11 @@ from dem_tinitaly import (
     pixel_to_coords, TIF_PATH,
 )
 from mpc_drone import DroneMPC, PointMass3DModel
+from imdcl import (
+    AgentIMDCL, PointMass3DModel as IMDCLPointMass3DModel,
+    relative_position_measurement_3d,
+    LandmarkMessage, UpdateMessage,
+)
 
 # ============================================================================
 # Parametri globali
@@ -95,10 +100,25 @@ N_MPC         = 20
 A_MAX         = 6.0            # [m/s²]
 V_MAX         = 3.0            # [m/s]
 
+# — IMDCL —
+IMDCL_SIGMA_ACC   = 0.05 # rumore processo stimato (uguale a simulazione)
+IMDCL_P0_POS      = 0.5            # [m²]   varianza iniziale posizione
+IMDCL_P0_VEL      = 0.1            # [m/s²] varianza iniziale velocità
+# Raggio di comunicazione: ogni drone prende misura relativa del più vicino
+IMDCL_COMM_RADIUS = 80.0           # [m]
+# Covarianza del rumore di misura relativa posizione (GPS-denied, lidar-range)
+IMDCL_R_MEAS_STD  = 0.3            # [m] deviazione standard misura posizione relativa
+# LiDAR altimetrico: misura z_drone − z_terrain (altezza AGL assoluta)
+# Il LiDAR dà una misura diretta dell'altitudine assoluta del drone:
+#   z_meas = z_lidar_reading + terrain_z(x_est, y_est)
+# Matrice H di osservazione: seleziona pz dallo stato [px,py,pz,vx,vy,vz]
+IMDCL_H_LIDAR     = np.array([[0., 0., 1., 0., 0., 0.]])  # (1×6)
+IMDCL_R_LIDAR_STD = LIDAR_SIGMA   # [m] stessa sigma del LiDAR già in simulazione
+
 # — Simulazione —
 N_SIM         = 600            # passi massimi
 DT_SIM        = DT_MPC
-SIGMA_ACC_SIM = 0.05           # rumore accelerazione nella simulazione
+SIGMA_ACC_SIM = IMDCL_SIGMA_ACC           # rumore accelerazione nella simulazione
 STOP_THRESH   = 0.3            # [m] soglia raggiungimento waypoint
 
 # — Plot —
@@ -349,29 +369,42 @@ def track_waypoints(
 @dataclass
 class DroneAgent:
     """
-    Un drone con macchina a stati finiti e controllore MPC.
+    Un drone con macchina a stati finiti, controllore MPC e filtro IMDCL.
 
     Attributi pubblici principali
     -----------------------------
-    id          : identificatore intero
-    state       : DroneState (SEARCH / TRACK)
-    x           : stato corrente (6,) [px, py, pz, vx, vy, vz]
-    waypoints   : lista di waypoint correnti (può essere aggiornata dalla FSM)
-    wp_idx      : indice waypoint attuale
-    signal_log  : misure ARTVA raccolte [(pos, signal), ...]
+    id           : identificatore intero
+    state        : DroneState (SEARCH / TRACK)
+    x            : stato **reale** corrente (6,) [px, py, pz, vx, vy, vz]
+                   — aggiornato dalla dinamica vera con rumore.
+    imdcl        : AgentIMDCL — stima dello stato basata sull'algoritmo
+                   decentralizzato; il controllore MPC usa imdcl.x_hat
+                   invece di x per simulare la condizione GPS-denied.
+    waypoints    : lista di waypoint correnti (può essere aggiornata dalla FSM)
+    wp_idx       : indice waypoint attuale
+    signal_log   : misure ARTVA raccolte [(pos, signal), ...]
+    history      : sequenza stati **reali** loggati ad ogni passo
+    est_history  : sequenza stime IMDCL (x_hat) loggata ad ogni passo
     """
     id:          int
-    x:           np.ndarray          # stato iniziale (6,)
+    x:           np.ndarray          # stato reale (6,)
     waypoints:   List[np.ndarray]    # waypoint iniziali (lawnmower)
     ctrl:        DroneMPC
+    imdcl:       AgentIMDCL          # filtro IMDCL locale
     state:       DroneState = DroneState.SEARCH
     wp_idx:      int        = 0
     signal_log:  list       = field(default_factory=list)
     history:     list       = field(default_factory=list)
+    est_history: list       = field(default_factory=list)   # ← stime IMDCL
     input_log:   list       = field(default_factory=list)
     solve_t_log: list       = field(default_factory=list)
     detected:    bool       = False  # ha rilevato il segnale almeno una volta
     estimate_pos: Optional[np.ndarray] = None  # stima posizione vittima
+
+    @property
+    def x_est(self) -> np.ndarray:
+        """Stima corrente dello stato da IMDCL (usata dal controllore MPC)."""
+        return self.imdcl.x_hat
 
     def current_target(self) -> np.ndarray:
         idx = min(self.wp_idx, len(self.waypoints) - 1)
@@ -385,8 +418,9 @@ class DroneAgent:
         return False
 
     def all_waypoints_done(self) -> bool:
+        # Usa la posizione stimata per il controllo waypoint (coerente con MPC)
         return (self.wp_idx >= len(self.waypoints) - 1 and
-                np.linalg.norm(self.x[:3] - self.current_target()) < STOP_THRESH)
+                np.linalg.norm(self.x_est[:3] - self.current_target()) < STOP_THRESH)
 
 
 # ============================================================================
@@ -414,6 +448,10 @@ def build_agents(
     y_min = terrain.y_min
     y_max = terrain.y_max
 
+    team_ids = list(range(n_drones))
+    imdcl_motion = IMDCLPointMass3DModel(sigma_acc=IMDCL_SIGMA_ACC)
+    P0_imdcl = np.diag([IMDCL_P0_POS**2] * 3 + [IMDCL_P0_VEL**2] * 3)
+
     for i in range(n_drones):
         # Offset laterale dal punto di deployment (lungo y)
         offset = (i - (n_drones - 1) / 2) * DEPLOY_OFFSET
@@ -430,11 +468,23 @@ def build_agents(
 
         ctrl = DroneMPC(dt=DT_MPC, N=N_MPC, a_max=A_MAX, v_max=V_MAX)
 
+        # Agente IMDCL — inizializzato con lo stesso stato reale + piccola
+        # incertezza iniziale per simulare l'errore di conoscenza della posizione
+        imdcl_agent = AgentIMDCL(
+            agent_id=i,
+            x0=x0.copy(),
+            P0=P0_imdcl.copy(),
+            team_ids=team_ids,
+            motion_model=imdcl_motion,
+        )
+
         agent = DroneAgent(
             id=i, x=x0.copy(), waypoints=wps,
-            ctrl=ctrl, state=DroneState.SEARCH,
+            ctrl=ctrl, imdcl=imdcl_agent,
+            state=DroneState.SEARCH,
         )
         agent.history.append(x0.copy())
+        agent.est_history.append(imdcl_agent.x_hat.copy())
         agents[i] = agent
 
     # Warm-start MPC per tutti
@@ -505,9 +555,12 @@ def simulate(
     model      = PointMass3DModel(sigma_acc=sigma)
     drone_ids  = list(agents.keys())
 
+    # Covarianza misura relativa posizione 3-D (IMDCL)
+    R_rel = np.eye(3) * IMDCL_R_MEAS_STD**2
+
     # Header log
     print(f"\n{'Step':>5}  {'t[s]':>6}  " +
-          "  ".join(f"D{i}:state/wp/dist" for i in drone_ids))
+          "  ".join(f"D{i}:state/wp/dist/err" for i in drone_ids))
 
     for step in range(n_steps):
         t = step * dt
@@ -524,7 +577,8 @@ def simulate(
                 ag.detected = True
                 print(f"\n  ★ Drone {i} RILEVATO segnale ARTVA "
                       f"(S={sig:.4f}) al passo {step} (t={t:.2f}s)")
-                print(f"    Posizione: {ag.x[:3].round(2)}")
+                print(f"    Posizione reale:  {ag.x[:3].round(2)}")
+                print(f"    Posizione stimata:{ag.x_est[:3].round(2)}")
 
                 # Chiama i 2 droni più vicini in supporto
                 dists = {
@@ -538,25 +592,32 @@ def simulate(
                         print(f"    → Drone {j} chiamato in supporto "
                               f"(dist={dists[j]:.1f} m)")
 
-            # Aggiorna waypoint per stato TRACK
+            # Aggiorna waypoint per stato TRACK — usa posizione stimata
             if ag.state == DroneState.TRACK:
                 ag.waypoints = track_waypoints(
-                    ag.x, artva, terrain, n_ahead=GRAD_N_AHEAD,
+                    ag.x_est, artva, terrain, n_ahead=GRAD_N_AHEAD,
                     step_m=GRAD_STEP_M, agl=agl,
                 )
                 ag.wp_idx = 0
 
-        # ── 2. MPC step per ogni drone ────────────────────────────────────
+        # ── 2. MPC step per ogni drone (usa stima IMDCL) ─────────────────
+        u_commands: Dict[int, np.ndarray] = {}
         for i in drone_ids:
             ag  = agents[i]
             tgt = ag.current_target()
 
             from time import perf_counter
             t0    = perf_counter()
-            u_opt = ag.ctrl.step(ag.x, tgt)
+            # MPC riceve la stima IMDCL (non la vera posizione)
+            u_opt = ag.ctrl.step(ag.x_est, tgt)
             dt_s  = perf_counter() - t0
+            u_commands[i] = u_opt
+            ag.solve_t_log.append(dt_s)
 
-            # Rumore processo
+        # ── 3. Propagazione dinamica reale + rumore ───────────────────────
+        for i in drone_ids:
+            ag    = agents[i]
+            u_opt = u_commands[i]
             noise = rng.multivariate_normal(np.zeros(3),
                                             np.diag([sigma**2]*3))
             ag.x = model.f(ag.x, u_opt + noise, dt)
@@ -565,31 +626,103 @@ def simulate(
             z_floor = terrain.agl_z(ag.x[0], ag.x[1], agl * 0.5)
             if ag.x[2] < z_floor:
                 ag.x[2]  = z_floor
-                ag.x[5]  = max(0.0, ag.x[5])   # azzera velocità z negativa
+                ag.x[5]  = max(0.0, ag.x[5])
 
             ag.history.append(ag.x.copy())
             ag.input_log.append(u_opt.copy())
-            ag.solve_t_log.append(dt_s)
 
-        # ── 3. Avanza waypoint se raggiunto ───────────────────────────────
+        # ── 4. Aggiornamento IMDCL ────────────────────────────────────────
+        #
+        # a) Propagazione locale (Eq. S6) — ognuno usa il proprio u
+        for i in drone_ids:
+            agents[i].imdcl.propagate(u_commands[i], dt)
+
+        # b) Misura assoluta LiDAR altimetrico (locale, nessuna comunicazione)
+        #
+        # Il LiDAR misura l'AGL (distanza dal suolo).  Combinandola con la
+        # quota DEM nella posizione xy stimata si ricava la quota assoluta:
+        #   z_obs = z_terrain(x_est, y_est) + agl_lidar
+        # Modello lineare: H = [0,0,1,0,0,0].  Aggiornamento solo locale,
+        # non crea correlazioni inter-drone (cfr. misure assolute nel paper).
+        R_lidar = np.array([[IMDCL_R_LIDAR_STD**2]])
+        for i in drone_ids:
+            ag = agents[i]
+            z_terrain_real = terrain.z(ag.x[0], ag.x[1])
+            agl_lidar      = (ag.x[2] - z_terrain_real) + rng.normal(0, IMDCL_R_LIDAR_STD)
+            z_terrain_est  = terrain.z(ag.imdcl.x_hat[0], ag.imdcl.x_hat[1])
+            z_obs          = np.array([z_terrain_est + agl_lidar])   # (1,)
+            ag.imdcl.apply_absolute_update(z_obs, IMDCL_H_LIDAR, R_lidar)
+
+        # c) Misure relative cooperative: ogni coppia entro IMDCL_COMM_RADIUS
+        #    Il drone con id minore fa da interim master verso il suo vicino
+        #    più prossimo (comunicazione a stella semplificata, 1 misura/drone).
+        processed_pairs: set = set()
+        for i in drone_ids:
+            ag_i = agents[i]
+            # Trova il drone più vicino entro raggio, non ancora processato
+            best_j, best_dist = None, float("inf")
+            for j in drone_ids:
+                if j == i:
+                    continue
+                pair = (min(i, j), max(i, j))
+                if pair in processed_pairs:
+                    continue
+                d = np.linalg.norm(ag_i.x[:3] - agents[j].x[:3])
+                if d < IMDCL_COMM_RADIUS and d < best_dist:
+                    best_j, best_dist = j, d
+            if best_j is None:
+                continue
+
+            pair = (min(i, best_j), max(i, best_j))
+            processed_pairs.add(pair)
+
+            # Misura relativa noisy: z_{ij} = p_j - p_i + rumore
+            ag_j = agents[best_j]
+            z_true, _, _ = relative_position_measurement_3d(
+                ag_i.x, ag_j.x
+            )
+            z_noisy = z_true + rng.multivariate_normal(np.zeros(3),
+                                                        R_rel)
+
+            # Interim master = ag_i; landmark = ag_j
+            lm_msg  = ag_j.imdcl.make_landmark_message()
+            upd_msg = ag_i.imdcl.compute_update_message(
+                lm_msg, z_noisy, R_rel,
+                measurement_fn=relative_position_measurement_3d,
+            )
+            # Broadcast a tutti
+            for k in drone_ids:
+                agents[k].imdcl.apply_update(upd_msg)
+
+        # d) Nessuna misura per i droni rimasti isolati
+        #    (step_no_measurement è no-op, ma lo chiamiamo per chiarezza)
+        for i in drone_ids:
+            agents[i].imdcl.step_no_measurement()
+
+        # Logga stima IMDCL
+        for i in drone_ids:
+            agents[i].est_history.append(agents[i].imdcl.x_hat.copy())
+
+        # ── 5. Avanza waypoint se raggiunto (controlla con stima IMDCL) ──
         for i in drone_ids:
             ag   = agents[i]
             tgt  = ag.current_target()
-            dist = np.linalg.norm(ag.x[:3] - tgt)
+            dist = np.linalg.norm(ag.x_est[:3] - tgt)
             if dist < STOP_THRESH:
                 ag.advance_waypoint()
 
-        # ── 4. Log periodico ─────────────────────────────────────────────
+        # ── 6. Log periodico ──────────────────────────────────────────────
         if (step + 1) % 20 == 0:
             row = f"{step+1:>5}  {(step+1)*dt:>5.1f}s  "
             for i in drone_ids:
-                ag   = agents[i]
-                dist = np.linalg.norm(ag.x[:3] - ag.current_target())
-                st   = "SRCH" if ag.state == DroneState.SEARCH else "TRCK"
-                row += f"  {st}/{ag.wp_idx:02d}/{dist:5.2f}m"
+                ag      = agents[i]
+                dist    = np.linalg.norm(ag.x_est[:3] - ag.current_target())
+                est_err = np.linalg.norm(ag.x[:3] - ag.x_est[:3])
+                st      = "SRCH" if ag.state == DroneState.SEARCH else "TRCK"
+                row += f"  {st}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m"
             print(row)
 
-        # ── 5. Stop se tutti in TRACK e vicini alla vittima ──────────────
+        # ── 7. Stop se tutti in TRACK e vicini alla vittima ──────────────
         all_track  = all(ag.state == DroneState.TRACK for ag in agents.values())
         all_close  = all(
             np.linalg.norm(ag.x[:3] - artva.position) < 5.0
@@ -606,6 +739,13 @@ def simulate(
     print(f"\n  Posizione vittima reale  : {artva.position.round(2)}")
     print(f"  Stima triangolazione     : {est.round(2)}")
     print(f"  Errore planimetrico      : {err:.2f} m")
+
+    # Errore di stima IMDCL finale per ogni drone
+    print("\n  Errore stima IMDCL finale:")
+    for i in drone_ids:
+        ag      = agents[i]
+        err_pos = np.linalg.norm(ag.x[:3] - ag.x_est[:3])
+        print(f"    Drone {i}: |x_real - x_est| = {err_pos:.3f} m")
 
     return agents
 
@@ -624,10 +764,11 @@ def plot_mission(
 ) -> plt.Figure:
     """
     Figura missione:
-      (A) Vista 2-D dall'alto — traiettorie + segnale ARTVA
-      (B) Vista 3-D — traiettorie sul terreno
+      (A) Vista 2-D dall'alto — traiettorie reali (solid) + stimate IMDCL (dashed)
+      (B) Vista 3-D — traiettorie reali e stimate sul terreno
       (C) Segnale ARTVA nel tempo per ogni drone
       (D) Altezza AGL nel tempo (verifica vincolo)
+      (E) Errore di stima posizionale IMDCL nel tempo per ogni drone
     """
     drone_ids = list(agents.keys())
 
@@ -646,15 +787,14 @@ def plot_mission(
     # Extent
     ext = [terrain.x_min, terrain.x_max, terrain.y_min, terrain.y_max]
 
-    fig = plt.figure(figsize=(18, 12))
+    fig = plt.figure(figsize=(20, 14))
     fig.patch.set_facecolor("#ffffff")
 
     # ── A: Vista dall'alto ───────────────────────────────────────────────
-    ax_a = fig.add_subplot(2, 2, 1)
+    ax_a = fig.add_subplot(2, 3, 1)
     ax_a.set_facecolor("#1a1a2e")
     ls = LightSource(azdeg=315, altdeg=45)
     hs = ls.hillshade(np.nan_to_num(sub_dem, nan=0.0), vert_exag=3)
-    # y_coords potrebbe essere decrescente
     yext = [float(np.min(y_coords)), float(np.max(y_coords))]
     ax_a.imshow(hs, cmap="gray", alpha=0.5,
                 extent=[float(x_coords.min()), float(x_coords.max()),
@@ -669,21 +809,28 @@ def plot_mission(
                  label="log(1+ARTVA) [a.u.]")
 
     for i in drone_ids:
-        ag   = agents[i]
-        traj = np.array(ag.history)
-        c    = COLORS.get(i, "#aaaaaa")
-        # Traiettoria (search in tenue, track in pieno)
-        search_mask = []
-        state_seq   = _reconstruct_state_sequence(ag)
+        ag      = agents[i]
+        traj    = np.array(ag.history)
+        est     = np.array(ag.est_history)
+        c       = COLORS.get(i, "#aaaaaa")
+        state_seq = _reconstruct_state_sequence(ag)
         n = min(len(traj), len(state_seq))
         s_idx = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
         t_idx = [k for k in range(n) if state_seq[k] == DroneState.TRACK]
+
+        # Traiettoria reale (solid)
         if s_idx:
             ax_a.plot(traj[s_idx, 0], traj[s_idx, 1],
-                      color=c, lw=1.0, alpha=0.5, ls="--")
+                      color=c, lw=1.0, alpha=0.5, ls="-")
         if t_idx:
             ax_a.plot(traj[t_idx, 0], traj[t_idx, 1],
-                      color=c, lw=2.0, alpha=0.9)
+                      color=c, lw=2.0, alpha=0.9, ls="-")
+
+        # Stima IMDCL (dashed, stesso colore, più sottile)
+        n_est = min(len(est), n)
+        ax_a.plot(est[:n_est, 0], est[:n_est, 1],
+                  color=c, lw=1.0, alpha=0.7, ls="--")
+
         ax_a.plot(*traj[0, :2], "o", color=c, ms=7,
                   mec="white", mew=1.0, zorder=6)
         ax_a.plot(*traj[-1, :2], "^", color=c, ms=9,
@@ -694,7 +841,7 @@ def plot_mission(
               mec="yellow", mew=1.5, label="Vittima ARTVA")
     ax_a.set_xlabel("E [m UTM]", fontsize=9)
     ax_a.set_ylabel("N [m UTM]", fontsize=9)
-    ax_a.set_title("A — Traiettorie + mappa segnale ARTVA",
+    ax_a.set_title("A — Traiettorie reali (—) e stimate IMDCL (- -)",
                    fontweight="bold", fontsize=10)
     ax_a.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
     ax_a.tick_params(labelsize=8)
@@ -702,8 +849,8 @@ def plot_mission(
     handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"),
                                label=f"Drone {i}") for i in drone_ids]
     handles += [
-        plt.Line2D([0],[0], color="w", lw=2.0, label="Fase TRACK"),
-        plt.Line2D([0],[0], color="w", lw=1.0, ls="--", label="Fase SEARCH"),
+        plt.Line2D([0],[0], color="gray", lw=2.0, label="Reale (—)"),
+        plt.Line2D([0],[0], color="gray", lw=1.2, ls="--", label="Stimata IMDCL (--)"),
         plt.Line2D([0],[0], marker="*", color="w", mfc="yellow",
                    ms=12, label="Vittima", linestyle="None"),
     ]
@@ -711,10 +858,9 @@ def plot_mission(
                 framealpha=0.75)
 
     # ── B: Vista 3-D ─────────────────────────────────────────────────────
-    ax_b = fig.add_subplot(2, 2, 2, projection="3d")
+    ax_b = fig.add_subplot(2, 3, 2, projection="3d")
     ax_b.set_facecolor("#0d1117")
 
-    # Superficie terreno (campionata a bassa risoluzione per velocità)
     xs_3d = np.linspace(terrain.x_min, terrain.x_max, 40)
     ys_3d = np.linspace(terrain.y_min, terrain.y_max, 40)
     X3, Y3 = np.meshgrid(xs_3d, ys_3d)
@@ -725,25 +871,33 @@ def plot_mission(
     for i in drone_ids:
         ag   = agents[i]
         traj = np.array(ag.history)
+        est  = np.array(ag.est_history)
         c    = COLORS.get(i, "#aaaaaa")
+        # Traiettoria reale (solid)
         ax_b.plot(traj[:, 0], traj[:, 1], traj[:, 2],
-                  color=c, lw=1.5, alpha=0.85, label=f"Drone {i}")
+                  color=c, lw=1.5, alpha=0.85, label=f"D{i} reale")
         ax_b.scatter(*traj[0, :3], color=c, s=40, zorder=6)
         ax_b.scatter(*traj[-1, :3], marker="^", color=c, s=60, zorder=6)
+        # Stima IMDCL (dashed)
+        n_est = min(len(est), len(traj))
+        ax_b.plot(est[:n_est, 0], est[:n_est, 1], est[:n_est, 2],
+                  color=c, lw=1.0, alpha=0.55, ls="--",
+                  label=f"D{i} IMDCL")
 
     ax_b.scatter(*artva.position, marker="*", color="yellow",
                  s=250, zorder=10, edgecolors="red", linewidths=1)
     ax_b.set_xlabel("E [m]", fontsize=8, labelpad=3)
     ax_b.set_ylabel("N [m]", fontsize=8, labelpad=3)
     ax_b.set_zlabel("z [m]", fontsize=8, labelpad=3)
-    ax_b.set_title("B — Vista 3-D", fontweight="bold", fontsize=10)
+    ax_b.set_title("B — Vista 3-D  reale(—) / IMDCL(--))",
+                   fontweight="bold", fontsize=10)
     ax_b.tick_params(labelsize=7)
     ax_b.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
     ax_b.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-    ax_b.legend(fontsize=7.5, loc="upper left")
+    ax_b.legend(fontsize=6.5, loc="upper left")
 
     # ── C: Segnale ARTVA nel tempo ───────────────────────────────────────
-    ax_c = fig.add_subplot(2, 2, 3)
+    ax_c = fig.add_subplot(2, 3, 3)
     ax_c.set_facecolor("#f8f8f8")
     for i in drone_ids:
         ag   = agents[i]
@@ -763,14 +917,13 @@ def plot_mission(
     ax_c.tick_params(labelsize=8)
 
     # ── D: Altezza AGL nel tempo ─────────────────────────────────────────
-    ax_d = fig.add_subplot(2, 2, 4)
+    ax_d = fig.add_subplot(2, 3, 4)
     ax_d.set_facecolor("#f8f8f8")
     for i in drone_ids:
         ag   = agents[i]
         c    = COLORS.get(i, "#aaaaaa")
         traj = np.array(ag.history)
         time = np.arange(len(traj)) * DT_SIM
-        # Calcola AGL reale ad ogni step
         z_terrain = np.array([
             terrain.z(traj[k, 0], traj[k, 1])
             for k in range(len(traj))
@@ -791,9 +944,66 @@ def plot_mission(
     ax_d.tick_params(labelsize=8)
     ax_d.set_ylim(bottom=-0.5)
 
+    # ── E: Errore stima IMDCL nel tempo ─────────────────────────────────
+    ax_e = fig.add_subplot(2, 3, 5)
+    ax_e.set_facecolor("#f8f8f8")
+    for i in drone_ids:
+        ag   = agents[i]
+        c    = COLORS.get(i, "#aaaaaa")
+        traj = np.array(ag.history)
+        est  = np.array(ag.est_history)
+        n    = min(len(traj), len(est))
+        err_pos = np.linalg.norm(traj[:n, :3] - est[:n, :3], axis=1)
+        time    = np.arange(n) * DT_SIM
+        ax_e.plot(time, err_pos, color=c, lw=1.2, alpha=0.85,
+                  label=f"Drone {i}")
+    ax_e.set_xlabel("Tempo [s]", fontsize=9)
+    ax_e.set_ylabel("Errore posizione [m]", fontsize=9)
+    ax_e.set_title("E — Errore stima IMDCL  |x_reale − x̂|",
+                   fontweight="bold", fontsize=10)
+    ax_e.legend(fontsize=8)
+    ax_e.grid(True, ls=":", alpha=0.5)
+    ax_e.tick_params(labelsize=8)
+    ax_e.set_ylim(bottom=0)
+
+    # ── F: Covarianza trace IMDCL nel tempo ──────────────────────────────
+    ax_f = fig.add_subplot(2, 3, 6)
+    ax_f.set_facecolor("#f8f8f8")
+    # Non abbiamo loggato la covarianza step-by-step (per semplicità);
+    # mostriamo invece la componente errore su x, y, z separatamente.
+    for i in drone_ids:
+        ag   = agents[i]
+        c    = COLORS.get(i, "#aaaaaa")
+        traj = np.array(ag.history)
+        est  = np.array(ag.est_history)
+        n    = min(len(traj), len(est))
+        time = np.arange(n) * DT_SIM
+        for axis_idx, axis_name, ls_style in [(0, "x", "-"),
+                                               (1, "y", "--"),
+                                               (2, "z", ":")]:
+            err_ax = np.abs(traj[:n, axis_idx] - est[:n, axis_idx])
+            ax_f.plot(time, err_ax, color=c, lw=1.0, alpha=0.7,
+                      ls=ls_style,
+                      label=f"D{i} {axis_name}" if i == drone_ids[0] else None)
+
+    # Legenda degli assi
+    ax_f.plot([], [], color="gray", lw=1.0, ls="-",  label="asse x")
+    ax_f.plot([], [], color="gray", lw=1.0, ls="--", label="asse y")
+    ax_f.plot([], [], color="gray", lw=1.0, ls=":",  label="asse z")
+    ax_f.set_xlabel("Tempo [s]", fontsize=9)
+    ax_f.set_ylabel("|errore| per asse [m]", fontsize=9)
+    ax_f.set_title("F — Errore IMDCL per asse (x/y/z)",
+                   fontweight="bold", fontsize=10)
+    ax_f.legend(fontsize=7.5)
+    ax_f.grid(True, ls=":", alpha=0.5)
+    ax_f.tick_params(labelsize=8)
+    ax_f.set_ylim(bottom=0)
+
     fig.suptitle(
         f"Ricerca valanga multi-agente  ·  {len(agents)} droni  ·  "
-        f"AGL={AGL_HEIGHT} m  ·  N_MPC={N_MPC}  ·  dt={DT_SIM} s",
+        f"AGL={AGL_HEIGHT} m  ·  N_MPC={N_MPC}  ·  dt={DT_SIM} s  ·  "
+        f"IMDCL (raggio={IMDCL_COMM_RADIUS:.0f} m, "
+        f"σ_rel={IMDCL_R_MEAS_STD} m)",
         fontsize=12, fontweight="bold",
     )
     fig.tight_layout()
@@ -831,7 +1041,13 @@ def animate_mission(
     save_path: str   = "mission_animation",
 ) -> FuncAnimation:
     """
-    Animazione 3-D della missione: droni sul terreno + segnale ARTVA.
+    Animazione 3-D della missione.
+
+    Per ogni drone vengono tracciate:
+      - Traiettoria reale (linea solid, colore pieno)
+      - Stima IMDCL       (linea dashed, stesso colore ma più trasparente)
+      - Dot posizione reale (cerchio pieno)
+      - Dot posizione stimata (cerchio vuoto / bordo)
     """
     drone_ids = list(agents.keys())
     T = max(len(ag.history) for ag in agents.values())
@@ -853,14 +1069,24 @@ def animate_mission(
                s=300, zorder=10, edgecolors="red", linewidths=1.5)
 
     TRAIL_LEN = 50
-    trails, dots = {}, {}
+    # Oggetti grafici: real trail/dot + estimated trail/dot per drone
+    trails_real, dots_real = {}, {}
+    trails_est,  dots_est  = {}, {}
+
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
-        tr, = ax.plot([], [], [], color=c, lw=1.5, alpha=0.8)
-        dt_, = ax.plot([], [], [], "o", color=c, ms=7,
-                       mec="white", mew=0.8, zorder=8)
-        trails[i] = tr
-        dots[i]   = dt_
+        # Reale — solid
+        tr_r, = ax.plot([], [], [], color=c, lw=1.5, alpha=0.85)
+        dt_r, = ax.plot([], [], [], "o", color=c, ms=7,
+                        mec="white", mew=0.8, zorder=8)
+        trails_real[i] = tr_r
+        dots_real[i]   = dt_r
+        # Stimata IMDCL — dashed, più sottile
+        tr_e, = ax.plot([], [], [], color=c, lw=1.0, alpha=0.55, ls="--")
+        dt_e, = ax.plot([], [], [], "o", color=c, ms=5,
+                        mfc="none", mec=c, mew=1.2, zorder=7)
+        trails_est[i] = tr_e
+        dots_est[i]   = dt_e
 
     info = ax.text2D(0.02, 0.95, "", transform=ax.transAxes,
                      color="#c9d1d9", fontsize=8, va="top",
@@ -870,18 +1096,25 @@ def animate_mission(
     ax.set_ylabel("N [m]", fontsize=8, labelpad=4)
     ax.set_zlabel("z [m]", fontsize=8, labelpad=4)
     ax.tick_params(colors="#c9d1d9", labelsize=7)
-    fig.suptitle("Ricerca valanga multi-agente", color="#c9d1d9",
-                 fontsize=11, fontweight="bold")
+    fig.suptitle(
+        "Ricerca valanga multi-agente  ·  MPC + IMDCL\n"
+        "Traiettoria reale (—)  /  Stima IMDCL (- -)",
+        color="#c9d1d9", fontsize=10, fontweight="bold",
+    )
 
-    step_skip    = max(1, int(round(1.0 / (dt * fps) * speed)))
-    frame_idx    = list(range(0, T, step_skip))
+    step_skip = max(1, int(round(1.0 / (dt * fps) * speed)))
+    frame_idx = list(range(0, T, step_skip))
 
     def init():
         for i in drone_ids:
-            trails[i].set_data([], []); trails[i].set_3d_properties([])
-            dots[i].set_data([], []);   dots[i].set_3d_properties([])
+            for obj in (trails_real[i], trails_est[i]):
+                obj.set_data([], []);  obj.set_3d_properties([])
+            for obj in (dots_real[i], dots_est[i]):
+                obj.set_data([], []);  obj.set_3d_properties([])
         info.set_text("")
-        return list(trails.values()) + list(dots.values()) + [info]
+        return (list(trails_real.values()) + list(dots_real.values()) +
+                list(trails_est.values())  + list(dots_est.values()) +
+                [info])
 
     def update(f):
         t_step = frame_idx[f]
@@ -889,17 +1122,32 @@ def animate_mission(
         for i in drone_ids:
             ag   = agents[i]
             traj = np.array(ag.history)
+            est  = np.array(ag.est_history)
             ti   = min(t_step, len(traj) - 1)
             ts   = max(0, ti - TRAIL_LEN)
-            trails[i].set_data(traj[ts:ti+1, 0], traj[ts:ti+1, 1])
-            trails[i].set_3d_properties(traj[ts:ti+1, 2])
-            dots[i].set_data([traj[ti, 0]], [traj[ti, 1]])
-            dots[i].set_3d_properties([traj[ti, 2]])
+
+            # Reale
+            trails_real[i].set_data(traj[ts:ti+1, 0], traj[ts:ti+1, 1])
+            trails_real[i].set_3d_properties(traj[ts:ti+1, 2])
+            dots_real[i].set_data([traj[ti, 0]], [traj[ti, 1]])
+            dots_real[i].set_3d_properties([traj[ti, 2]])
+
+            # Stimata IMDCL
+            ti_e = min(t_step, len(est) - 1)
+            ts_e = max(0, ti_e - TRAIL_LEN)
+            trails_est[i].set_data(est[ts_e:ti_e+1, 0], est[ts_e:ti_e+1, 1])
+            trails_est[i].set_3d_properties(est[ts_e:ti_e+1, 2])
+            dots_est[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
+            dots_est[i].set_3d_properties([est[ti_e, 2]])
+
             st = "SRCH" if ti < len(ag.signal_log) and \
                 ag.signal_log[ti][1] < ARTVA_DETECT_THR else "TRCK"
-            lines.append(f"D{i}: {st}  z={traj[ti,2]:.1f}m")
+            err = np.linalg.norm(traj[ti, :3] - est[ti_e, :3])
+            lines.append(f"D{i}: {st}  z={traj[ti,2]:.1f}m  Δest={err:.2f}m")
         info.set_text("\n".join(lines))
-        return list(trails.values()) + list(dots.values()) + [info]
+        return (list(trails_real.values()) + list(dots_real.values()) +
+                list(trails_est.values())  + list(dots_est.values()) +
+                [info])
 
     anim = FuncAnimation(fig, update, frames=len(frame_idx),
                          init_func=init, blit=True,
