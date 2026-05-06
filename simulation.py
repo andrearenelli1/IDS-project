@@ -316,11 +316,6 @@ def simulate(
                 ag.detected = True
                 ag.init_track_dir(lawnmower_orig[i])
                 ag.track_signal_prev = sig
-                ag.track_peak_signal  = sig
-                ag.track_peak_pos     = ag.x_est[:3].copy()
-                ag.track_peak_dir     = ag.track_dir.copy() if ag.track_dir is not None else None
-                ag.track_fail_count   = 1
-                ag.track_returning_to_peak = False
                 # Inizializza DCGD al centro del workspace
                 ag.source_est = np.array([cx_ws, cy_ws, terrain.z(cx_ws, cy_ws)])
                 print(
@@ -366,25 +361,13 @@ def simulate(
             # ── Hill-climbing reattivo (solo droni TRACK non fermati) ────
             if ag.state == DroneState.TRACK and not ag.track_stopped and ag.track_dir is not None:
                 ag.track_time += 1
-                ag.update_track_dir(ag.x_est, sig)
-
-                if ag.track_returning_to_peak and ag.track_peak_pos is not None:
-                    wp = ag.track_peak_pos.copy()
-                    if np.linalg.norm(ag.x_est[:3] - ag.track_peak_pos) < STOP_THRESH:
-                        ag.prepare_next_track_probe()
-                        wp = track_next_waypoint(
-                            ag.track_peak_pos, ag.track_dir, terrain,
-                            step_m=TRACK_STEP_M, agl=agl,
-                        )
-                    ag.waypoints = [wp]
-                    ag.wp_idx    = 0
-                else:
-                    wp = track_next_waypoint(
-                        ag.x_est, ag.track_dir, terrain,
-                        step_m=TRACK_STEP_M, agl=agl,
-                    )
-                    ag.waypoints = [wp]
-                    ag.wp_idx    = 0
+                ag.update_track_dir(sig)
+                wp = track_next_waypoint(
+                    ag.x_est, ag.track_dir, terrain,
+                    step_m=TRACK_STEP_M, agl=agl,
+                )
+                ag.waypoints = [wp]
+                ag.wp_idx    = 0
 
         # ── 2. MPC step (usa stima IMDCL) ────────────────────────────────
         u_commands: Dict[int, np.ndarray] = {}

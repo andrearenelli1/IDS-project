@@ -144,13 +144,9 @@ class DroneAgent:
     track_dir         : direzione di ricerca corrente (2,), unitaria
     track_signal_prev : segnale ARTVA all'ultimo passo TRACK
     track_turn_sign   : +1/-1 — alterna L/R ad ogni fallimento
-    track_fail_count  : numero di retry dal massimo locale corrente
+    track_fail_count  : passi consecutivi con segnale calante
     track_stopped     : True quando segnale ≥ TRACK_STOP_THR → drone in hovering
     track_time        : contatore passi in stato TRACK (usato per diminuire lo step del gradiente nel tempo ed evitare oscillazioni)
-    track_peak_signal : massimo segnale osservato nel tratto TRACK corrente
-    track_peak_pos    : posizione [x,y,z] del massimo segnale osservato
-    track_peak_dir    : direzione TRACK associata al massimo osservato
-    track_returning_to_peak : True quando il drone sta tornando al massimo memorizzato
     source_est        : stima locale (3,) della posizione sorgente ARTVA (DCGD)
     """
 
@@ -176,10 +172,6 @@ class DroneAgent:
     track_turn_sign:    int                  = +1
     track_fail_count:   int                  = 0
     track_time:         int                  = 0
-    track_peak_signal:  float                = float("-inf")
-    track_peak_pos:     Optional[np.ndarray] = None
-    track_peak_dir:     Optional[np.ndarray] = None
-    track_returning_to_peak: bool           = False
 
     # Stopping e stima distribuita
     track_stopped:      bool                 = False
@@ -231,38 +223,25 @@ class DroneAgent:
             nv = np.linalg.norm(v)
             self.track_dir = v / nv if nv > 1e-3 else np.array([1.0, 0.0])
 
-    def update_track_dir(self, current_pos_est: np.ndarray, signal_new: float) -> None:
+    def update_track_dir(self, signal_new: float) -> None:
         """
-        Aggiorna la memoria del massimo locale e decide se il drone deve
-        tornare indietro prima di riprovare con una rotazione più ampia.
+        Aggiorna la direzione di ricerca confrontando il segnale corrente con
+        quello del passo precedente (hill-climbing reattivo).
 
-        Se il segnale migliora, memorizza il nuovo massimo e resetta i retry.
-        Se il segnale cala rispetto al passo precedente, attiva il rientro
-        verso il punto di massimo segnale memorizzato.
+          signal_new >= signal_prev → continua, azzera fail_count
+          signal_new <  signal_prev → ruota di TRACK_TURN_DEG (con escalation),
+                                      alterna L/R ad ogni fallimento
         """
         if self.track_dir is None:
             return
-
-        current_pos_est = np.asarray(current_pos_est, dtype=float)
-
-        if signal_new >= self.track_peak_signal:
-            self.track_peak_signal = signal_new
-            self.track_peak_pos    = current_pos_est[:3].copy()
-            self.track_peak_dir    = self.track_dir.copy()
-            self.track_fail_count  = 1
-            self.track_returning_to_peak = False
-        elif signal_new < self.track_signal_prev and not self.track_returning_to_peak:
+        if signal_new >= self.track_signal_prev:
+            self.track_fail_count = 0
+        else:
             self.track_fail_count += 1
-            self.track_returning_to_peak = True
-
+            angle = (
+                min(TRACK_TURN_DEG * self.track_fail_count, 90.0)
+                * self.track_turn_sign
+            )
+            self.track_dir       = _rotate_2d(self.track_dir, angle)
+            self.track_turn_sign = -self.track_turn_sign
         self.track_signal_prev = signal_new
-
-    def prepare_next_track_probe(self) -> None:
-        """Ruota la direzione memorizzata al massimo locale per il nuovo tentativo."""
-        if self.track_peak_dir is None:
-            return
-
-        angle = min(TRACK_TURN_DEG * self.track_fail_count, 180.0) * self.track_turn_sign
-        self.track_dir = _rotate_2d(self.track_peak_dir, angle)
-        self.track_turn_sign = -self.track_turn_sign
-        self.track_returning_to_peak = False
