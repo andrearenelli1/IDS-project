@@ -6,8 +6,8 @@ The project combines:
 - terrain-aware flight over a real DEM (TINItaly GeoTIFF),
 - multi-agent mission logic (SEARCH and TRACK phases),
 - Model Predictive Control (MPC) for trajectory tracking,
-- distributed cooperative localization (IMDCL),
-- distributed source estimation (DCGD) to estimate victim position.
+- distributed cooperative localization IMDCL (Interim Master Decentralized Cooperative Localization)
+- distributed source estimation DCGD (Distributed Consensus Gradient Descent) to estimate victim position.
 
 ## What this project does
 
