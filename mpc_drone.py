@@ -617,8 +617,3 @@ if __name__ == "__main__":
         waypoints=waypoints,
     )
     plt.show()
-
-    from animate_drone import animate
-    anim = animate(starts, targets, history, inputs, dt=DT_SIM,
-                   waypoints=waypoints, speed=0.5, save=True)
-    plt.show()
