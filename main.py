@@ -3,7 +3,7 @@ main.py
 =======
 Entry point della simulazione di ricerca in valanga multi-agente.
 
-Parametri di esecuzione → config.py
+Parametri di esecuzione  → config.py
 Modello terreno          → terrain.py
 Sorgente ARTVA           → artva.py
 Agente drone             → drone_agent.py

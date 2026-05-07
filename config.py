@@ -35,7 +35,7 @@ LANE_SPACING  = 15.0    # [m]  distanza tra passaggi nella striscia
 # Sorgente ARTVA
 # ============================================================================
 ARTVA_MOMENT      = 1.0    # momento magnetico normalizzato [A·m²]
-ARTVA_DETECT_THR  = 1e-5   # soglia rilevamento — segnale rilevabile a ~40 m
+ARTVA_DETECT_THR  = 1e-5   # soglia rilevamento — segnale rilevabile (TODO: change based on effective noise at the start)
 ARTVA_NOISE_STD   = 1e-7   # rumore additivo (~1% segnale a 40 m)
 VICTIM_XY         = [120, 100]   # [m, m] posizione xy vittima nel workspace locale;
                             #        None = casuale (seed da CLI)
@@ -46,7 +46,7 @@ VICTIM_DEPTH      = 3    # [m]  profondità di sepoltura sotto il terreno
 # ============================================================================
 TRACK_STEP_M      = 5.0    # [m]  passo nel piano xy
 TRACK_TURN_DEG    = 60.0   # [°]  rotazione quando il segnale cala
-TRACK_STOP_THR    = 1e-4   # [a.u.]  soglia segnale ARTVA per fermare il drone
+TRACK_STOP_THR    = 1e-4   # [a.u.]  soglia segnale ARTVA per fermare il drone (TODO: change based on effective noise at the start)
 SUPPORT_STEP_M    = 10.0   # [m]  distanza waypoint supporto dal drone fermo
 N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA per step (interpolate lungo il moto)
 

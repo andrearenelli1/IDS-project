@@ -239,6 +239,7 @@ class DroneAgent:
           signal_new >= signal_prev → continua, azzera fail_count
           signal_new <  signal_prev → ruota di TRACK_TURN_DEG (con escalation),
                                       alterna L/R ad ogni fallimento
+            !!qua si potrebbe fare un cerchio per trovare la direzione giusta
         """
         if self.track_dir is None:
             return

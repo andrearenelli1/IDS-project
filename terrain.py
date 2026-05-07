@@ -116,6 +116,7 @@ def coords_extent(dem, transform):
 def extract_area(dem, transform, center_row=None, center_col=None, size_m=200):
     """
     Estrae un'area quadrata di 'size_m' metri attorno al pixel centrale.
+    TODOS: punto generico passato in coordinate mappa invece che pixel; gestione bordi più elegante.
 
     Returns
     -------
