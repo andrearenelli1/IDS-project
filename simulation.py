@@ -47,7 +47,7 @@ from config import (
     IMDCL_COMM_RADIUS, IMDCL_R_MEAS_STD,
     IMDCL_R_LIDAR_STD, IMDCL_H_LIDAR,
     TRACK_STEP_M, TRACK_TURN_DEG,
-    TRACK_STOP_THR,
+    TRACK_STOP_THR, SUPPORT_STEP_M, N_SIGNAL_SAMPLES,
     DIST_EST_ALPHA, DIST_EST_BETA, DIST_EST_H, DIST_EST_REFINE, DIST_EST_BATCH,
     TRIANGULATE_N_PARTNERS,
     ARTVA_DETECT_THR, ARTVA_MOMENT,
@@ -306,8 +306,13 @@ def simulate(
 
         # ── 1. Misura ARTVA ──────────────────────────────────────────────
         for i in drone_ids:
-            ag  = agents[i]
-            sig = artva.signal(ag.x[:3], noisy=True)
+            ag       = agents[i]
+            prev_pos = ag.history[-1][:3] if ag.history else ag.x[:3]
+            alphas   = np.linspace(0.0, 1.0, N_SIGNAL_SAMPLES)
+            sig      = float(np.mean([
+                artva.signal(prev_pos * (1.0 - a) + ag.x[:3] * a, noisy=True)
+                for a in alphas
+            ]))
             ag.signal_log.append((ag.x[:3].copy(), sig))
 
             # Transizione SEARCH → TRACK
@@ -344,7 +349,7 @@ def simulate(
                 }
                 partners = sorted(dists, key=dists.get)[:TRIANGULATE_N_PARTNERS]
                 support_wp = _support_waypoint_from_direction(
-                    ag.x_est[:3], ag.track_dir, terrain, step_m=TRACK_STEP_M, agl=agl
+                    ag.x_est[:3], ag.track_dir, terrain, step_m=SUPPORT_STEP_M, agl=agl
                 )
                 for j in partners:
                     if agents[j].state == DroneState.SEARCH:
@@ -372,9 +377,11 @@ def simulate(
         # ── 2. MPC step (usa stima IMDCL) ────────────────────────────────
         u_commands: Dict[int, np.ndarray] = {}
         for i in drone_ids:
-            ag    = agents[i]
+            ag     = agents[i]
+            target = ag.current_target().copy()
+            target[2] = terrain.agl_z(ag.x_est[0], ag.x_est[1], agl)
             t0    = perf_counter()
-            u_opt = ag.ctrl.step(ag.x_est, ag.current_target())
+            u_opt = ag.ctrl.step(ag.x_est, target)
             ag.solve_t_log.append(perf_counter() - t0)
             u_commands[i] = u_opt
 
@@ -462,11 +469,11 @@ def simulate(
                 row    += f"  {st}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m/"
             print(row)
 
-        # ── 8. Stop: tutti i droni TRACK si sono fermati ─────────────────
-        track_agents = [ag for ag in agents.values() if ag.state == DroneState.TRACK]
-        if track_agents and all(ag.track_stopped for ag in track_agents):
+        # ── 8. Stop: almeno 3 droni in stop mode ─────────────────────────
+        stopped_agents = [ag for ag in agents.values() if ag.track_stopped]
+        if len(stopped_agents) >= 3:
             print(
-                f"\n  ✔ Tutti i droni TRACK fermi al passo {step+1} "
+                f"\n  ✔ {len(stopped_agents)} droni in stop mode al passo {step+1} "
                 f"(t={(step+1)*dt:.2f}s) — raffinamento DCGD ({DIST_EST_REFINE} iter)..."
             )
             _dcgd_refine(agents, drone_ids, DIST_EST_REFINE)
@@ -479,11 +486,17 @@ def simulate(
     print(f"  Stima DCGD distribuita   : {est.round(2)}")
     print(f"  Errore planimetrico      : {err:.2f} m")
     print("\n  Stime source_est per drone:")
+    valid_ests = [agents[i].source_est for i in drone_ids if agents[i].source_est is not None]
     for i in drone_ids:
         ag = agents[i]
         if ag.source_est is not None:
             e_i = np.linalg.norm(ag.source_est[:2] - artva.position[:2])
             print(f"    Drone {i}: {ag.source_est.round(2)}  (err={e_i:.2f} m)")
+    if len(valid_ests) >= 2:
+        ests_xy = np.array([e[:2] for e in valid_ests])
+        var_xy  = np.var(ests_xy, axis=0)
+        print(f"    Varianza stime [σ²x={var_xy[0]:.3f}, σ²y={var_xy[1]:.3f}]  "
+              f"(σ_planimetrica={np.sqrt(var_xy.sum()):.3f} m)")
     print("\n  Errore stima IMDCL finale:")
     for i in drone_ids:
         ag = agents[i]

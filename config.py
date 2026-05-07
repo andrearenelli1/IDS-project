@@ -12,13 +12,13 @@ import numpy as np
 # ============================================================================
 # Workspace
 # ============================================================================
-AREA_SIZE_M   = 200.0   # [m]  lato area quadrata estratta dal DEM
+AREA_SIZE_M   = 200.0  # [m]  lato area quadrata estratta dal DEM
 
 # ============================================================================
 # Volo
 # ============================================================================
 AGL_HEIGHT    = 1.5     # [m]  altezza sopra il terreno (Above Ground Level)
-LIDAR_SIGMA   = 0.05    # [m]  deviazione standard rumore gaussiano LiDAR
+LIDAR_SIGMA   = 0.1    # [m]  deviazione standard rumore gaussiano LiDAR
 
 # ============================================================================
 # Droni
@@ -37,13 +37,18 @@ LANE_SPACING  = 15.0    # [m]  distanza tra passaggi nella striscia
 ARTVA_MOMENT      = 1.0    # momento magnetico normalizzato [A·m²]
 ARTVA_DETECT_THR  = 1e-5   # soglia rilevamento — segnale rilevabile a ~40 m
 ARTVA_NOISE_STD   = 1e-7   # rumore additivo (~1% segnale a 40 m)
+VICTIM_XY         = [120, 100]   # [m, m] posizione xy vittima nel workspace locale;
+                            #        None = casuale (seed da CLI)
+VICTIM_DEPTH      = 3    # [m]  profondità di sepoltura sotto il terreno
 
 # ============================================================================
 # Hill-climbing online (fase TRACK)
 # ============================================================================
 TRACK_STEP_M      = 5.0    # [m]  passo nel piano xy
 TRACK_TURN_DEG    = 60.0   # [°]  rotazione quando il segnale cala
-TRACK_STOP_THR    = 5e-4   # [a.u.]  soglia segnale ARTVA per fermare il drone 
+TRACK_STOP_THR    = 1e-4   # [a.u.]  soglia segnale ARTVA per fermare il drone
+SUPPORT_STEP_M    = 10.0   # [m]  distanza waypoint supporto dal drone fermo
+N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA per step (interpolate lungo il moto)
 
 # ============================================================================
 # Stima distribuita posizione sorgente — DCGD (fase TRACK)
@@ -73,7 +78,7 @@ V_MAX   = 3.0    # [m/s]
 IMDCL_SIGMA_ACC   = 0.05   # [m/s²] rumore processo del filtro
 IMDCL_P0_POS      = 0.5    # [m]    dev.std iniziale posizione
 IMDCL_P0_VEL      = 0.1    # [m/s]  dev.std iniziale velocità
-IMDCL_COMM_RADIUS = 200  # [m]    raggio comunicazione inter-drone
+IMDCL_COMM_RADIUS = 50  # [m]    raggio comunicazione inter-drone
 IMDCL_R_MEAS_STD  = 0.3    # [m]    dev.std misura relativa posizione
 IMDCL_R_LIDAR_STD = 0.05   # [m]    dev.std misura LiDAR quota
 IMDCL_H_LIDAR     = np.array([[0., 0., 1., 0., 0., 0.]])  # H per pz (1×6)

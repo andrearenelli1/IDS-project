@@ -35,7 +35,7 @@ from terrain import Terrain
 from drone_agent import DroneAgent, DroneState
 from config import (
     AGL_HEIGHT, DT_SIM, N_MPC, DT_MPC, A_MAX, V_MAX,
-    ARTVA_DETECT_THR, TRACK_STOP_THR,
+    ARTVA_DETECT_THR, TRACK_STOP_THR, ARTVA_MOMENT,
     IMDCL_COMM_RADIUS, IMDCL_R_MEAS_STD,
     TRACK_STEP_M, TRACK_TURN_DEG,
     COLORS, BG_DARK,
@@ -53,6 +53,41 @@ _TRAIL_LEN  = 50
 # ============================================================================
 # Helper privato
 # ============================================================================
+
+def _circle_intersections_2d(
+    c1: np.ndarray, r1: float,
+    c2: np.ndarray, r2: float,
+) -> tuple | None:
+    """Restituisce i 2 punti di intersezione di due cerchi XY, o None."""
+    d = np.linalg.norm(c2 - c1)
+    if d < 1e-9 or d > r1 + r2 + 1e-6 or d < abs(r1 - r2) - 1e-6:
+        return None
+    a = (r1**2 - r2**2 + d**2) / (2.0 * d)
+    h = np.sqrt(max(0.0, r1**2 - a**2))
+    direction = (c2 - c1) / d
+    perp = np.array([-direction[1], direction[0]])
+    mid  = c1 + a * direction
+    return mid + h * perp, mid - h * perp
+
+
+def _circumcircle_2d(
+    p1: np.ndarray, p2: np.ndarray, p3: np.ndarray,
+) -> tuple:
+    """Circonferenza passante per 3 punti 2D. Restituisce (center, radius) o (None, None)."""
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    D = 2.0 * (ax*(by - cy) + bx*(cy - ay) + cx*(ay - by))
+    if abs(D) < 1e-9:
+        return None, None
+    a2 = ax**2 + ay**2
+    b2 = bx**2 + by**2
+    c2 = cx**2 + cy**2
+    ux = (a2*(by - cy) + b2*(cy - ay) + c2*(ay - by)) / D
+    uy = (a2*(cx - bx) + b2*(ax - cx) + c2*(bx - ax)) / D
+    center = np.array([ux, uy])
+    return center, float(np.linalg.norm(p1 - center))
+
 
 def _reconstruct_state_sequence(ag: DroneAgent) -> List[DroneState]:
     """Ricostruisce la sequenza FSM dal log segnali: SEARCH → TRACK."""
@@ -309,19 +344,36 @@ def animate_mission(
     save_path: str   = "mission_animation",
 ) -> FuncAnimation:
     """
-    Animazione 3-D: traiettoria reale (solid) + stima IMDCL (dashed).
-    Overlay testuale: stato FSM, quota reale, errore di stima.
+    Animazione 3-D (sinistra) + vista overhead 2-D (destra).
+    Nel pannello 2-D: cerchi di distanza stimata ARTVA per ogni drone in TRACK;
+    al momento del raffinamento: cerchio passante per le intersezioni dei 3 cerchi.
     """
     drone_ids = list(agents.keys())
     T = max(len(ag.history) for ag in agents.values())
+    N_THETA = 90
+    _th  = np.linspace(0, 2 * np.pi, N_THETA, endpoint=False)
+    _cos = np.cos(_th)
+    _sin = np.sin(_th)
 
+    # ── Pre-calcola step di stop (usato per il testo stato) ─────────────
+    stop_steps: Dict[int, int] = {}
+    for i in drone_ids:
+        for k, (_, s) in enumerate(agents[i].signal_log):
+            if s >= TRACK_STOP_THR:
+                stop_steps[i] = k
+                break
+
+    # ── Figura: 3-D a sinistra, 2-D a destra ────────────────────────────
     xs_3d = np.linspace(terrain.x_min, terrain.x_max, 35)
     ys_3d = np.linspace(terrain.y_min, terrain.y_max, 35)
     X3, Y3 = np.meshgrid(xs_3d, ys_3d)
     Z3 = terrain.z(X3.ravel(), Y3.ravel()).reshape(X3.shape)
 
-    fig = plt.figure(figsize=(14, 8), facecolor=_BG_COLOR)
-    ax  = fig.add_subplot(1, 1, 1, projection="3d")
+    fig = plt.figure(figsize=(18, 8), facecolor=_BG_COLOR)
+    ax  = fig.add_subplot(1, 2, 1, projection="3d")
+    ax2 = fig.add_subplot(1, 2, 2)
+
+    # — 3-D setup —
     ax.set_facecolor(_BG_COLOR)
     for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
         pane.fill = False
@@ -329,7 +381,39 @@ def animate_mission(
                     rcount=35, ccount=35, linewidth=0, zorder=1)
     ax.scatter(*artva.position, marker="*", color="yellow",
                s=300, zorder=10, edgecolors="red", linewidths=1.5)
+    ax.set_xlabel("x [m]", fontsize=8, labelpad=4)
+    ax.set_ylabel("y [m]", fontsize=8, labelpad=4)
+    ax.set_zlabel("z [m]", fontsize=8, labelpad=4)
+    ax.tick_params(colors=_TEXT_COLOR, labelsize=7)
 
+    # — 2-D setup: sfondo statico (terreno + sorgente) —
+    ax2.set_facecolor(_BG_COLOR)
+    ax2.tick_params(colors=_TEXT_COLOR, labelsize=7)
+    ax2.set_xlabel("x [m]", color=_TEXT_COLOR, fontsize=8)
+    ax2.set_ylabel("y [m]", color=_TEXT_COLOR, fontsize=8)
+    ax2.set_title("Vista dall'alto — cerchi ARTVA", color=_TEXT_COLOR,
+                  fontsize=9, fontweight="bold")
+    for sp in ax2.spines.values():
+        sp.set_edgecolor(_GRID_COLOR)
+    ax2.grid(True, color=_GRID_COLOR, lw=0.4, alpha=0.5)
+    ax2.set_aspect("equal")
+    ax2.set_xlim(terrain.x_min, terrain.x_max)
+    ax2.set_ylim(terrain.y_min, terrain.y_max)
+
+    nx2 = 80
+    xs2 = np.linspace(terrain.x_min, terrain.x_max, nx2)
+    ys2 = np.linspace(terrain.y_min, terrain.y_max, nx2)
+    XS2, YS2 = np.meshgrid(xs2, ys2)
+    ZS2 = terrain.z(XS2.ravel(), YS2.ravel()).reshape(nx2, nx2)
+    ls_  = LightSource(azdeg=315, altdeg=45)
+    hs2  = ls_.hillshade(np.nan_to_num(ZS2, nan=0.0), vert_exag=3)
+    ext  = [terrain.x_min, terrain.x_max, terrain.y_min, terrain.y_max]
+    ax2.imshow(hs2, cmap="gray", alpha=0.4, extent=ext, origin="lower", zorder=1)
+    # Posizione reale vittima
+    ax2.scatter(*artva.position[:2], marker="*", color="yellow",
+                s=200, zorder=10, edgecolors="red", linewidths=1.2)
+
+    # — Artists dinamici: 3-D —
     trails_r, dots_r = {}, {}
     trails_e, dots_e = {}, {}
     for i in drone_ids:
@@ -339,15 +423,34 @@ def animate_mission(
         trails_e[i], = ax.plot([], [], [], color=c, lw=1.0, alpha=0.5, ls="--")
         dots_e[i],   = ax.plot([], [], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.0, zorder=7)
 
+    # — Artists dinamici: 2-D trail, dot reale, dot stimato, cerchio per drone —
+    trails2, dots2, dots2_e, circles2 = {}, {}, {}, {}
+    for i in drone_ids:
+        c = COLORS.get(i, "#aaaaaa")
+        trails2[i],  = ax2.plot([], [], color=c, lw=1.2, alpha=0.65, zorder=3)
+        dots2[i],    = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.8, zorder=5)
+        dots2_e[i],  = ax2.plot([], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.2, zorder=6)
+        circles2[i], = ax2.plot([], [], color=c, lw=1.0, alpha=0.7, ls="--", zorder=4)
+
+    # — Sfera di comunicazione 3-D: 3 cerchi ortogonali per drone ────────
+    N_SP   = 60
+    _sp_t  = np.linspace(0, 2 * np.pi, N_SP, endpoint=False)
+    _sp_c  = np.cos(_sp_t)
+    _sp_s  = np.sin(_sp_t)
+    R_comm = IMDCL_COMM_RADIUS
+    sph_xy, sph_xz, sph_yz = {}, {}, {}
+    for i in drone_ids:
+        c = COLORS.get(i, "#aaaaaa")
+        sph_xy[i], = ax.plot([], [], [], color=c, lw=0.6, alpha=0.25)
+        sph_xz[i], = ax.plot([], [], [], color=c, lw=0.6, alpha=0.25)
+        sph_yz[i], = ax.plot([], [], [], color=c, lw=0.6, alpha=0.25)
+
     info = ax.text2D(0.02, 0.95, "", transform=ax.transAxes,
                      color=_TEXT_COLOR, fontsize=8, va="top", fontfamily="monospace")
-    ax.set_xlabel("x [m]", fontsize=8, labelpad=4)
-    ax.set_ylabel("y [m]", fontsize=8, labelpad=4)
-    ax.set_zlabel("z [m]", fontsize=8, labelpad=4)
-    ax.tick_params(colors=_TEXT_COLOR, labelsize=7)
+
     fig.suptitle(
         "Ricerca valanga multi-agente  ·  MPC + IMDCL + hill-climb\n"
-        "reale (—)  /  stima IMDCL (- -)",
+        "reale (—)  /  stima IMDCL (- -)   |   cerchi: distanza stimata ARTVA",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
@@ -356,20 +459,26 @@ def animate_mission(
     all_artists = (
         list(trails_r.values()) + list(dots_r.values())
         + list(trails_e.values()) + list(dots_e.values())
-        + [info]
+        + list(sph_xy.values()) + list(sph_xz.values()) + list(sph_yz.values())
+        + list(trails2.values()) + list(dots2.values())
+        + list(dots2_e.values()) + list(circles2.values()) + [info]
     )
 
     def init():
         for i in drone_ids:
-            for obj in (trails_r[i], trails_e[i], dots_r[i], dots_e[i]):
+            for obj in (trails_r[i], trails_e[i], dots_r[i], dots_e[i],
+                        sph_xy[i], sph_xz[i], sph_yz[i]):
                 obj.set_data([], [])
                 obj.set_3d_properties([])
+            for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i]):
+                obj.set_data([], [])
         info.set_text("")
         return all_artists
 
     def update(f):
         t_step = frame_idx[f]
         lines  = [f"t = {t_step * dt:.2f} s  step {t_step}/{T-1}"]
+
         for i in drone_ids:
             ag   = agents[i]
             traj = np.array(ag.history)
@@ -379,20 +488,48 @@ def animate_mission(
             ti_e = min(t_step, len(est) - 1)
             ts_e = max(0, ti_e - _TRAIL_LEN)
 
+            # 3-D trails
             trails_r[i].set_data(traj[ts:ti+1, 0], traj[ts:ti+1, 1])
             trails_r[i].set_3d_properties(traj[ts:ti+1, 2])
             dots_r[i].set_data([traj[ti, 0]], [traj[ti, 1]])
             dots_r[i].set_3d_properties([traj[ti, 2]])
-
             trails_e[i].set_data(est[ts_e:ti_e+1, 0], est[ts_e:ti_e+1, 1])
             trails_e[i].set_3d_properties(est[ts_e:ti_e+1, 2])
             dots_e[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
             dots_e[i].set_3d_properties([est[ti_e, 2]])
 
-            st  = ("SRCH" if ti < len(ag.signal_log)
-                   and ag.signal_log[ti][1] < ARTVA_DETECT_THR else "TRCK")
+            # Sfera comunicazione 3-D (3 cerchi ortogonali centrati sul drone reale)
+            cx, cy, cz = traj[ti, 0], traj[ti, 1], traj[ti, 2]
+            sph_xy[i].set_data(cx + R_comm * _sp_c, cy + R_comm * _sp_s)
+            sph_xy[i].set_3d_properties(np.full(N_SP, cz))
+            sph_xz[i].set_data(cx + R_comm * _sp_c, np.full(N_SP, cy))
+            sph_xz[i].set_3d_properties(cz + R_comm * _sp_s)
+            sph_yz[i].set_data(np.full(N_SP, cx), cy + R_comm * _sp_c)
+            sph_yz[i].set_3d_properties(cz + R_comm * _sp_s)
+
+            # 2-D trail + dot reale + dot stimato IMDCL
+            trails2[i].set_data(traj[ts:ti+1, 0], traj[ts:ti+1, 1])
+            dots2[i].set_data([traj[ti, 0]], [traj[ti, 1]])
+            dots2_e[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
+
+            # Cerchio: raggio = (ARTVA_MOMENT / segnale)^(1/3), solo in TRACK
+            sig = ag.signal_log[ti][1] if ti < len(ag.signal_log) else 0.0
+            if sig >= ARTVA_DETECT_THR:
+                r  = (ARTVA_MOMENT / max(sig, 1e-12)) ** (1.0 / 3.0)
+                px, py = traj[ti, 0], traj[ti, 1]
+                circles2[i].set_data(px + r * _cos, py + r * _sin)
+            else:
+                circles2[i].set_data([], [])
+
+            # Testo stato
+            if sig < ARTVA_DETECT_THR:
+                st = "SRCH"
+            elif ti >= stop_steps.get(i, T):
+                st = "STOP"
+            else:
+                st = "TRCK"
             err = np.linalg.norm(traj[ti, :3] - est[ti_e, :3])
-            lines.append(f"D{i}: {st}  z={traj[ti,2]:.1f}m  Δ={err:.2f}m")
+            lines.append(f"D{i}: {st}  z={traj[ti, 2]:.1f}m  Δ={err:.2f}m")
 
         info.set_text("\n".join(lines))
         return all_artists

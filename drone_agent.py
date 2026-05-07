@@ -209,10 +209,18 @@ class DroneAgent:
         """
         Inizializza la direzione di ricerca al momento del primo rilevamento.
 
-        Punta verso il prossimo waypoint lawnmower: sfrutta il momentum della
-        traiettoria di ricerca come stima iniziale della direzione verso la
-        sorgente. Fallback: velocità stimata, o asse Est.
+        Droni di supporto (waypoints = [support_wp]): puntano verso il loro
+        unico waypoint, già orientato verso la zona della vittima.
+        Droni normali: usano il momentum del lawnmower verso il prossimo wp.
+        Fallback: velocità stimata, o asse Est.
         """
+        if len(self.waypoints) == 1:
+            delta = self.waypoints[0][:2] - self.x_est[:2]
+            norm  = np.linalg.norm(delta)
+            if norm > 1e-3:
+                self.track_dir = delta / norm
+                return
+
         next_idx  = min(self.wp_idx + 1, len(lawnmower_wps) - 1)
         delta     = lawnmower_wps[next_idx][:2] - self.x_est[:2]
         norm      = np.linalg.norm(delta)

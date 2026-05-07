@@ -26,7 +26,7 @@ import numpy as np
 
 from config import (
     N_DRONES, AGL_HEIGHT, N_SIM, DT_SIM, SIGMA_ACC_SIM,
-    ARTVA_MOMENT, ARTVA_DETECT_THR, ARTVA_NOISE_STD,
+    ARTVA_MOMENT, ARTVA_DETECT_THR, ARTVA_NOISE_STD, VICTIM_XY, VICTIM_DEPTH,
 )
 from terrain import build_terrain
 from artva import ARTVASource
@@ -75,11 +75,14 @@ def main() -> None:
         terrain_obj.y_min + 5.0,
     ])
 
-    # — Posizione vittima (casuale nell'area centrale) —
-    rng_main = np.random.default_rng(args.seed)
-    victim_x = rng_main.uniform(terrain_obj.x_min + 30, terrain_obj.x_max - 30)
-    victim_y = rng_main.uniform(terrain_obj.y_min + 30, terrain_obj.y_max - 30)
-    victim_z = terrain_obj.z(victim_x, victim_y) - 0.5   # sepolta 0.5 m
+    # — Posizione vittima —
+    if VICTIM_XY is not None:
+        victim_x, victim_y = float(VICTIM_XY[0]), float(VICTIM_XY[1])
+    else:
+        rng_main = np.random.default_rng(args.seed)
+        victim_x = rng_main.uniform(terrain_obj.x_min + 30, terrain_obj.x_max - 30)
+        victim_y = rng_main.uniform(terrain_obj.y_min + 30, terrain_obj.y_max - 30)
+    victim_z = terrain_obj.z(victim_x, victim_y) - VICTIM_DEPTH
 
     artva = ARTVASource(
         position=np.array([victim_x, victim_y, victim_z]),
