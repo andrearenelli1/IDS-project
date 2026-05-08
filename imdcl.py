@@ -6,10 +6,6 @@ Implementazione basata su:
   A Recursive Decentralized Algorithm Based on Kalman-Filter Decoupling"
   IEEE Control Systems Magazine, April 2016.
 
-Struttura
----------
-MotionModel   – interfaccia astratta per il modello di moto (sostituibile).
-UnicycleModel – implementazione concreta per robot unicycle su piano 2-D.
 AgentIMDCL    – agente che esegue l'algoritmo IMDCL (Algorithm 2 del paper).
 """
 
@@ -20,204 +16,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from model import MotionModel, PointMass3DModel
 
 
 # ---------------------------------------------------------------------------
-# Tipi di comodo
+# Tipi
 # ---------------------------------------------------------------------------
 Vector = np.ndarray   # colonna (n,) o (n,1)
 Matrix = np.ndarray   # matrice 2-D
-
-
-# ===========================================================================
-# Interfaccia del modello di moto
-# ===========================================================================
-
-class MotionModel(abc.ABC):
-    """
-    Interfaccia astratta per il modello di moto di un agente.
-
-    Sottoclassifica questa classe per supportare cinematiche diverse
-    (unicycle, quadrotor, AUV, …).  L'unico requisito è implementare
-    i quattro metodi astratti qui sotto.
-    """
-
-    @property
-    @abc.abstractmethod
-    def state_dim(self) -> int:
-        """Dimensione del vettore di stato n_i."""
-
-    @property
-    @abc.abstractmethod
-    def noise_dim(self) -> int:
-        """Dimensione del vettore di rumore di processo p_i."""
-
-    @abc.abstractmethod
-    def f(self, x: Vector, u: Vector, dt: float) -> Vector:
-        """
-        Propagazione deterministica dello stato.
-
-        Restituisce  f^i(x^i, u^i)  (Eq. 1 del paper).
-        """
-
-    @abc.abstractmethod
-    def F_jacobian(self, x: Vector, u: Vector, dt: float) -> Matrix:
-        """
-        Jacobiano di f rispetto allo stato: ∂f/∂x  (matrice F^i).
-        """
-
-    @abc.abstractmethod
-    def G_jacobian(self, x: Vector, dt: float) -> Matrix:
-        """
-        Jacobiano di f rispetto al rumore: ∂f/∂η  (matrice G^i).
-        """
-
-    @abc.abstractmethod
-    def Q(self, dt: float) -> Matrix:
-        """Covarianza del rumore di processo Q^i(k)."""
-
-
-# ===========================================================================
-# Modello di moto unicycle (2-D)
-# ===========================================================================
-
-class UnicycleModel(MotionModel):
-    """
-    Modello unicycle discreto su piano 2-D.
-
-    Stato  : x = [px, py, θ]^T
-    Ingresso: u = [v, ω]^T   (velocità lineare e angolare *misurate*)
-    Rumore  : η = [η_v, η_ω]^T  (rumore additivo sulle misure odometriche)
-
-    Equazione di moto (Eulero):
-        px(k+1) = px(k) + v·cos(θ)·dt
-        py(k+1) = py(k) + v·sin(θ)·dt
-        θ(k+1)  = θ(k)  + ω·dt
-
-    Il rumore entra tramite la stessa struttura:
-        G·η  con  G = [cos(θ)·dt, 0; sin(θ)·dt, 0; 0, dt]
-    """
-
-    def __init__(self, sigma_v: float, sigma_omega: float) -> None:
-        """
-        Parameters
-        ----------
-        sigma_v     : deviazione standard del rumore sulla velocità lineare [m/s].
-        sigma_omega : deviazione standard del rumore sulla velocità angolare [rad/s].
-        """
-        self._sigma_v = sigma_v
-        self._sigma_omega = sigma_omega
-
-    @property
-    def state_dim(self) -> int:
-        return 3
-
-    @property
-    def noise_dim(self) -> int:
-        return 2
-
-    def f(self, x: Vector, u: Vector, dt: float) -> Vector:
-        px, py, th = x.ravel()
-        v, w = u.ravel()
-        return np.array([
-            px + v * np.cos(th) * dt,
-            py + v * np.sin(th) * dt,
-            th + w * dt,
-        ])
-
-    def F_jacobian(self, x: Vector, u: Vector, dt: float) -> Matrix:
-        _, _, th = x.ravel()
-        v, _ = u.ravel()
-        return np.array([
-            [1.0, 0.0, -v * np.sin(th) * dt],
-            [0.0, 1.0,  v * np.cos(th) * dt],
-            [0.0, 0.0,  1.0],
-        ])
-
-    def G_jacobian(self, x: Vector, dt: float) -> Matrix:
-        _, _, th = x.ravel()
-        return np.array([
-            [np.cos(th) * dt, 0.0],
-            [np.sin(th) * dt, 0.0],
-            [0.0,             dt],
-        ])
-
-    def Q(self, dt: float) -> Matrix:
-        return np.diag([self._sigma_v**2, self._sigma_omega**2])
-
-
-# ===========================================================================
-# Modello di moto massa puntiforme 3-D (controllo in accelerazione)
-# ===========================================================================
-
-class PointMass3DModel(MotionModel):
-    """
-    Massa puntiforme in 3-D controllata in accelerazione, con dinamica
-    discreta di tipo doppio integratore (zero-order-hold esatto).
-
-    Stato   : x = [px, py, pz, vx, vy, vz]^T   (posizione + velocità)
-    Ingresso: u = [ax, ay, az]^T                 (accelerazione comandata,
-                                                  già compensata dalla gravità
-                                                  se necessario)
-    Rumore  : η = [ηax, ηay, ηaz]^T              (rumore additivo sull'accel.)
-
-    Discretizzazione ZOH (esatta per sistemi lineari):
-        p(k+1) = p(k) + v(k)·dt + ½·(u(k) + η(k))·dt²
-        v(k+1) = v(k) + (u(k) + η(k))·dt
-
-    In forma matriciale:
-        x(k+1) = F·x(k) + B·u(k) + G·η(k)
-
-    con:
-        F = [[I₃, dt·I₃],   B = G = [[½dt²·I₃],
-             [0₃,    I₃]]             [   dt·I₃]]
-
-    Il modello è lineare → F_jacobian = F, G_jacobian = G (costanti).
-
-    Parameters
-    ----------
-    sigma_acc : deviazione standard del rumore di accelerazione [m/s²]
-                (uguale per i tre assi; passare un array (3,) per valori
-                 diversi per asse).
-    """
-
-    def __init__(self, sigma_acc: float | np.ndarray) -> None:
-        sigma = np.broadcast_to(np.asarray(sigma_acc, dtype=float), (3,)).copy()
-        self._sigma_acc = sigma   # (3,)
-
-    @property
-    def state_dim(self) -> int:
-        return 6   # [px, py, pz, vx, vy, vz]
-
-    @property
-    def noise_dim(self) -> int:
-        return 3   # [ηax, ηay, ηaz]
-
-    def _F(self, dt: float) -> Matrix:
-        I3 = np.eye(3)
-        return np.block([[I3, dt * I3],
-                         [np.zeros((3, 3)), I3]])
-
-    def _G(self, dt: float) -> Matrix:
-        I3 = np.eye(3)
-        return np.block([[0.5 * dt**2 * I3],
-                         [dt * I3]])
-
-    def f(self, x: Vector, u: Vector, dt: float) -> Vector:
-        """x(k+1) = F·x(k) + G·u(k)  (il rumore è separato in G·η)."""
-        return self._F(dt) @ x.ravel() + self._G(dt) @ u.ravel()
-
-    def F_jacobian(self, x: Vector, u: Vector, dt: float) -> Matrix:
-        """Jacobiano di f rispetto a x — costante (modello lineare)."""
-        return self._F(dt)
-
-    def G_jacobian(self, x: Vector, dt: float) -> Matrix:
-        """Jacobiano di f rispetto a η — costante (modello lineare)."""
-        return self._G(dt)
-
-    def Q(self, dt: float) -> Matrix:
-        """Covarianza del rumore di processo: diag(σ_ax², σ_ay², σ_az²)."""
-        return np.diag(self._sigma_acc**2)
 
 
 # ===========================================================================
@@ -723,60 +529,14 @@ class AgentIMDCL:
 # ===========================================================================
 
 if __name__ == "__main__":
-    """
-    Scenario semplice: 3 robot unicycle su piano 2-D.
-
-    - Tutti i robot si propagano localmente.
-    - Il robot 0 prende una misura relativa rispetto al robot 1.
-    - Tutti gli agenti ricevono il messaggio di aggiornamento.
-    """
-    rng = np.random.default_rng(42)
-
-    TEAM = [0, 1, 2]
-    DT = 0.1   # s
-
-    # Modello di moto (stesso per tutti, ma possono essere diversi)
-    model = UnicycleModel(sigma_v=0.05, sigma_omega=0.01)
-
-    # Inizializzazione agenti
-    agents = {
-        0: AgentIMDCL(0, x0=[0.0, 0.0, 0.0],   P0=np.diag([0.1, 0.1, 0.01]), team_ids=TEAM, motion_model=model),
-        1: AgentIMDCL(1, x0=[1.0, 0.0, 0.0],   P0=np.diag([0.1, 0.1, 0.01]), team_ids=TEAM, motion_model=model),
-        2: AgentIMDCL(2, x0=[0.5, 1.0, np.pi/4], P0=np.diag([0.1, 0.1, 0.01]), team_ids=TEAM, motion_model=model),
-    }
-
-    print("=== Stato iniziale ===")
-    for ag in agents.values():
-        print(ag)
-
-    # ---------- Passo 1: propagazione locale (nessuna comunicazione) ----------
-    u = np.array([0.5, 0.1])   # v=0.5 m/s, ω=0.1 rad/s (uguale per tutti, esempio)
-    for ag in agents.values():
-        ag.propagate(u, DT)
-
-    print("\n=== Dopo propagazione ===")
-    for ag in agents.values():
-        print(ag)
-
-    # ---------- Passo 2: misura relativa tra agente 0 (master) e agente 1 (landmark) ----------
-    master   = agents[0]
-    landmark = agents[1]
-
-    # Misura simulata (ground truth + rumore)
-    R_meas = np.diag([0.05**2, 0.05**2, (np.pi/180)**2])
-    h_true, _, _ = relative_pose_measurement(master.x_hat, landmark.x_hat)
-    z_ab = h_true + rng.multivariate_normal(np.zeros(3), R_meas)
-
-    # Landmark invia il suo messaggio al master
-    lm_msg = landmark.make_landmark_message()
-
-    # Master calcola l'update-message
-    upd_msg = master.compute_update_message(lm_msg, z_ab, R_meas)
-
-    # Tutti gli agenti applicano l'aggiornamento (broadcast)
-    for ag in agents.values():
-        ag.apply_update(upd_msg)
-
-    print("\n=== Dopo aggiornamento cooperativo (misura 0→1) ===")
-    for ag in agents.values():
-        print(ag)
+    # Esempio di istanziazione di un agente IMDCL con modello di moto
+    # PointMass3DModel e rumore di accelerazione σ_acc = 0.1 m/s².
+    motion_model = PointMass3DModel(sigma_acc=0.1)
+    agent = AgentIMDCL(
+        agent_id=1,
+        x0=np.zeros(6),          # stato iniziale: posizione e velocità nulle
+        P0=np.eye(6) * 0.5,     # covarianza iniziale: incertezza moderata
+        team_ids=[1, 2, 3],     # id del team (incluso questo agente)
+        motion_model=motion_model,
+    )
+    print(agent)
