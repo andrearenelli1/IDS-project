@@ -46,3 +46,4 @@ Thumbs.db
 # Python #
 ######################
 .pyc
+__pycache__/
