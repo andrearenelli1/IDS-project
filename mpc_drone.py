@@ -28,88 +28,79 @@ Utilizzo
     python mpc_drone.py               # lancia la simulazione con plot
 """
 
-import sys
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from mpl_toolkits.mplot3d import Axes3D   # noqa: F401
-from time import perf_counter
+import sys                              # to manage sys.path for imports
+import os                               # to get script directory for imports
+import numpy as np                      # numpy
+import matplotlib.pyplot as plt         # for plotting
+import matplotlib.patches as mpatches   # for legend handles
+from mpl_toolkits.mplot3d import Axes3D # needed for 3D plotting
+from time import perf_counter           # for timing the solver
 
 try:
     import casadi as cs
 except ImportError:
-    raise ImportError(
-        "CasADi non trovato. Installalo con:  pip install casadi"
-    )
+    raise ImportError("CasADi not found. Install it with: pip install casadi")
 
+# Add the script directory to sys.path to ensure we can import imdcl.py
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from imdcl import PointMass3DModel
 
+# ============================= PARAMETERS =============================
 
-# ===========================================================================
-# Parametri globali (modificabili)
-# ===========================================================================
+N_MPC   = 20     # [-] MPC horizon steps
+DT_MPC  = 0.1    # [s] MPC sampling time
 
-# Orizzonte MPC e passo temporale
-N_MPC   = 20
-DT_MPC  = 0.1    # [s]
+W_P     = 1e2   # position weight
+W_V     = 1e0   # speed weight
+W_A     = 1e-1  # acceleration weight (input)
+W_FINAL_P = 1e3   # terminal position weight
+W_FINAL_V = 1e1   # terminal speed weight
 
-# Pesi costo
-W_POS     = 1e2   # peso sulla posizione
-W_VEL     = 1e0   # peso sulla velocità
-W_ACC     = 1e-1  # peso sull'accelerazione (ingresso)
-W_FINAL_P = 1e3   # peso terminale sulla posizione
-W_FINAL_V = 1e1   # peso terminale sulla velocità
+Ax_MAX = 6.0   # [m/s²] maximum acceleration
+Ay_MAX = 6.0   # [m/s²] maximum acceleration
+Az_MAX = 6.0   # [m/s²] maximum acceleration
+A_MAX = np.sqrt(Ax_MAX**2 + Ay_MAX**2 + Az_MAX**2)  # [m/s²] max acceleration norm
+Vx_MAX = 5.0   # [m/s]  maximum velocity
+Vy_MAX = 5.0   # [m/s]  maximum velocity
+Vz_MAX = 5.0   # [m/s]  maximum velocity
+V_MAX = np.sqrt(Vx_MAX**2 + Vy_MAX**2 + Vz_MAX**2)  # [m/s] max velocity norm
 
-# Saturazioni
-A_MAX = 6.0   # [m/s²]  per asse
-V_MAX = 5.0   # [m/s]   per asse
+SOLVER_TOLERANCE     = 1e-4  # IPOPT tol, constr_viol_tol, compl_inf_tol
+SOLVER_MAX_ITER      = 3     # IPOPT maximum iterations after warm-start
+SOLVER_MAX_ITER_INIT = 1000  # IPOPT maximum iterations for warm-start
 
-# Tolleranza convergenza IPOPT
-SOLVER_TOLERANCE = 1e-4
-SOLVER_MAX_ITER  = 3      # iterazioni per i passi MPC (dopo warm-start)
-SOLVER_MAX_ITER_INIT = 1000  # iterazioni per il primo solve (warm-start)
+N_SIM       = 200    # simulation maximum steps
+DT_SIM      = DT_MPC # simulation time step (for now equal to MPC)
+SIGMA_ACC   = 0.05   # [m/s²] acceleration noise std.dev.
+STOP_THRESH = 0.05   # [m]  stop threshold to consider a waypoint reached
 
-# Simulazione
-N_SIM       = 200         # passi massimi
-DT_SIM      = DT_MPC     # passo simulazione = passo MPC
-SIGMA_ACC   = 0.05        # [m/s²] rumore additivo sull'accelerazione
-STOP_THRESH = 0.05        # [m]  soglia di arrivo
-
-
-# ===========================================================================
-# Controllore MPC
-# ===========================================================================
+# ============================= MPC =============================
 
 class DroneMPC:
-    """
-    Controllore MPC per drone (massa puntiforme 3-D) con CasADi Opti.
-
-    Parameters
-    ----------
-    dt    : passo di campionamento [s]
-    N     : orizzonte di predizione
-    a_max : accelerazione massima per asse [m/s²]
-    v_max : velocità massima per asse [m/s]
-    """
-
     def __init__(
         self,
         dt:    float = DT_MPC,
         N:     int   = N_MPC,
-        a_max: float = A_MAX,
-        v_max: float = V_MAX,
-    ) -> None:
+        ax_max: float = Ax_MAX,
+        ay_max: float = Ay_MAX,
+        az_max: float = Az_MAX,
+        vx_max: float = Vx_MAX,
+        vy_max: float = Vy_MAX,
+        vz_max: float = Vz_MAX,
+    ) -> None: 
         self.dt    = dt
         self.N     = N
-        self.a_max = a_max
-        self.v_max = v_max
+        self.ax_max = ax_max
+        self.ay_max = ay_max
+        self.az_max = az_max
+        self.vx_max = vx_max
+        self.vy_max = vy_max
+        self.vz_max = vz_max
 
-        nx, nu = 6, 3
+        nx, nu = 6, 3   # state and input dimensions
         self.nx = nx
         self.nu = nu
 
@@ -120,8 +111,8 @@ class DroneMPC:
         self.B_np = np.block([[0.5 * dt**2 * I3], [dt * I3]])    # 6×3
 
         # Matrici peso
-        self.Q   = np.diag([W_POS, W_POS, W_POS, W_VEL, W_VEL, W_VEL])
-        self.R   = np.diag([W_ACC, W_ACC, W_ACC])
+        self.Q   = np.diag([W_P, W_P, W_P, W_V, W_V, W_V])
+        self.R   = np.diag([W_A, W_A, W_A])
         self.P_f = np.diag([W_FINAL_P, W_FINAL_P, W_FINAL_P,
                             W_FINAL_V, W_FINAL_V, W_FINAL_V])
 
@@ -140,24 +131,19 @@ class DroneMPC:
         self.param_x0    = opti.parameter(nx)   # stato corrente
         self.param_x_ref = opti.parameter(nx)   # stato di riferimento
 
-        # — Variabili di decisione —
+        # States and inputs
         X = [opti.variable(nx) for _ in range(N + 1)]
         U = [opti.variable(nu) for _ in range(N)]
 
-        # Bounds sugli stati (solo velocità)
+        # Velocity bounds
         for k in range(N + 1):
-            opti.subject_to(opti.bounded(-v_max_vec(self.v_max),
-                                         X[k][3:], v_max_vec(self.v_max)))
+            opti.subject_to(opti.bounded(np.array([-self.vx_max, -self.vy_max, -self.vz_max]), X[k][3:], np.array([self.vx_max, self.vy_max, self.vz_max])))
 
-        # Bounds sugli ingressi (accelerazione)
+        # Input acceleration bounds
         for k in range(N):
-            opti.subject_to(opti.bounded(
-                -self.a_max * np.ones(nu),
-                 U[k],
-                  self.a_max * np.ones(nu),
-            ))
+            opti.subject_to(opti.bounded(np.array([-self.ax_max, -self.ay_max, -self.az_max]), U[k], np.array([self.ax_max, self.ay_max, self.az_max])))
 
-        # — Funzione costo —
+        # Cost Function
         F_cs = cs.DM(self.F_np)
         B_cs = cs.DM(self.B_np)
         Q_cs = cs.DM(self.Q)
@@ -173,12 +159,12 @@ class DroneMPC:
 
         opti.minimize(cost)
 
-        # — Vincoli di dinamica —
+        # Drone Dynamics Model
         opti.subject_to(X[0] == self.param_x0)
         for k in range(N):
             opti.subject_to(X[k + 1] == F_cs @ X[k] + B_cs @ U[k])
 
-        # — Opzioni solver —
+        # Solver Options
         opts_init = {
             "ipopt.print_level":      0,
             "ipopt.tol":              SOLVER_TOLERANCE,
@@ -278,10 +264,7 @@ class DroneMPC:
 def v_max_vec(v_max: float) -> np.ndarray:
     return v_max * np.ones(3)
 
-
-# ===========================================================================
-# Simulazione
-# ===========================================================================
+# ============================= SIMULATION =============================
 
 def simulate(
     starts:   dict,
@@ -487,8 +470,8 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
         ax_u.plot(time_u[i], np.linalg.norm(us, axis=1),
                   color=c, lw=1.5, label=f"Drone {i}")
 
-    ax_u.axhline(A_MAX * np.sqrt(3), color="grey", lw=1.0, ls="--",
-                 alpha=0.6, label=f"|u|₂ max = {A_MAX*np.sqrt(3):.2f}")
+    ax_u.axhline(A_MAX, color="grey", lw=1.0, ls="--",
+                 alpha=0.6, label=f"|u|₂ max = {A_MAX:.2f}")
     ax_u.set_xlabel("Tempo [s]", fontsize=8)
     ax_u.set_ylabel("|u|₂  [m/s²]", fontsize=8)
     ax_u.set_title("Norma accelerazione", fontsize=9, fontweight="bold", pad=3)

@@ -203,7 +203,7 @@ def build_agents(
         wps  = lawnmower_waypoints(
             i, n_drones, x_min, x_max, y_min, y_max, terrain, agl=agl
         )
-        ctrl = DroneMPC(dt=DT_MPC, N=N_MPC, a_max=A_MAX, v_max=V_MAX)
+        ctrl = DroneMPC(dt=DT_MPC, N=N_MPC, ax_max=A_MAX, ay_max=A_MAX, az_max=A_MAX, vx_max=V_MAX, vy_max=V_MAX, vz_max=V_MAX)
         imdcl_agent = AgentIMDCL(
             agent_id=i,
             x0=x0.copy(),
