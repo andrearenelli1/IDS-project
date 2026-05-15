@@ -158,13 +158,18 @@ class DroneMPC:
             cost += w_p *error_p.T @ error_p
 
             # Add velocity tracking cost
-            error_v = X[k][nq:] - self.param_x_ref[nq:]
-            cost += w_v *error_v.T @ error_v
+            #error_v = X[k][nq:] - self.param_x_ref[nq:]
+            #cost += w_v *error_v.T @ error_v
+
+            # Add time minimization cost (on velocity).
+            #dv = cs.fabs(X[k][nq:]) - np.array([self.vx_max, self.vy_max, self.vz_max])
+            #cost += w_v * dv.T @ dv
 
             # Add time minimization cost (on inputs). We want to maximize the acceleration to be as fast as possible
             # dA = cs.fabs(U[k]) - np.array([self.ax_max, self.ay_max, self.az_max])
             # cost += w_a * dA.T @ dA
 
+            #penalize input cost
             cost+= w_a * U[k].T @ U[k]
 
             # Add discrete-time dynamics constraint
