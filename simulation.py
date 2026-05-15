@@ -322,7 +322,7 @@ def build_agents(
 
     print("Warm-start MPC droni...")
     for i, ag in agents.items():
-        ag.ctrl.warm_start(ag.x_est, ag.current_target())
+        ag.ctrl.first_step(ag.x_est, ag.current_target())
         print(f"  Drone {i}: wp[0]={ag.current_target().round(1)}")
 
     return agents

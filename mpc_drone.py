@@ -53,19 +53,19 @@ from imdcl import PointMass3DModel
 N_MPC   = 20     # [-] MPC horizon steps
 DT_MPC  = 0.1    # [s] MPC sampling time
 
-W_P     = 1e2   # position weight
-W_V     = 1e0   # speed weight
-W_A     = 1e-1  # acceleration weight (input)
-W_FINAL_P = 1e3   # terminal position weight
-W_FINAL_V = 1e1   # terminal speed weight
+W_P       = 1e2   # position weight 2
+W_V       = 1e0   # speed weight -1
+W_A       = 1e-1  # acceleration weight (input) 0
+W_FINAL_P = 1e3   # terminal weight 3-1
+W_FINAL_V = 1e1     
 
-Ax_MAX = 6.0   # [m/s²] maximum acceleration
-Ay_MAX = 6.0   # [m/s²] maximum acceleration
-Az_MAX = 6.0   # [m/s²] maximum acceleration
+Ax_MAX = 2*9.81   # [m/s²] maximum acceleration
+Ay_MAX = 2*9.81   # [m/s²] maximum acceleration
+Az_MAX = 5*9.81   # [m/s²] maximum acceleration
 A_MAX = np.sqrt(Ax_MAX**2 + Ay_MAX**2 + Az_MAX**2)  # [m/s²] max acceleration norm
-Vx_MAX = 5.0   # [m/s]  maximum velocity
-Vy_MAX = 5.0   # [m/s]  maximum velocity
-Vz_MAX = 5.0   # [m/s]  maximum velocity
+Vx_MAX = 20.0   # [m/s]  maximum velocity
+Vy_MAX = 20.0   # [m/s]  maximum velocity
+Vz_MAX = 10.0   # [m/s]  maximum velocity
 V_MAX = np.sqrt(Vx_MAX**2 + Vy_MAX**2 + Vz_MAX**2)  # [m/s] max velocity norm
 
 SOLVER_TOLERANCE     = 1e-4  # IPOPT tol, constr_viol_tol, compl_inf_tol
@@ -77,8 +77,7 @@ DT_SIM      = DT_MPC # simulation time step (for now equal to MPC)
 SIGMA_ACC   = 0.05   # [m/s²] acceleration noise std.dev.
 STOP_THRESH = 0.05   # [m]  stop threshold to consider a waypoint reached
 
-# ============================= MPC =============================
-
+# ================================ MPC ================================
 class DroneMPC:
     def __init__(
         self,
@@ -111,60 +110,74 @@ class DroneMPC:
         self.B_np = np.block([[0.5 * dt**2 * I3], [dt * I3]])    # 6×3
 
         # Matrici peso
-        self.Q   = np.diag([W_P, W_P, W_P, W_V, W_V, W_V])
-        self.R   = np.diag([W_A, W_A, W_A])
-        self.P_f = np.diag([W_FINAL_P, W_FINAL_P, W_FINAL_P,
-                            W_FINAL_V, W_FINAL_V, W_FINAL_V])
+        self.w_p = W_P
+        self.w_v = W_V
+        self.w_a = W_A
+        self.w_finalp = W_FINAL_P
+        self.w_finalv = W_FINAL_V
 
         # Costruisce il problema Opti (una sola volta)
         self._build_opti()
-        self._sol = None   # terrà l'ultima soluzione per warm-start
+        self._sol = None
 
-    # ------------------------------------------------------------------
+    # ----------------- BUILD OPTI PROBLEM -----------------
     def _build_opti(self):
-        """Costruisce il problema di ottimizzazione con cs.Opti."""
-        nx, nu, N = self.nx, self.nu, self.N
-
-        opti = cs.Opti()
-
-        # — Parametri (aggiornati a ogni passo MPC) —
-        self.param_x0    = opti.parameter(nx)   # stato corrente
-        self.param_x_ref = opti.parameter(nx)   # stato di riferimento
-
-        # States and inputs
-        X = [opti.variable(nx) for _ in range(N + 1)]
-        U = [opti.variable(nu) for _ in range(N)]
-
-        # Velocity bounds
-        for k in range(N + 1):
-            opti.subject_to(opti.bounded(np.array([-self.vx_max, -self.vy_max, -self.vz_max]), X[k][3:], np.array([self.vx_max, self.vy_max, self.vz_max])))
-
-        # Input acceleration bounds
-        for k in range(N):
-            opti.subject_to(opti.bounded(np.array([-self.ax_max, -self.ay_max, -self.az_max]), U[k], np.array([self.ax_max, self.ay_max, self.az_max])))
-
-        # Cost Function
+        nx, nu, N, w_p, w_v, w_a, w_finalp, w_finalv = self.nx, self.nu, self.N, self.w_p, self.w_v, self.w_a, self.w_finalp, self.w_finalv
+        nq = nx//2  # number of components
         F_cs = cs.DM(self.F_np)
         B_cs = cs.DM(self.B_np)
-        Q_cs = cs.DM(self.Q)
-        R_cs = cs.DM(self.R)
-        Pf_cs= cs.DM(self.P_f)
+        opti = cs.Opti() # create the problem instance
 
-        cost = 0
+        # fixed parameters (changed at each MPC step with "self._opti.set_value(..., ...)")
+        self.param_x0    = opti.parameter(nx)   # current state
+        self.param_x_ref = opti.parameter(nx)   # reference state (target pos + zero vel)
+        
+        # Speed and acceleration bounds
+        lbx = np.array([-np.inf, -np.inf, -np.inf, -self.vx_max, -self.vy_max, -self.vz_max]).tolist()
+        ubx = np.array([np.inf, np.inf, np.inf, self.vx_max, self.vy_max, self.vz_max]).tolist()
+        lbu = np.array([-self.ax_max, -self.ay_max, -self.az_max]).tolist()
+        ubu = np.array([self.ax_max, self.ay_max, self.az_max]).tolist()
+
+        # Create states and input (decision variables) for Opti with bounds
+        X, U = [], []
+        for _ in range(N + 1):
+            X += [opti.variable(nx)]
+            opti.subject_to(opti.bounded(lbx, X[-1], ubx))
+        for _ in range(N):
+            U += [opti.variable(nu)]
+            opti.subject_to(opti.bounded(lbu, U[-1], ubu))
+
+        # ------- COST FUNCTION -------
+        # Constrain the initial state X[0] to be equal to the initial condition
+        opti.subject_to(X[0] == self.param_x0)
+
+        cost = 0.0
         for k in range(N):
-            dx    = X[k] - self.param_x_ref
-            cost += dx.T @ Q_cs @ dx + U[k].T @ R_cs @ U[k]
-        dx_N  = X[N] - self.param_x_ref
-        cost += dx_N.T @ Pf_cs @ dx_N
+            # Add trajectory tracking cost
+            error_p = X[k][:nq] - self.param_x_ref[:nq]
+            cost += w_p *error_p.T @ error_p
+
+            # Add velocity tracking cost
+            error_v = X[k][nq:] - self.param_x_ref[nq:]
+            cost += w_v *error_v.T @ error_v
+
+            # Add time minimization cost (on inputs). We want to maximize the acceleration to be as fast as possible
+            # dA = cs.fabs(U[k]) - np.array([self.ax_max, self.ay_max, self.az_max])
+            # cost += w_a * dA.T @ dA
+
+            cost+= w_a * U[k].T @ U[k]
+
+            # Add discrete-time dynamics constraint
+            opti.subject_to(X[k + 1] == F_cs @ X[k] + B_cs @ U[k])
+        # terminal cost
+        error_pN  = X[N][:nq] - self.param_x_ref[:nq]
+        cost += w_finalp * error_pN.T @ error_pN
+        error_vN  = X[N][nq:] - self.param_x_ref[nq:]
+        cost += w_finalv * error_vN.T @ error_vN
 
         opti.minimize(cost)
 
-        # Drone Dynamics Model
-        opti.subject_to(X[0] == self.param_x0)
-        for k in range(N):
-            opti.subject_to(X[k + 1] == F_cs @ X[k] + B_cs @ U[k])
-
-        # Solver Options
+        # Solver Options for initial warm start
         opts_init = {
             "ipopt.print_level":      0,
             "ipopt.tol":              SOLVER_TOLERANCE,
@@ -176,96 +189,69 @@ class DroneMPC:
         }
         opti.solver("ipopt", opts_init)
 
+        # Solver options after warm-start
+        self._opts_mpc = {**opts_init, "ipopt.max_iter": SOLVER_MAX_ITER,}
+
         self._opti = opti
         self._X    = X
         self._U    = U
 
-        # Opzioni ridotte per i passi a regime (sostituite dopo il warm-start)
-        self._opts_mpc = {
-            **opts_init,
-            "ipopt.max_iter": SOLVER_MAX_ITER,
-        }
-
-    # ------------------------------------------------------------------
+    # ------------------- BUILD REFERENCE -------------------
     def _x_ref_from_target(self, target: np.ndarray) -> np.ndarray:
-        """Costruisce lo stato di riferimento: target pos + velocità zero."""
+        # build x_ref = [target_x, target_y, target_z, 0, 0, 0]
+        # TODO: complex referece with non-zero velocity (e.g. for tracking a moving target)
         x_ref = np.zeros(self.nx)
         x_ref[:3] = np.asarray(target, dtype=float).ravel()[:3]
         return x_ref
 
-    # ------------------------------------------------------------------
-    def warm_start(self, x0: np.ndarray, target: np.ndarray) -> None:
-        """
-        Primo solve a convergenza completa (SOLVER_MAX_ITER_INIT iter).
-        Va chiamato una volta prima del loop MPC.
-        """
+    # --- FIRST STEP (full iterations, strict tolerance)----
+    def first_step(self, x0: np.ndarray, target: np.ndarray) -> None:
         x_ref = self._x_ref_from_target(target)
         self._opti.set_value(self.param_x0,    x0)
         self._opti.set_value(self.param_x_ref, x_ref)
         self._sol = self._opti.solve()
 
-        # Dopo il warm-start, abbassa il limite di iterazioni
+        # Then switch to the faster settings for the MPC steps
         self._opti.solver("ipopt", self._opts_mpc)
 
-    # ------------------------------------------------------------------
+    # ---------------------- MPC STEP ----------------------
     def step(self, x0: np.ndarray, target: np.ndarray) -> np.ndarray:
-        """
-        Un passo MPC: aggiorna parametri, shifta la soluzione precedente
-        come initial guess, risolve, restituisce u*(0).
-
-        Parameters
-        ----------
-        x0     : stato corrente (6,)
-        target : punto target 3-D (3,)
-
-        Returns
-        -------
-        u_opt : accelerazione ottima (3,)
-        """
         N   = self.N
         sol = self._sol
 
-        # — Shift dell'orizzonte (warm-start per il passo successivo) —
+        # Warm-start on the previous solution
         for k in range(N):
             self._opti.set_initial(self._X[k], sol.value(self._X[k + 1]))
         for k in range(N - 1):
             self._opti.set_initial(self._U[k], sol.value(self._U[k + 1]))
-        # Ultimi valori: replica l'ultimo elemento
+
         self._opti.set_initial(self._X[N], sol.value(self._X[N]))
         self._opti.set_initial(self._U[N - 1], sol.value(self._U[N - 1]))
 
-        # Warm-start sui moltiplicatori di Lagrange
+        # Warm-start on the Lagrange multipliers
         lam_g0 = sol.value(self._opti.lam_g)
         self._opti.set_initial(self._opti.lam_g, lam_g0)
 
-        # — Aggiorna parametri —
+        # Update parameters
         x_ref = self._x_ref_from_target(target)
         self._opti.set_value(self.param_x0,    x0)
         self._opti.set_value(self.param_x_ref, x_ref)
 
-        # — Risolvi —
+        # Solve
         try:
             self._sol = self._opti.solve()
         except Exception:
-            # Se IPOPT non converge entro max_iter usa la soluzione debug
+            # If IPOPT fails to converge within max_iter, use the debug solution
+            print("Warning: MPC solver did not converge within the maximum iterations.")
             self._sol = self._opti.debug
 
         return np.array(self._sol.value(self._U[0])).ravel()
 
-    # ------------------------------------------------------------------
+    # ---------------- PREDICTED TRAJECTORY ----------------
     def predicted_trajectory(self) -> np.ndarray:
-        """Restituisce la traiettoria predetta (N+1)×6 dall'ultima soluzione."""
-        return np.array([
-            self._sol.value(self._X[k]).ravel()
-            for k in range(self.N + 1)
-        ])
-
-
-def v_max_vec(v_max: float) -> np.ndarray:
-    return v_max * np.ones(3)
+        return np.array([self._sol.value(self._X[k]).ravel() for k in range(self.N + 1)])
 
 # ============================= SIMULATION =============================
-
 def simulate(
     starts:   dict,
     targets:  dict,
@@ -324,7 +310,7 @@ def simulate(
     print("Warm-start iniziale...")
     for i in drone_ids:
         t0 = perf_counter()
-        ctrls[i].warm_start(x_cur[i], current_target(i))
+        ctrls[i].first_step(x_cur[i], current_target(i))
         n_wp = len(waypoints[i])
         print(f"  Drone {i}: warm-start in {perf_counter()-t0:.3f} s  "
               f"({n_wp} waypoint)")
@@ -384,6 +370,7 @@ def simulate(
             break
 
     return history, inputs, solve_t, waypoints
+
 
 
 # ===========================================================================
@@ -501,16 +488,17 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
                   fontsize=11, fontweight="bold")
     fig1.tight_layout(rect=[0, 0, 1, 0.96])
 
-    # ── Figura 2: posizione e velocità nel tempo ─────────────────────────────
-    fig2, axes = plt.subplots(3, 2, figsize=(14, 10), sharex="col")
+    # ── Figura 2: posizione, velocità e accelerazione nel tempo ─────────────
+    fig2, axes = plt.subplots(3, 3, figsize=(18, 10), sharex="col")
     fig2.patch.set_facecolor("#ffffff")
     comp_labels = ["x", "y", "z"]
 
     for row, comp in enumerate(range(3)):
-        ax_p, ax_v = axes[row, 0], axes[row, 1]
+        ax_p, ax_v, ax_a = axes[row, 0], axes[row, 1], axes[row, 2]
         for i in drone_ids:
             c    = COLORS.get(i, "#888888")
             traj = np.array(history[i])
+            acc  = np.array(inputs[i])
             ax_p.plot(time_x[i], traj[:, comp], color=c, lw=1.6,
                       label=f"Drone {i}")
             # Linea tratteggiata per ogni waypoint
@@ -518,21 +506,30 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
                 ax_p.axhline(wp[comp], color=c, lw=0.8, ls="--", alpha=0.4)
             ax_v.plot(time_x[i], traj[:, comp+3], color=c, lw=1.6,
                       label=f"Drone {i}")
+            ax_a.plot(time_u[i], acc[:, comp], color=c, lw=1.6,
+                      label=f"Drone {i}")
         ax_v.axhline( V_MAX, color="grey", lw=0.9, ls="--", alpha=0.5)
         ax_v.axhline(-V_MAX, color="grey", lw=0.9, ls="--", alpha=0.5)
+        a_max_axis = [Ax_MAX, Ay_MAX, Az_MAX][comp]
+        ax_a.axhline( a_max_axis, color="grey", lw=0.9, ls="--", alpha=0.5)
+        ax_a.axhline(-a_max_axis, color="grey", lw=0.9, ls="--", alpha=0.5)
         ax_p.set_ylabel(f"p{comp_labels[comp]} [m]", fontsize=9)
         ax_v.set_ylabel(f"v{comp_labels[comp]} [m/s]", fontsize=9)
-        for ax in (ax_p, ax_v):
+        ax_a.set_ylabel(f"a{comp_labels[comp]} [m/s²]", fontsize=9)
+        for ax in (ax_p, ax_v, ax_a):
             ax.grid(True, ls=":", alpha=0.4)
             ax.tick_params(labelsize=8)
             ax.set_facecolor("#f8f8f8")
         if row == 0:
             ax_p.set_title("Posizione", fontsize=10, fontweight="bold")
             ax_v.set_title("Velocità",  fontsize=10, fontweight="bold")
+            ax_a.set_title("Accelerazione", fontsize=10, fontweight="bold")
             ax_p.legend(fontsize=8, loc="upper right")
+            ax_a.legend(fontsize=8, loc="upper right")
         if row == 2:
             ax_p.set_xlabel("Tempo [s]", fontsize=9)
             ax_v.set_xlabel("Tempo [s]", fontsize=9)
+            ax_a.set_xlabel("Tempo [s]", fontsize=9)
     fig2.suptitle("MPC Droni 3-D — Stati nel tempo",
                   fontsize=11, fontweight="bold")
     fig2.tight_layout()
