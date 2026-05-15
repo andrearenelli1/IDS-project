@@ -103,7 +103,7 @@ def main() -> None:
 
     # — Simulazione —
     print("\nAvvio simulazione...\n")
-    agents = simulate(
+    agents, consensus_events = simulate(
         terrain=terrain_obj,
         artva=artva,
         agents=agents,
@@ -124,6 +124,7 @@ def main() -> None:
             terrain_obj, artva, agents,
             dt=DT_SIM, speed=2.0,
             save=args.save,
+            consensus_events=consensus_events,
         )
 
     plt.show()

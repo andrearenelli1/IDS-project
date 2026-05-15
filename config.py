@@ -65,6 +65,11 @@ DIST_EST_BATCH    = 5      # [-]     misure recenti usate per ogni aggiornamento
 TRIANGULATE_N_PARTNERS = 2  # droni chiamati in supporto al rilevamento
 
 # ============================================================================
+# Consenso distribuito selezione partner (min-consensus su grafo limitato)
+# ============================================================================
+CONSENSUS_K_MAX = 10   # iterazioni max: deve essere ≥ diametro stimato della rete
+
+# ============================================================================
 # MPC
 # ============================================================================
 DT_MPC  = 0.1    # [s]
@@ -78,8 +83,9 @@ V_MAX   = 3.0    # [m/s]
 IMDCL_SIGMA_ACC   = 0.05   # [m/s²] rumore processo del filtro
 IMDCL_P0_POS      = 0.5    # [m]    dev.std iniziale posizione
 IMDCL_P0_VEL      = 0.1    # [m/s]  dev.std iniziale velocità
-IMDCL_COMM_RADIUS = 50  # [m]    raggio comunicazione inter-drone
+IMDCL_COMM_RADIUS = 80  # [m]    raggio comunicazione inter-drone
 IMDCL_R_MEAS_STD  = 0.3    # [m]    dev.std misura relativa posizione
+IMDCL_PI_MAX_NORM = 1e4    # [a.u.] norma Frobenius massima per Pi_jl; oltre → reset a zero
 IMDCL_R_LIDAR_STD = 0.05   # [m]    dev.std misura LiDAR quota
 IMDCL_H_LIDAR     = np.array([[0., 0., 1., 0., 0., 0.]])  # H per pz (1×6)
 

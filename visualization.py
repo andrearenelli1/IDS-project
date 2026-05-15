@@ -334,14 +334,15 @@ def plot_mission(
 # ============================================================================
 
 def animate_mission(
-    terrain:   Terrain,
-    artva:     ARTVASource,
-    agents:    Dict[int, DroneAgent],
-    dt:        float = DT_SIM,
-    fps:       int   = 30,
-    speed:     float = 2.0,
-    save:      bool  = False,
-    save_path: str   = "mission_animation",
+    terrain:          Terrain,
+    artva:            ARTVASource,
+    agents:           Dict[int, DroneAgent],
+    dt:               float = DT_SIM,
+    fps:              int   = 30,
+    speed:            float = 2.0,
+    save:             bool  = False,
+    save_path:        str   = "mission_animation",
+    consensus_events: list  = None,
 ) -> FuncAnimation:
     """
     Animazione 3-D (sinistra) + vista overhead 2-D (destra).
@@ -456,13 +457,118 @@ def animate_mission(
 
     step_skip = max(1, int(round(1.0 / (dt * fps) * speed)))
     frame_idx = list(range(0, T, step_skip))
+
+    # ── Consensus overlay artists (2-D panel) ────────────────────────────
+    # Colours
+    _C_LINK    = "#ff3333"   # red  — active communication link
+    _C_HOVER   = "#ff0055"   # rose — hover drone ring
+    _C_INFORM  = "#ff9900"   # orange — newly-informed drone ring
+    _C_PARTNER = "#00ff88"   # green — selected partner ring
+
+    _FRAMES_PER_ROUND  = 6   # animation frames to show each consensus round
+    _PARTNER_LINGER    = 20  # extra frames to keep green partner rings
+
+    # Pre-compute which animation frames map to which consensus round
+    # Each entry: {'f_start', 'f_end', 'round', 'round_idx', 'n_rounds',
+    #              'hover_id', 'partners', 'show_partners',
+    #              'hover_pos', 'drone_pos'}
+    _csn_windows: List[dict] = []
+    if consensus_events:
+        for ev in consensus_events:
+            base_f     = ev['step'] // step_skip
+            n_rounds   = len(ev['rounds'])
+            hover_id   = ev['hover_id']
+            # Snapshot positions at the event step (fixed reference)
+            ev_step    = min(ev['step'], T - 1)
+            hover_pos2 = np.array(agents[hover_id].history[ev_step][:2])
+            drone_pos2 = {
+                did: np.array(agents[did].history[ev_step][:2])
+                for did in drone_ids
+            }
+            for r_idx, rnd in enumerate(ev['rounds']):
+                f_s = base_f + r_idx * _FRAMES_PER_ROUND
+                f_e = f_s + _FRAMES_PER_ROUND
+                is_last = (r_idx == n_rounds - 1)
+                _csn_windows.append({
+                    'f_start':       f_s,
+                    'f_end':         f_e + (_PARTNER_LINGER if is_last else 0),
+                    'round_end':     f_e,
+                    'round':         rnd,
+                    'round_idx':     r_idx,
+                    'n_rounds':      n_rounds,
+                    'hover_id':      hover_id,
+                    'partners':      ev['partners'],
+                    'show_partners': is_last,
+                    'hover_pos':     hover_pos2,
+                    'drone_pos':     drone_pos2,
+                })
+
+    # One comm-link Line2D per undirected pair (shared across all consensus events)
+    n_dr   = len(drone_ids)
+    _pairs = [
+        (drone_ids[a], drone_ids[b])
+        for a in range(n_dr) for b in range(a + 1, n_dr)
+    ]
+    comm_links = {}
+    for pair in _pairs:
+        comm_links[pair], = ax2.plot(
+            [], [], color=_C_LINK, lw=2.0, ls="--",
+            alpha=0.0, zorder=8, solid_capstyle="round",
+        )
+
+    # Per-drone rings (orange = informed, green = partner, red = hover)
+    informed_rings = {}
+    partner_rings  = {}
+    hover_rings    = {}
+    for i in drone_ids:
+        informed_rings[i], = ax2.plot(
+            [], [], "o", ms=20, mfc="none",
+            mec=_C_INFORM, mew=2.5, alpha=0.0, zorder=9,
+        )
+        partner_rings[i], = ax2.plot(
+            [], [], "o", ms=26, mfc="none",
+            mec=_C_PARTNER, mew=2.5, alpha=0.0, zorder=10,
+        )
+        hover_rings[i], = ax2.plot(
+            [], [], "*", ms=22, mfc="none",
+            mec=_C_HOVER, mew=2.5, alpha=0.0, zorder=11,
+        )
+
+    consensus_label = ax2.text(
+        terrain.x_max - 5, terrain.y_max - 8, "",
+        color=_C_LINK, fontsize=8, fontweight="bold",
+        ha="right", va="top", alpha=0.0, zorder=12,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor=_BG_COLOR,
+                  alpha=0.7, edgecolor=_C_LINK, lw=1.0),
+    )
+
+    _csn_artists = (
+        list(comm_links.values())
+        + list(informed_rings.values())
+        + list(partner_rings.values())
+        + list(hover_rings.values())
+        + [consensus_label]
+    )
+
     all_artists = (
         list(trails_r.values()) + list(dots_r.values())
         + list(trails_e.values()) + list(dots_e.values())
         + list(sph_xy.values()) + list(sph_xz.values()) + list(sph_yz.values())
         + list(trails2.values()) + list(dots2.values())
-        + list(dots2_e.values()) + list(circles2.values()) + [info]
+        + list(dots2_e.values()) + list(circles2.values())
+        + _csn_artists + [info]
     )
+
+    def _reset_consensus_artists():
+        for ln in comm_links.values():
+            ln.set_data([], [])
+            ln.set_alpha(0.0)
+        for i in drone_ids:
+            for ring in (informed_rings[i], partner_rings[i], hover_rings[i]):
+                ring.set_data([], [])
+                ring.set_alpha(0.0)
+        consensus_label.set_text("")
+        consensus_label.set_alpha(0.0)
 
     def init():
         for i in drone_ids:
@@ -473,6 +579,7 @@ def animate_mission(
             for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i]):
                 obj.set_data([], [])
         info.set_text("")
+        _reset_consensus_artists()
         return all_artists
 
     def update(f):
@@ -530,6 +637,65 @@ def animate_mission(
                 st = "TRCK"
             err = np.linalg.norm(traj[ti, :3] - est[ti_e, :3])
             lines.append(f"D{i}: {st}  z={traj[ti, 2]:.1f}m  Δ={err:.2f}m")
+
+        # ── Consensus overlay ─────────────────────────────────────────────
+        _reset_consensus_artists()
+        active_win = None
+        for win in _csn_windows:
+            if win['f_start'] <= f < win['f_end']:
+                active_win = win
+                break
+
+        if active_win is not None:
+            dp    = active_win['drone_pos']
+            hp    = active_win['hover_pos']
+            rnd   = active_win['round']
+            r_idx = active_win['round_idx']
+            n_r   = active_win['n_rounds']
+            h_id  = active_win['hover_id']
+
+            # Blink: high alpha on even frames within the window, low on odd
+            blink_hi = ((f - active_win['f_start']) % 4) < 2
+            a_link   = 0.85 if blink_hi else 0.20
+            a_ring   = 0.90 if blink_hi else 0.25
+
+            still_in_round = f < active_win['round_end']
+
+            if still_in_round:
+                # Draw all in-range communication links
+                for (id_a, id_b) in rnd['links']:
+                    pair_key = (min(id_a, id_b), max(id_a, id_b))
+                    if pair_key in comm_links:
+                        pa, pb = dp[id_a], dp[id_b]
+                        comm_links[pair_key].set_data([pa[0], pb[0]], [pa[1], pb[1]])
+                        comm_links[pair_key].set_alpha(a_link)
+
+                # Orange rings on newly-informed drones
+                for did in rnd['newly_informed']:
+                    p = dp[did]
+                    informed_rings[did].set_data([p[0]], [p[1]])
+                    informed_rings[did].set_alpha(a_ring)
+
+                # Red star on hover drone
+                hover_rings[h_id].set_data([hp[0]], [hp[1]])
+                hover_rings[h_id].set_alpha(a_ring)
+
+                label = f"MIN-CONSENSUS  round {r_idx + 1}/{n_r}  (Rc={IMDCL_COMM_RADIUS:.0f} m)"
+            else:
+                # Linger phase: only show partner rings (no links, no label round)
+                label = f"CONSENSO — partner selezionati"
+
+            # Green rings on selected partners (last round + linger)
+            # Usa la posizione corrente del drone (non lo snapshot al momento del consenso)
+            if active_win['show_partners']:
+                for did in active_win['partners']:
+                    hist = agents[did].history
+                    p = hist[min(t_step, len(hist) - 1)][:2]
+                    partner_rings[did].set_data([p[0]], [p[1]])
+                    partner_rings[did].set_alpha(a_ring)
+
+            consensus_label.set_text(label)
+            consensus_label.set_alpha(a_ring)
 
         info.set_text("\n".join(lines))
         return all_artists

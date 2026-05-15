@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from model import MotionModel, PointMass3DModel
+from config import IMDCL_PI_MAX_NORM
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +403,13 @@ class AgentIMDCL:
         for (j, l) in list(self.Pi_jl.keys()):
             Gamma_j = self._compute_gamma(j, msg)
             Gamma_l = self._compute_gamma(l, msg)
-            self.Pi_jl[(j, l)] = self.Pi_jl[(j, l)] - Gamma_j @ Gamma_l.T
+            with np.errstate(over="ignore", invalid="ignore"):
+                mat = self.Pi_jl[(j, l)] - Gamma_j @ Gamma_l.T
+            # Reset a zero se non finita o norma oltre soglia (Pi_jl è una cross-covarianza:
+            # se diverge, si assume indipendenza — il filtro continua senza correzione incrociata).
+            if not np.all(np.isfinite(mat)) or np.linalg.norm(mat, "fro") > IMDCL_PI_MAX_NORM:
+                mat = np.zeros((self._n, self._n))
+            self.Pi_jl[(j, l)] = mat
 
         # Azzera Φ^i dopo ogni aggiornamento (Eq. S5/S6: Φ reset a I dopo update)
         self.Phi = np.eye(self._n)
@@ -493,10 +500,14 @@ class AgentIMDCL:
             return msg.Gamma_b
         Pi_jb = self._get_Pi(agent_j, b)
         Pi_ja = self._get_Pi(agent_j, a)
-        return (
-            Pi_jb @ msg.Phi_b_T_Hb_T_S_inv_sqrt
-            - Pi_ja @ msg.Phi_a_T_Ha_T_S_inv_sqrt
-        )
+        with np.errstate(over="ignore", invalid="ignore"):
+            result = (
+                Pi_jb @ msg.Phi_b_T_Hb_T_S_inv_sqrt
+                - Pi_ja @ msg.Phi_a_T_Ha_T_S_inv_sqrt
+            )
+        if not np.all(np.isfinite(result)):
+            return np.zeros_like(result)
+        return result
 
     @staticmethod
     def _matrix_inv_sqrt(M: Matrix) -> Matrix:

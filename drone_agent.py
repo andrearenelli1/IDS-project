@@ -84,7 +84,7 @@ def lawnmower_waypoints(
 # Hill-climbing utilities
 # ============================================================================
 
-def _rotate_2d(v: np.ndarray, deg: float) -> np.ndarray:
+def rotate_2d(v: np.ndarray, deg: float) -> np.ndarray:
     """Ruota il vettore 2D v di 'deg' gradi in senso antiorario."""
     rad = np.radians(deg)
     c, s = np.cos(rad), np.sin(rad)
@@ -177,6 +177,11 @@ class DroneAgent:
     track_stopped:      bool                 = False
     source_est:         Optional[np.ndarray] = None  # stima locale [x,y,z] sorgente
 
+    # Backtracking TRACK: torna al punto di decisione se la distanza dalla sorgente aumenta
+    track_decision_pos:    Optional[np.ndarray] = None   # posizione [x,y,z] dove è stata scelta la dir corrente
+    track_decision_dist:   float                = float('inf')  # distanza stimata dalla sorgente al decision point
+    track_backtrack_target: Optional[np.ndarray] = None  # waypoint di ritorno (None = avanzamento normale)
+
     # ── Proprietà ──────────────────────────────────────────────────────────
 
     @property
@@ -219,6 +224,7 @@ class DroneAgent:
             norm  = np.linalg.norm(delta)
             if norm > 1e-3:
                 self.track_dir = delta / norm
+                self._init_decision_point()
                 return
 
         next_idx  = min(self.wp_idx + 1, len(lawnmower_wps) - 1)
@@ -230,6 +236,13 @@ class DroneAgent:
             v  = self.x_est[3:5]
             nv = np.linalg.norm(v)
             self.track_dir = v / nv if nv > 1e-3 else np.array([1.0, 0.0])
+        self._init_decision_point()
+
+    def _init_decision_point(self) -> None:
+        """Salva la posizione corrente come punto di decisione e azzera il backtracking."""
+        self.track_decision_pos    = self.x_est[:3].copy()
+        self.track_decision_dist   = float('inf')
+        self.track_backtrack_target = None
 
     def update_track_dir(self, signal_new: float) -> None:
         """
@@ -251,6 +264,6 @@ class DroneAgent:
                 min(TRACK_TURN_DEG * self.track_fail_count, 90.0)
                 * self.track_turn_sign
             )
-            self.track_dir       = _rotate_2d(self.track_dir, angle)
+            self.track_dir       = rotate_2d(self.track_dir, angle)
             self.track_turn_sign = -self.track_turn_sign
         self.track_signal_prev = signal_new
