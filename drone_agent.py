@@ -170,6 +170,7 @@ class DroneAgent:
     est_history:  list       = field(default_factory=list)
     input_log:    list       = field(default_factory=list)
     solve_t_log:  list       = field(default_factory=list)
+    wp_target_log: list      = field(default_factory=list)   # current_target() ad ogni step
     detected:     bool       = False
 
     # DCGD

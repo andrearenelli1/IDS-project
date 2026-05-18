@@ -37,7 +37,7 @@ from config import (
     AGL_HEIGHT, DT_SIM, N_MPC, DT_MPC, A_MAX, V_MAX,
     ARTVA_DETECT_THR, TRACK_STOP_THR, ARTVA_MOMENT,
     IMDCL_COMM_RADIUS, IMDCL_R_MEAS_STD,
-    TRACK_STEP_M, TRACK_TURN_DEG,
+    TRACK_STEP_M,
     COLORS, BG_DARK,
 )
 
@@ -212,15 +212,34 @@ def plot_mission(
 
     ax_a.plot(*artva.position[:2], "*", color="white", ms=18, zorder=10,
               mec="yellow", mew=1.5)
+    # Waypoint markers (pallini semi-trasparenti per ogni drone)
+    for i in drone_ids:
+        c  = COLORS.get(i, "#aaaaaa")
+        ag = agents[i]
+        if ag.wp_target_log:
+            wps_xy = np.array([w[:2] for w in ag.wp_target_log])
+            # deduplica mantenendo l'ordine
+            seen, unique_wps = set(), []
+            for w in wps_xy:
+                key = (round(w[0], 1), round(w[1], 1))
+                if key not in seen:
+                    seen.add(key)
+                    unique_wps.append(w)
+            unique_wps = np.array(unique_wps)
+            ax_a.scatter(unique_wps[:, 0], unique_wps[:, 1],
+                         color=c, s=18, alpha=0.30, zorder=4, linewidths=0)
+
     ax_a.set_xlabel("x [m]", fontsize=9)
     ax_a.set_ylabel("y [m]", fontsize=9)
-    ax_a.set_title("A — Traiettorie reali (—/--) + IMDCL (:)", fontweight="bold", fontsize=10)
+    ax_a.set_title("Piano XY — traiettorie · stima IMDCL", fontweight="bold", fontsize=10)
     ax_a.tick_params(labelsize=8)
     handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}") for i in drone_ids]
     handles += [
-        plt.Line2D([0],[0], color="w", lw=2.0,  label="TRACK (reale)"),
-        plt.Line2D([0],[0], color="w", lw=1.0, ls="--", label="SEARCH (reale)"),
+        plt.Line2D([0],[0], color="w", lw=2.0,  label="TRACK/SUPPORT"),
+        plt.Line2D([0],[0], color="w", lw=1.0, ls="--", label="SEARCH"),
         plt.Line2D([0],[0], color="w", lw=1.0, ls=":",  label="Stima IMDCL"),
+        plt.Line2D([0],[0], marker="o", color="w", mfc="w", ms=6, alpha=0.35,
+                   label="Waypoint", linestyle="None"),
         plt.Line2D([0],[0], marker="*", color="w", mfc="yellow", ms=12,
                    label="Vittima", linestyle="None"),
     ]
@@ -251,7 +270,7 @@ def plot_mission(
     ax_b.set_xlabel("x [m]", fontsize=8, labelpad=3)
     ax_b.set_ylabel("y [m]", fontsize=8, labelpad=3)
     ax_b.set_zlabel("z [m]", fontsize=8, labelpad=3)
-    ax_b.set_title("B — Vista 3-D  reale(—) / IMDCL(--)", fontweight="bold", fontsize=10)
+    ax_b.set_title("Vista 3D — reale (—) · IMDCL (--)", fontweight="bold", fontsize=10)
     ax_b.tick_params(labelsize=7)
     ax_b.legend(fontsize=6.5, loc="upper left")
 
@@ -270,7 +289,7 @@ def plot_mission(
                  label=f"Stop ({TRACK_STOP_THR:.0e})")
     ax_c.set_xlabel("Tempo [s]", fontsize=9)
     ax_c.set_ylabel("Segnale ARTVA [a.u.]", fontsize=9)
-    ax_c.set_title("C — Segnale ARTVA nel tempo", fontweight="bold", fontsize=10)
+    ax_c.set_title("Segnale ARTVA", fontweight="bold", fontsize=10)
     ax_c.legend(fontsize=8); ax_c.grid(True, ls=":", alpha=0.5); ax_c.tick_params(labelsize=8)
 
     # ── D: Altezza AGL ──────────────────────────────────────────────────
@@ -288,7 +307,7 @@ def plot_mission(
     ax_d.axhline(0, color="red", lw=1.0, ls=":", alpha=0.7, label="Terreno")
     ax_d.set_xlabel("Tempo [s]", fontsize=9)
     ax_d.set_ylabel("Altezza sopra terreno [m]", fontsize=9)
-    ax_d.set_title("D — Altezza AGL (vincolo quota)", fontweight="bold", fontsize=10)
+    ax_d.set_title("Quota AGL", fontweight="bold", fontsize=10)
     ax_d.legend(fontsize=8); ax_d.grid(True, ls=":", alpha=0.5)
     ax_d.tick_params(labelsize=8); ax_d.set_ylim(bottom=-0.5)
 
@@ -306,7 +325,7 @@ def plot_mission(
                   color=c, lw=1.2, alpha=0.85, label=f"Drone {i}")
     ax_e.set_xlabel("Tempo [s]", fontsize=9)
     ax_e.set_ylabel("Errore posizione [m]", fontsize=9)
-    ax_e.set_title("E — Errore stima IMDCL  |x_reale − x̂|", fontweight="bold", fontsize=10)
+    ax_e.set_title("Errore localizzazione IMDCL", fontweight="bold", fontsize=10)
     ax_e.legend(fontsize=8); ax_e.grid(True, ls=":", alpha=0.5)
     ax_e.tick_params(labelsize=8); ax_e.set_ylim(bottom=0)
 
@@ -331,15 +350,15 @@ def plot_mission(
                   label=f"asse {ax_names[ax_idx]}")
     ax_f.set_xlabel("Tempo [s]", fontsize=9)
     ax_f.set_ylabel("|errore| per asse [m]", fontsize=9)
-    ax_f.set_title("F — Errore IMDCL per asse (x/y/z)", fontweight="bold", fontsize=10)
+    ax_f.set_title("Errore IMDCL per asse", fontweight="bold", fontsize=10)
     ax_f.legend(fontsize=7.5); ax_f.grid(True, ls=":", alpha=0.5)
     ax_f.tick_params(labelsize=8); ax_f.set_ylim(bottom=0)
 
     fig.suptitle(
-        f"Ricerca valanga multi-agente  ·  {len(agents)} droni  ·  "
-        f"AGL={AGL_HEIGHT} m  ·  N_MPC={N_MPC}  ·  dt={DT_SIM} s  ·  "
-        f"IMDCL+LiDAR (r={IMDCL_COMM_RADIUS:.0f} m, σ_rel={IMDCL_R_MEAS_STD} m)  ·  "
-        f"Hill-climb (step={TRACK_STEP_M} m, turn={TRACK_TURN_DEG}°)",
+        f"Missione valanga · {len(agents)} droni · "
+        f"AGL={AGL_HEIGHT} m · N_MPC={N_MPC} · dt={DT_SIM} s · "
+        f"IMDCL (Rc={IMDCL_COMM_RADIUS:.0f} m, σ={IMDCL_R_MEAS_STD} m) · "
+        f"TRACK step={TRACK_STEP_M} m",
         fontsize=11, fontweight="bold",
     )
     fig.tight_layout()
@@ -409,8 +428,7 @@ def animate_mission(
     ax2.tick_params(colors=_TEXT_COLOR, labelsize=7)
     ax2.set_xlabel("x [m]", color=_TEXT_COLOR, fontsize=8)
     ax2.set_ylabel("y [m]", color=_TEXT_COLOR, fontsize=8)
-    ax2.set_title("Vista dall'alto — cerchi ARTVA", color=_TEXT_COLOR,
-                  fontsize=9, fontweight="bold")
+    ax2.set_title("Piano XY", color=_TEXT_COLOR, fontsize=9, fontweight="bold")
     for sp in ax2.spines.values():
         sp.set_edgecolor(_GRID_COLOR)
     ax2.grid(True, color=_GRID_COLOR, lw=0.4, alpha=0.5)
@@ -441,14 +459,16 @@ def animate_mission(
         trails_e[i], = ax.plot([], [], [], color=c, lw=1.0, alpha=0.5, ls="--")
         dots_e[i],   = ax.plot([], [], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.0, zorder=7)
 
-    # — Artists dinamici: 2-D trail, dot reale, dot stimato, cerchio per drone —
-    trails2, dots2, dots2_e, circles2 = {}, {}, {}, {}
+    # — Artists dinamici: 2-D trail, dot reale, dot stimato, cerchio, dot waypoint —
+    trails2, dots2, dots2_e, circles2, wp_dots2 = {}, {}, {}, {}, {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
         trails2[i],  = ax2.plot([], [], color=c, lw=1.2, alpha=0.65, zorder=3)
         dots2[i],    = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.8, zorder=5)
         dots2_e[i],  = ax2.plot([], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.2, zorder=6)
         circles2[i], = ax2.plot([], [], color=c, lw=1.0, alpha=0.7, ls="--", zorder=4)
+        wp_dots2[i], = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.6,
+                                alpha=0.35, zorder=4)  # waypoint corrente
 
     # — Sfera di comunicazione 3-D: 3 cerchi ortogonali per drone ────────
     N_SP   = 60
@@ -467,8 +487,8 @@ def animate_mission(
                      color=_TEXT_COLOR, fontsize=8, va="top", fontfamily="monospace")
 
     fig.suptitle(
-        "Ricerca valanga multi-agente  ·  MPC + IMDCL + hill-climb\n"
-        "reale (—)  /  stima IMDCL (- -)   |   cerchi: distanza stimata ARTVA",
+        "Ricerca valanga multi-agente — MPC + IMDCL + FSM 4 stati\n"
+        "reale (—)  ·  stima IMDCL (--)  ·  cerchi: distanza stimata ARTVA",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
@@ -573,6 +593,7 @@ def animate_mission(
         + list(sph_xy.values()) + list(sph_xz.values()) + list(sph_yz.values())
         + list(trails2.values()) + list(dots2.values())
         + list(dots2_e.values()) + list(circles2.values())
+        + list(wp_dots2.values())
         + _csn_artists + [info]
     )
 
@@ -593,7 +614,7 @@ def animate_mission(
                         sph_xy[i], sph_xz[i], sph_yz[i]):
                 obj.set_data([], [])
                 obj.set_3d_properties([])
-            for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i]):
+            for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i], wp_dots2[i]):
                 obj.set_data([], [])
         info.set_text("")
         _reset_consensus_artists()
@@ -644,6 +665,14 @@ def animate_mission(
                 circles2[i].set_data(px + r * _cos, py + r * _sin)
             else:
                 circles2[i].set_data([], [])
+
+            # Waypoint corrente (pallino semi-trasparente)
+            wp_log = ag.wp_target_log
+            if wp_log:
+                wp = wp_log[min(t_step, len(wp_log) - 1)]
+                wp_dots2[i].set_data([wp[0]], [wp[1]])
+            else:
+                wp_dots2[i].set_data([], [])
 
             # Testo stato
             if sig < ARTVA_DETECT_THR:

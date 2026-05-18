@@ -552,6 +552,10 @@ def simulate(
                     f"al passo {step} (t={t:.2f}s)"
                 )
 
+        # Log waypoint corrente (dopo transizioni, prima di muoversi)
+        for i in drone_ids:
+            agents[i].wp_target_log.append(agents[i].current_target().copy())
+
         # ── 3. MPC step ──────────────────────────────────────────────────
         u_commands: Dict[int, np.ndarray] = {}
         for i in drone_ids:
