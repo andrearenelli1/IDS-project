@@ -247,7 +247,7 @@ class DroneMPC:
             self._sol = self._opti.solve()
         except Exception:
             # If IPOPT fails to converge within max_iter, use the debug solution
-            print("Warning: MPC solver did not converge within the maximum iterations.")
+            # print("Warning: MPC solver did not converge within the maximum iterations.")
             self._sol = self._opti.debug
 
         return np.array(self._sol.value(self._U[0])).ravel()
