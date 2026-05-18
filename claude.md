@@ -10,7 +10,7 @@
 3. **`plt.show()` solo in `main.py`** e negli `__main__` dei moduli.
 4. **Modificare `ag.waypoints` → resettare sempre `ag.wp_idx = 0`**.
 5. **`np.random.default_rng(seed)`** ovunque, mai `np.random.*` globale.
-6. **Partner droni**: quando chiamati rimangono **SEARCH** fino a raggiungere il drone detettore. Waypoint = posizione detettore. Auto-transizionano a **TRACK** al rilevamento ARTVA (≥ TRACK_STOP_THR).
+6. **FSM 4 stati**: SEARCH (lawnmower) → TRACK (3 candidati ±60°, arrival-gated) → STOP (hovering + sceglie 2 SUPPORT) / SUPPORT (circonferenza CW/CCW attorno al drone STOP, raggio = distanza stimata sorgente) → STOP. Tutte le assegnazioni waypoint sono arrival-gated; eccezione solo su transizione di stato.
 
 ## Struttura .context/
 

@@ -98,7 +98,6 @@ def main() -> None:
         terrain=terrain_obj,
         n_drones=args.n,
         agl=args.agl,
-        rng_seed=args.seed,
     )
 
     # — Simulazione —

@@ -47,7 +47,7 @@ VICTIM_DEPTH      = 3    # [m]  profondità di sepoltura sotto il terreno
 TRACK_STEP_M      = 5.0    # [m]  passo nel piano xy
 TRACK_TURN_DEG    = 60.0   # [°]  rotazione quando il segnale cala
 TRACK_STOP_THR    = 1e-4   # [a.u.]  soglia segnale ARTVA per fermare il drone (TODO: change based on effective noise at the start)
-SUPPORT_STEP_M    = 10.0   # [m]  distanza waypoint supporto dal drone fermo
+SUPPORT_CIRCLE_N  = 9     # [-]  punti per la circonferenza percorsa dai droni SUPPORT
 N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA per step (interpolate lungo il moto)
 
 # ============================================================================

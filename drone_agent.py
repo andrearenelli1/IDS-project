@@ -5,11 +5,11 @@ Definizioni dell'agente drone e delle funzioni di navigazione locale.
 
 Contenuto
 ---------
-  DroneState        — enumerazione stati FSM (SEARCH / TRACK)
-  DroneAgent        — dataclass con stato reale, filtro IMDCL, hill-climbing
-  lawnmower_waypoints  — generatore pattern a greca per la fase SEARCH
-  _rotate_2d           — utility: ruota vettore 2D
-  track_next_waypoint  — calcola il prossimo waypoint TRACK (hill-climbing)
+  DroneState           — FSM a 4 stati: SEARCH / TRACK / STOP / SUPPORT
+  DroneAgent           — dataclass con stato reale, filtro IMDCL, navigazione
+  lawnmower_waypoints  — pattern a greca per la fase SEARCH
+  rotate_2d            — utility: ruota vettore 2D
+  track_next_waypoint  — calcola waypoint nella direzione data (usato da TRACK)
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 from imdcl import AgentIMDCL
 from mpc_drone import DroneMPC
 from terrain import Terrain
 from config import (
     AGL_HEIGHT, LANE_SPACING, STOP_THRESH,
-    TRACK_STEP_M, TRACK_TURN_DEG,
+    TRACK_STEP_M, SUPPORT_CIRCLE_N,
 )
 
 
@@ -33,8 +33,10 @@ from config import (
 # ============================================================================
 
 class DroneState(IntEnum):
-    SEARCH = 0   # greca lawnmower, ricerca attiva
-    TRACK  = 1   # hill-climbing verso la sorgente ARTVA
+    SEARCH  = 0   # lawnmower, ricerca attiva
+    TRACK   = 1   # esplorazione 3 punti, convergenza sulla sorgente
+    STOP    = 2   # hovering, ha raggiunto la soglia TRACK_STOP_THR
+    SUPPORT = 3   # percorre cerchio intorno al drone STOP per triangolazione
 
 
 # ============================================================================
@@ -56,15 +58,10 @@ def lawnmower_waypoints(
     Il workspace è diviso in N_DRONES strisce verticali (lungo x).
     Ogni drone percorre le corsie orizzontali (lungo y) alternando il verso.
     I waypoint includono la quota z = terrain(x, y) + agl.
-
-    Returns
-    -------
-    waypoints : lista di np.array([x, y, z])
     """
-    width     = (x_max - x_min) / n_drones
-    x0_s      = x_min + drone_id * width
-    x1_s      = x0_s + width
-
+    width      = (x_max - x_min) / n_drones
+    x0_s       = x_min + drone_id * width
+    x1_s       = x0_s + width
     x_positions = np.arange(x0_s + lane_spacing / 2, x1_s, lane_spacing)
     if len(x_positions) == 0:
         x_positions = np.array([(x0_s + x1_s) / 2])
@@ -76,12 +73,35 @@ def lawnmower_waypoints(
         for y in (y_start, y_end):
             waypoints.append(np.array([x, y, terrain.agl_z(x, y, agl)]))
         go_up = not go_up
-
     return waypoints
 
 
+def circle_waypoints(
+    center:    np.ndarray,
+    radius:    float,
+    start_angle: float,
+    clockwise: bool,
+    terrain:   Terrain,
+    n_pts:     int   = SUPPORT_CIRCLE_N,
+    agl:       float = AGL_HEIGHT,
+) -> List[np.ndarray]:
+    """
+    Genera n_pts waypoint equidistribuiti su una circonferenza.
+    clockwise=True → senso orario (angoli decrescenti).
+    Il primo punto è all'angolo start_angle.
+    """
+    sign   = -1.0 if clockwise else +1.0
+    angles = start_angle + sign * np.linspace(0.0, 2 * np.pi, n_pts, endpoint=False)
+    wps: List[np.ndarray] = []
+    for a in angles:
+        x = center[0] + radius * np.cos(a)
+        y = center[1] + radius * np.sin(a)
+        wps.append(np.array([x, y, terrain.agl_z(x, y, agl)]))
+    return wps
+
+
 # ============================================================================
-# Hill-climbing utilities
+# Navigation utilities
 # ============================================================================
 
 def rotate_2d(v: np.ndarray, deg: float) -> np.ndarray:
@@ -98,24 +118,12 @@ def track_next_waypoint(
     step_m:          float = TRACK_STEP_M,
     agl:             float = AGL_HEIGHT,
 ) -> np.ndarray:
-    """
-    Calcola il prossimo waypoint TRACK dato la posizione stimata corrente
-    e la direzione di ricerca corrente (vettore 2D unitario).
-
-    Non accede mai al campo ARTVA: la direzione è aggiornata reattivamente
-    dal drone in base alle misure reali già raccolte.
-
-    Returns
-    -------
-    wp : np.array([x, y, z])
-    """
+    """Calcola il prossimo waypoint TRACK nella direzione data."""
     direction = np.asarray(direction, dtype=float)
     norm = np.linalg.norm(direction)
     direction = direction / norm if norm > 1e-9 else np.array([1.0, 0.0])
-
     next_xy = current_pos_est[:2] + step_m * direction
-    z_next  = terrain.agl_z(next_xy[0], next_xy[1], agl)
-    return np.array([next_xy[0], next_xy[1], z_next])
+    return np.array([next_xy[0], next_xy[1], terrain.agl_z(next_xy[0], next_xy[1], agl)])
 
 
 # ============================================================================
@@ -125,29 +133,28 @@ def track_next_waypoint(
 @dataclass
 class DroneAgent:
     """
-    Un drone con macchina a stati finiti, controllore MPC e filtro IMDCL.
+    Drone con FSM a 4 stati, controllore MPC e filtro IMDCL.
 
-    Attributi principali
-    --------------------
-    id           : identificatore intero
-    state        : DroneState (SEARCH / TRACK)
-    x            : stato **reale** (6,) [px, py, pz, vx, vy, vz]
-    imdcl        : AgentIMDCL — stima decentralizzata; MPC usa imdcl.x_hat
-    waypoints    : lista waypoint correnti (lawnmower oppure TRACK)
-    wp_idx       : indice waypoint attuale
-    signal_log   : misure ARTVA raccolte [(pos, signal), ...]
-    history      : stati reali loggati ad ogni passo
-    est_history  : stime IMDCL (x_hat) loggata ad ogni passo
+    Waypoint management
+    -------------------
+    Tutti gli stati sono arrival-gated: il prossimo waypoint viene calcolato
+    solo quando quello corrente è raggiunto (o su transizione di stato).
+    Il dispatch avviene in simulation.py tramite _on_wp_reached().
 
-    Campi hill-climbing (stato TRACK)
-    ----------------------------------
-    track_dir         : direzione di ricerca corrente (2,), unitaria
-    track_signal_prev : segnale ARTVA all'ultimo passo TRACK
-    track_turn_sign   : +1/-1 — alterna L/R ad ogni fallimento
-    track_fail_count  : passi consecutivi con segnale calante
-    track_stopped     : True quando segnale ≥ TRACK_STOP_THR → drone in hovering
-    track_time        : contatore passi in stato TRACK (usato per diminuire lo step del gradiente nel tempo ed evitare oscillazioni)
-    source_est        : stima locale (3,) della posizione sorgente ARTVA (DCGD)
+    Campi TRACK
+    -----------
+    track_dir          : direzione di ricerca corrente (2,), unitaria
+    track_start_pos    : posizione (3,) all'inizio del round corrente
+    track_start_signal : segnale ARTVA al punto di partenza del round
+    track_candidates   : lista di 3 waypoint candidati del round corrente
+    track_cand_signals : segnale misurato a ciascun candidato (NaN = non visitato)
+    track_cand_idx     : 0-2 = visitando candidato i; 3 = tornando al migliore
+
+    Campi SUPPORT
+    -------------
+    support_center   : posizione (3,) del drone STOP che ha chiamato il supporto
+    support_radius   : raggio della circonferenza da percorrere [m]
+    support_cw       : True = senso orario, False = antiorario
     """
 
     id:           int
@@ -164,23 +171,23 @@ class DroneAgent:
     input_log:    list       = field(default_factory=list)
     solve_t_log:  list       = field(default_factory=list)
     detected:     bool       = False
-    estimate_pos: Optional[np.ndarray] = None
 
-    # Hill-climbing state
+    # DCGD
+    source_est:   Optional[np.ndarray] = None
+
+    # TRACK
     track_dir:          Optional[np.ndarray] = None
-    track_signal_prev:  float                = 0.0
-    track_turn_sign:    int                  = +1
-    track_fail_count:   int                  = 0
+    track_start_pos:    Optional[np.ndarray] = None
+    track_start_signal: float                = 0.0
+    track_candidates:   List[np.ndarray]     = field(default_factory=list)
+    track_cand_signals: List[float]          = field(default_factory=list)
+    track_cand_idx:     int                  = 0
     track_time:         int                  = 0
 
-    # Stopping e stima distribuita
-    track_stopped:      bool                 = False
-    source_est:         Optional[np.ndarray] = None  # stima locale [x,y,z] sorgente
-
-    # Backtracking TRACK: torna al punto di decisione se la distanza dalla sorgente aumenta
-    track_decision_pos:    Optional[np.ndarray] = None   # posizione [x,y,z] dove è stata scelta la dir corrente
-    track_decision_dist:   float                = float('inf')  # distanza stimata dalla sorgente al decision point
-    track_backtrack_target: Optional[np.ndarray] = None  # waypoint di ritorno (None = avanzamento normale)
+    # SUPPORT
+    support_center:  Optional[np.ndarray] = None
+    support_radius:  float                = 0.0
+    support_cw:      bool                 = False
 
     # ── Proprietà ──────────────────────────────────────────────────────────
 
@@ -208,62 +215,37 @@ class DroneAgent:
             and np.linalg.norm(self.x_est[:3] - self.current_target()) < STOP_THRESH
         )
 
-    # ── Hill-climbing ──────────────────────────────────────────────────────
+    # ── TRACK helpers ─────────────────────────────────────────────────────
 
     def init_track_dir(self, lawnmower_wps: List[np.ndarray]) -> None:
         """
-        Inizializza la direzione di ricerca al momento del primo rilevamento.
-
-        Droni di supporto (waypoints = [support_wp]): puntano verso il loro
-        unico waypoint, già orientato verso la zona della vittima.
-        Droni normali: usano il momentum del lawnmower verso il prossimo wp.
-        Fallback: velocità stimata, o asse Est.
+        Inizializza track_dir al primo rilevamento ARTVA.
+        Usa il momentum del lawnmower (o velocità stimata come fallback).
         """
-        if len(self.waypoints) == 1:
-            delta = self.waypoints[0][:2] - self.x_est[:2]
-            norm  = np.linalg.norm(delta)
-            if norm > 1e-3:
-                self.track_dir = delta / norm
-                self._init_decision_point()
-                return
-
-        next_idx  = min(self.wp_idx + 1, len(lawnmower_wps) - 1)
-        delta     = lawnmower_wps[next_idx][:2] - self.x_est[:2]
-        norm      = np.linalg.norm(delta)
+        next_idx = min(self.wp_idx + 1, len(lawnmower_wps) - 1)
+        delta    = lawnmower_wps[next_idx][:2] - self.x_est[:2]
+        norm     = np.linalg.norm(delta)
         if norm > 1e-3:
             self.track_dir = delta / norm
-        else:
-            v  = self.x_est[3:5]
-            nv = np.linalg.norm(v)
-            self.track_dir = v / nv if nv > 1e-3 else np.array([1.0, 0.0])
-        self._init_decision_point()
-
-    def _init_decision_point(self) -> None:
-        """Salva la posizione corrente come punto di decisione e azzera il backtracking."""
-        self.track_decision_pos    = self.x_est[:3].copy()
-        self.track_decision_dist   = float('inf')
-        self.track_backtrack_target = None
-
-    def update_track_dir(self, signal_new: float) -> None:
-        """
-        Aggiorna la direzione di ricerca confrontando il segnale corrente con
-        quello del passo precedente (hill-climbing reattivo).
-
-          signal_new >= signal_prev → continua, azzera fail_count
-          signal_new <  signal_prev → ruota di TRACK_TURN_DEG (con escalation),
-                                      alterna L/R ad ogni fallimento
-            !!qua si potrebbe fare un cerchio per trovare la direzione giusta
-        """
-        if self.track_dir is None:
             return
-        if signal_new >= self.track_signal_prev:
-            self.track_fail_count = 0
-        else:
-            self.track_fail_count += 1
-            angle = (
-                min(TRACK_TURN_DEG * self.track_fail_count, 90.0)
-                * self.track_turn_sign
-            )
-            self.track_dir       = rotate_2d(self.track_dir, angle)
-            self.track_turn_sign = -self.track_turn_sign
-        self.track_signal_prev = signal_new
+        v  = self.x_est[3:5]
+        nv = np.linalg.norm(v)
+        self.track_dir = v / nv if nv > 1e-3 else np.array([1.0, 0.0])
+
+    def init_track_round(self, signal: float, terrain: Terrain, agl: float) -> None:
+        """
+        Inizia un nuovo round di esplorazione 3 punti dalla posizione stimata corrente.
+        Calcola i 3 candidati (avanti, +60°, -60°) e imposta il primo waypoint.
+        """
+        d = self.track_dir
+        dirs = [d, rotate_2d(d, 60.0), rotate_2d(d, -60.0)]
+        self.track_start_pos    = self.x_est[:3].copy()
+        self.track_start_signal = signal
+        self.track_candidates   = [
+            track_next_waypoint(self.x_est, di, terrain, step_m=TRACK_STEP_M, agl=agl)
+            for di in dirs
+        ]
+        self.track_cand_signals = [float('nan')] * 3
+        self.track_cand_idx     = 0
+        self.waypoints = [self.track_candidates[0]]
+        self.wp_idx    = 0

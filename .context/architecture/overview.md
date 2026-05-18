@@ -18,15 +18,16 @@ main.py
   └── simulate()               ← simulation.py
         loop per step t=0..N_SIM:
           1. misura ARTVA reale
-          2. FSM: SEARCH→TRACK se segnale ≥ ARTVA_DETECT_THR
-             TRACK stopping: segnale ≥ TRACK_STOP_THR → hovering
-             hill-climbing reattivo solo se non fermato
+          2. Transizioni FSM:
+               SEARCH → TRACK se segnale ≥ ARTVA_DETECT_THR
+               TRACK/SUPPORT → STOP se segnale ≥ TRACK_STOP_THR
+               STOP (primo): consenso → 2 droni SUPPORT con circonferenza
           3. MPC step → u_opt   (usa stima IMDCL, non posizione reale)
           4. propagazione dinamica reale + rumore
           5. IMDCL: propagazione + update LiDAR + update cooperativo
-          6. DCGD: Adapt+Combine per stima distribuita posizione sorgente
-          7. avanza waypoint se raggiunto
-          8. se tutti TRACK fermati → raffinamento DCGD → break
+          6. DCGD: Adapt+Combine per droni TRACK
+          7. avanza waypoint (arrival-gated, dispatch per stato FSM)
+          8. se ≥3 droni in STOP → raffinamento DCGD → break
 ```
 
 ## Layers

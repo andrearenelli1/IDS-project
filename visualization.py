@@ -90,17 +90,31 @@ def _circumcircle_2d(
 
 
 def _reconstruct_state_sequence(ag: DroneAgent) -> List[DroneState]:
-    """Ricostruisce la sequenza FSM dal log segnali: SEARCH → TRACK."""
+    """
+    Ricostruisce la sequenza FSM dal log segnali.
+    SEARCH fino al primo rilevamento, poi TRACK fino alla soglia STOP,
+    poi STOP/SUPPORT (approssimato come TRACK per il plot della traiettoria).
+    """
+    from config import TRACK_STOP_THR
     n = len(ag.history)
     if not ag.detected:
         return [DroneState.SEARCH] * n
+    detect_k = None
+    stop_k   = None
     for k, (_, s) in enumerate(ag.signal_log):
-        if s >= ARTVA_DETECT_THR:
-            return (
-                [DroneState.SEARCH] * (k + 1)
-                + [DroneState.TRACK] * max(0, n - k - 1)
-            )
-    return [DroneState.SEARCH] * n
+        if detect_k is None and s >= ARTVA_DETECT_THR:
+            detect_k = k
+        if detect_k is not None and stop_k is None and s >= TRACK_STOP_THR:
+            stop_k = k
+    if detect_k is None:
+        return [DroneState.SEARCH] * n
+    seq = [DroneState.SEARCH] * (detect_k + 1)
+    if stop_k is not None:
+        seq += [DroneState.TRACK]  * max(0, stop_k - detect_k)
+        seq += [DroneState.STOP]   * max(0, n - stop_k)
+    else:
+        seq += [DroneState.TRACK] * max(0, n - detect_k - 1)
+    return seq
 
 
 def _save_animation(anim, save_path, fps, bg_color=_BG_COLOR):
@@ -182,12 +196,15 @@ def plot_mission(
         c         = COLORS.get(i, "#aaaaaa")
         state_seq = _reconstruct_state_sequence(ag)
         n         = min(len(traj), len(state_seq))
-        s_idx     = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
-        t_idx     = [k for k in range(n) if state_seq[k] == DroneState.TRACK]
+        s_idx = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
+        t_idx = [k for k in range(n) if state_seq[k] in (DroneState.TRACK, DroneState.SUPPORT)]
+        p_idx = [k for k in range(n) if state_seq[k] == DroneState.STOP]
         if s_idx:
             ax_a.plot(traj[s_idx, 0], traj[s_idx, 1], color=c, lw=1.0, alpha=0.45, ls="--")
         if t_idx:
             ax_a.plot(traj[t_idx, 0], traj[t_idx, 1], color=c, lw=2.0, alpha=0.9,  ls="-")
+        if p_idx:
+            ax_a.plot(traj[p_idx, 0], traj[p_idx, 1], color=c, lw=1.5, alpha=0.7,  ls=":")
         ax_a.plot(est[:min(len(est), n), 0], est[:min(len(est), n), 1],
                   color=c, lw=1.0, alpha=0.65, ls=":")
         ax_a.plot(*traj[0, :2],  "o", color=c, ms=7, mec="white", mew=1.0, zorder=6)
@@ -477,7 +494,7 @@ def animate_mission(
         for ev in consensus_events:
             base_f     = ev['step'] // step_skip
             n_rounds   = len(ev['rounds'])
-            hover_id   = ev['hover_id']
+            hover_id   = ev.get('stop_id', ev.get('hover_id'))
             # Snapshot positions at the event step (fixed reference)
             ev_step    = min(ev['step'], T - 1)
             hover_pos2 = np.array(agents[hover_id].history[ev_step][:2])
