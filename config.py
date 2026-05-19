@@ -35,19 +35,30 @@ LANE_SPACING  = 15.0    # [m]  distanza tra passaggi nella striscia
 # Sorgente ARTVA
 # ============================================================================
 ARTVA_MOMENT      = 1.0    # momento magnetico normalizzato [A·m²]
-ARTVA_DETECT_THR  = 1e-5   # soglia rilevamento — segnale rilevabile (TODO: change based on effective noise at the start)
-ARTVA_NOISE_STD   = 1e-7   # rumore additivo (~1% segnale a 40 m)
-VICTIM_XY         = [120, 100]   # [m, m] posizione xy vittima nel workspace locale;
+ARTVA_NOISE_STD   = 1e-6   # rumore additivo (~1% segnale a 40 m)
+VICTIM_XY         = None   # [m, m] posizione xy vittima nel workspace locale;
                             #        None = casuale (seed da CLI)
-VICTIM_DEPTH      = 3    # [m]  profondità di sepoltura sotto il terreno
+VICTIM_DEPTH      = 3      # [m]  profondità di sepoltura sotto il terreno
+
+# ============================================================================
+# Calibrazione rumore (fase pre-volo)
+# ============================================================================
+N_NOISE_CALIB_SAMPLES = 20     # misure per drone per stimare σ_noise
+NOISE_CONSENSUS_ITERS = 10     # iterazioni average-consensus tra droni
+NOISE_DETECT_FACTOR   = 100.0  # DETECT_THR = FACTOR × σ̂_noise  (SEARCH→TRACK)
+NOISE_STOP_FACTOR     = 1000.0 # STOP_THR   = FACTOR × σ̂_noise  (TRACK/SUPPORT→STOP)
+
+# Valori nominali per la visualizzazione (derivati da ARTVA_NOISE_STD × fattori).
+# La simulazione usa soglie dinamiche misurate — questi servono solo ai plot.
+ARTVA_DETECT_THR = NOISE_DETECT_FACTOR * ARTVA_NOISE_STD   # ≈ 1e-5
+TRACK_STOP_THR   = NOISE_STOP_FACTOR   * ARTVA_NOISE_STD   # ≈ 1e-4
 
 # ============================================================================
 # Hill-climbing online (fase TRACK)
 # ============================================================================
 TRACK_STEP_M      = 5.0    # [m]  passo nel piano xy
 TRACK_TURN_DEG    = 60.0   # [°]  rotazione quando il segnale cala
-TRACK_STOP_THR    = 1e-4   # [a.u.]  soglia segnale ARTVA per fermare il drone (TODO: change based on effective noise at the start)
-SUPPORT_CIRCLE_N  = 9     # [-]  punti per la circonferenza percorsa dai droni SUPPORT
+SUPPORT_CIRCLE_N  = 9      # [-]  punti per la circonferenza percorsa dai droni SUPPORT
 N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA per step (interpolate lungo il moto)
 
 # ============================================================================

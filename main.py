@@ -26,7 +26,7 @@ import numpy as np
 
 from config import (
     N_DRONES, AGL_HEIGHT, N_SIM, DT_SIM, SIGMA_ACC_SIM,
-    ARTVA_MOMENT, ARTVA_DETECT_THR, ARTVA_NOISE_STD, VICTIM_XY, VICTIM_DEPTH,
+    ARTVA_MOMENT, ARTVA_NOISE_STD, VICTIM_XY, VICTIM_DEPTH,
 )
 from terrain import build_terrain
 from artva import ARTVASource

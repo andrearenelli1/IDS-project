@@ -9,12 +9,12 @@ Simulazione multi-agente di ricerca in valanga con droni autonomi.
 Ogni drone vola a quota costante sopra un DEM reale (TINItaly 10 m).
 FSM a 4 stati, tutti con waypoint arrival-gated:
 
-- **SEARCH**: lawnmower; → TRACK quando segnale ≥ ARTVA_DETECT_THR
+- **SEARCH**: lawnmower; → TRACK quando segnale ≥ `artva_detect_thr` (dinamica)
 - **TRACK**: esplorazione 3 candidati (avanti, ±60°, stessa distanza TRACK_STEP_M);
-  si visita ognuno, si sceglie il più alto, si aggiorna la direzione; → STOP a TRACK_STOP_THR
+  si visita ognuno, si sceglie il più alto, si aggiorna la direzione; → STOP a `track_stop_thr` (dinamica)
 - **STOP**: hovering; seleziona 2 droni SUPPORT via min-consensus; raffinamento DCGD finale
 - **SUPPORT**: percorre una circonferenza di raggio = distanza stimata dalla sorgente,
-  centrata sul drone STOP (un CW, uno CCW); → STOP a TRACK_STOP_THR
+  centrata sul drone STOP (un CW, uno CCW); → STOP a `track_stop_thr` (dinamica)
 
 Terminazione: ≥ 3 droni in STOP → raffinamento DCGD → stima posizione vittima.
 Il controllo traiettoria usa MPC a orizzonte finito; la localizzazione del
@@ -69,6 +69,8 @@ python visualization.py --save --speed 2.0
 |---|---|
 | Cambiare parametri (AGL, N_MPC, N droni…) | `config.py` |
 | Aggiungere un nuovo tipo di sensore | `drone_agent.py` + `simulation.py` |
+| Soglie dinamiche (fattori SNR) | `config.py → NOISE_DETECT_FACTOR / NOISE_STOP_FACTOR` |
+| Calibrazione rumore (campioni, consensus) | `simulation.py → _calibrate_noise` |
 | Cambiare il pattern SEARCH | `drone_agent.py → lawnmower_waypoints` |
 | Cambiare il pattern TRACK (3 punti) | `drone_agent.py → init_track_round / _track_on_wp_reached` |
 | Cambiare la circonferenza SUPPORT | `drone_agent.py → circle_waypoints`, `config.py → SUPPORT_CIRCLE_N` |

@@ -53,11 +53,13 @@ from config import (
     IMDCL_SIGMA_ACC, IMDCL_P0_POS, IMDCL_P0_VEL,
     IMDCL_COMM_RADIUS, IMDCL_R_MEAS_STD,
     IMDCL_R_LIDAR_STD, IMDCL_H_LIDAR,
-    TRACK_STOP_THR, SUPPORT_CIRCLE_N, N_SIGNAL_SAMPLES,
+    SUPPORT_CIRCLE_N, N_SIGNAL_SAMPLES,
     DIST_EST_ALPHA, DIST_EST_BETA, DIST_EST_H, DIST_EST_REFINE, DIST_EST_BATCH,
     TRIANGULATE_N_PARTNERS,
-    ARTVA_DETECT_THR, ARTVA_MOMENT,
+    ARTVA_MOMENT,
     CONSENSUS_K_MAX,
+    N_NOISE_CALIB_SAMPLES, NOISE_CONSENSUS_ITERS,
+    NOISE_DETECT_FACTOR, NOISE_STOP_FACTOR,
 )
 
 
@@ -383,6 +385,50 @@ def _transition_to_stop(
 
 
 # ============================================================================
+# Calibrazione rumore pre-volo
+# ============================================================================
+
+def _calibrate_noise(
+    agents:          Dict[int, DroneAgent],
+    artva:           ARTVASource,
+    n_samples:       int = N_NOISE_CALIB_SAMPLES,
+    consensus_iters: int = NOISE_CONSENSUS_ITERS,
+) -> float:
+    """
+    Ogni drone stima σ_noise da misure ripetute alla propria posizione iniziale
+    (std delle misure è indipendente dal segnale medio → stima robusta).
+    Poi average-consensus distribuito converge a una σ̂ comune.
+    """
+    drone_ids = list(agents.keys())
+
+    sigma_local: Dict[int, float] = {}
+    for i in drone_ids:
+        pos     = agents[i].x[:3]
+        samples = [artva.signal(pos, noisy=True) for _ in range(n_samples)]
+        sigma_local[i] = float(np.std(samples))
+
+    print("  [Calibrazione] σ_noise locale per drone:")
+    for i in drone_ids:
+        print(f"    Drone {i}: σ̂={sigma_local[i]:.2e}")
+
+    sigma: Dict[int, float] = {i: sigma_local[i] for i in drone_ids}
+    for _ in range(consensus_iters):
+        sigma_new: Dict[int, float] = {}
+        for i in drone_ids:
+            neighbors = [
+                j for j in drone_ids if j != i
+                and np.linalg.norm(agents[i].x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS
+            ]
+            all_vals = [sigma[i]] + [sigma[j] for j in neighbors]
+            sigma_new[i] = float(np.mean(all_vals))
+        sigma = sigma_new
+
+    agreed = float(np.mean(list(sigma.values())))
+    print(f"  [Calibrazione] σ̂ consensus = {agreed:.2e}")
+    return agreed
+
+
+# ============================================================================
 # Costruzione agenti
 # ============================================================================
 
@@ -488,6 +534,15 @@ def simulate(
     consensus_events: list = []
     consensus_done:   bool = False
 
+    # ── Calibrazione rumore e soglie dinamiche ───────────────────────────────
+    print("Calibrazione rumore ARTVA...")
+    sigma_noise      = _calibrate_noise(agents, artva)
+    artva_detect_thr = NOISE_DETECT_FACTOR * sigma_noise
+    track_stop_thr   = NOISE_STOP_FACTOR   * sigma_noise
+    print(
+        f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}\n"
+    )
+
     R_rel   = np.eye(3) * IMDCL_R_MEAS_STD**2
     R_lidar = np.array([[IMDCL_R_LIDAR_STD**2]])
 
@@ -529,20 +584,20 @@ def simulate(
             ag  = agents[i]
             sig = signals[i]
 
-            if ag.state == DroneState.SEARCH and sig >= ARTVA_DETECT_THR:
+            if ag.state == DroneState.SEARCH and sig >= artva_detect_thr:
                 _transition_search_to_track(
                     ag, i, sig, step, t, terrain, agl,
                     lawnmower_orig, cx_ws, cy_ws,
                 )
 
-            elif ag.state == DroneState.TRACK and sig >= TRACK_STOP_THR:
+            elif ag.state == DroneState.TRACK and sig >= track_stop_thr:
                 consensus_done = _transition_to_stop(
                     ag, i, sig, step, t,
                     agents, drone_ids, terrain, agl,
                     consensus_done, consensus_events,
                 )
 
-            elif ag.state == DroneState.SUPPORT and sig >= TRACK_STOP_THR:
+            elif ag.state == DroneState.SUPPORT and sig >= track_stop_thr:
                 ag.state     = DroneState.STOP
                 hover_wp     = ag.x_est[:3].copy()
                 ag.waypoints = [hover_wp]
