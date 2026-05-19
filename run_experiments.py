@@ -74,7 +74,7 @@ except ImportError:
 # GRID DEI PARAMETRI — modificare per restringere/ampliare lo sweep
 # ============================================================================
 
-AREA_SIZES = [100, 150, 200]        # [m]  lato workspace
+AREA_SIZES = [100, 200]        # [m]  lato workspace
 
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
@@ -92,7 +92,7 @@ _VICTIM_REL_XY_FIXED = [
 _GRID_RNG_SEED = 2024
 _rng_grid = np.random.default_rng(_GRID_RNG_SEED)
 
-N_RANDOM_VICTIMS = 4                # posizioni vittima casuali aggiuntive
+N_RANDOM_VICTIMS = 1                # posizioni vittima casuali aggiuntive
 _victim_random = [
     (float(_rng_grid.uniform(0.10, 0.90)),
      float(_rng_grid.uniform(0.10, 0.90)))
@@ -102,13 +102,13 @@ VICTIM_REL_XY = _VICTIM_REL_XY_FIXED + _victim_random
 
 BURIAL_DEPTHS_FIXED = [1.0, 3.0, 5.0]   # [m]  profondità fisse
 
-N_RANDOM_DEPTHS = 3                 # profondità di sepoltura casuali aggiuntive
+N_RANDOM_DEPTHS = 0                 # profondità di sepoltura casuali aggiuntive
 _depths_random = [
     float(_rng_grid.uniform(0.5, 4.5)) for _ in range(N_RANDOM_DEPTHS)
 ]
 BURIAL_DEPTHS = BURIAL_DEPTHS_FIXED + _depths_random
 
-ARTVA_NOISE_STDS = [1e-8, 1e-7, 5e-7]  # rumore segnale ARTVA
+ARTVA_NOISE_STDS = [1e-8, 1e-7, 1e-6]  # rumore segnale ARTVA
 
 # Raggio comunicazione UWB:
 #   120 m → condizioni ottimali (visibilità diretta)
@@ -417,7 +417,8 @@ def _read_done_ids(path: str) -> set:
     try:
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
-            return {int(row["run_id"]) for row in reader if row.get("run_id")}
+            return {int(row["run_id"]) for row in reader
+                    if row.get("run_id") and row["run_id"] != "run_id"}
     except FileNotFoundError:
         return set()
 
@@ -509,7 +510,7 @@ def main() -> None:
         print(f"  {area}m × {area}m  ws={ws_str}  ({time.perf_counter() - t0:.1f}s)")
 
     # ── Esecuzione ────────────────────────────────────────────────────────
-    write_header = len(done_ids) == 0
+    write_header = not os.path.exists(args.out) or os.path.getsize(args.out) == 0
     found_n = timeout_n = error_n = 0
 
     print()  # riga vuota prima della barra
