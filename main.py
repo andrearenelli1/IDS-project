@@ -27,6 +27,7 @@ import numpy as np
 from config import (
     N_DRONES, AGL_HEIGHT, N_SIM, DT_SIM, SIGMA_ACC_SIM,
     ARTVA_MOMENT, ARTVA_NOISE_STD, VICTIM_XY, VICTIM_DEPTH,
+    ANIM_SPEED,
 )
 from terrain import build_terrain
 from artva import ARTVASource
@@ -121,7 +122,7 @@ def main() -> None:
     if args.animate:
         anim = animate_mission(
             terrain_obj, artva, agents,
-            dt=DT_SIM, speed=2.0,
+            dt=DT_SIM, speed=ANIM_SPEED,
             save=args.save,
             consensus_events=consensus_events,
         )

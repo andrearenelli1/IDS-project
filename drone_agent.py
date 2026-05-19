@@ -190,6 +190,12 @@ class DroneAgent:
     support_radius:  float                = 0.0
     support_cw:      bool                 = False
 
+    # SUPPORT — ricerca partner pendente
+    support_orbit_radius: float = 0.0   # raggio cerchio memorizzato per retry
+    support_pending:      bool  = False  # True se si attendono ancora partner
+    support_deadline:     int   = 0      # step entro cui chiudere la ricerca
+    support_n_needed:     int   = 0      # partner SUPPORT ancora mancanti
+
     # ── Proprietà ──────────────────────────────────────────────────────────
 
     @property

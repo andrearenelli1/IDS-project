@@ -56,6 +56,7 @@ from config import (
     SUPPORT_CIRCLE_N, N_SIGNAL_SAMPLES,
     DIST_EST_ALPHA, DIST_EST_BETA, DIST_EST_H, DIST_EST_REFINE, DIST_EST_BATCH,
     TRIANGULATE_N_PARTNERS,
+    SUPPORT_SEARCH_TIMEOUT,
     ARTVA_MOMENT,
     CONSENSUS_K_MAX,
     N_NOISE_CALIB_SAMPLES, NOISE_CONSENSUS_ITERS,
@@ -100,6 +101,7 @@ def _dcgd_step(agents: Dict[int, DroneAgent], drone_ids: list) -> None:
 
     snap = {i: agents[i].source_est.copy() for i in track_ids}
 
+    # Adapt: gradient descent locale
     for i in track_ids:
         ag      = agents[i]
         theta_i = snap[i].copy()
@@ -115,17 +117,13 @@ def _dcgd_step(agents: Dict[int, DroneAgent], drone_ids: list) -> None:
         norm_g = np.linalg.norm(grad_J)
         if norm_g > 1e-12:
             theta_i -= DIST_EST_ALPHA * grad_J / norm_g
-
-        neighbors = [
-            j for j in track_ids
-            if j != i
-            and np.linalg.norm(agents[i].x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS
-        ]
-        if neighbors:
-            avg_nbr = np.mean([snap[j] for j in neighbors], axis=0)
-            theta_i = (1.0 - DIST_EST_BETA) * theta_i + DIST_EST_BETA * avg_nbr
-
         ag.source_est = theta_i
+
+    # Combine: average consensus pesato sui valori post-adapt
+    adapted  = {i: agents[i].source_est.copy() for i in track_ids}
+    combined = _average_consensus(agents, track_ids, adapted, iters=1, beta=DIST_EST_BETA)
+    for i in track_ids:
+        agents[i].source_est = combined[i]
 
 
 def _dcgd_refine(
@@ -133,6 +131,44 @@ def _dcgd_refine(
 ) -> None:
     for _ in range(n_iters):
         _dcgd_step(agents, drone_ids)
+
+
+# ============================================================================
+# Average consensus distribuito — helper generico
+# ============================================================================
+
+def _average_consensus(
+    agents:      Dict[int, DroneAgent],
+    drone_ids:   list,
+    values:      dict,
+    comm_radius: float = IMDCL_COMM_RADIUS,
+    iters:       int   = 1,
+    beta:        float = None,
+) -> dict:
+    """
+    Average consensus distribuito su grandezze scalari o vettoriali.
+
+    beta=None  → ogni nodo fa media uguale con se stesso e i vicini.
+    beta=float → (1-beta)*self + beta*mean(neighbors); invariante se no vicini.
+    """
+    v = {i: np.asarray(values[i], dtype=float) for i in drone_ids}
+    for _ in range(iters):
+        v_new: dict = {}
+        for i in drone_ids:
+            nbrs = [
+                j for j in drone_ids
+                if j != i
+                and np.linalg.norm(agents[i].x[:3] - agents[j].x[:3]) < comm_radius
+            ]
+            if beta is None:
+                v_new[i] = np.mean([v[i]] + [v[j] for j in nbrs], axis=0)
+            elif nbrs:
+                avg_nbr  = np.mean([v[j] for j in nbrs], axis=0)
+                v_new[i] = (1.0 - beta) * v[i] + beta * avg_nbr
+            else:
+                v_new[i] = v[i].copy()
+        v = v_new
+    return v
 
 
 # ============================================================================
@@ -344,18 +380,13 @@ def _transition_to_stop(
             'step': step, 'stop_id': drone_id,
             'rounds': rounds_log, 'partners': partners,
         })
-        if len(partners) < TRIANGULATE_N_PARTNERS:
-            print(
-                f"    ⚠ Consenso: solo {len(partners)}/{TRIANGULATE_N_PARTNERS} "
-                f"partner (Rc={IMDCL_COMM_RADIUS} m)"
-            )
-
         # Raggio = distanza stimata dalla sorgente
         if ag.source_est is not None:
             radius = float(np.linalg.norm(ag.x_est[:2] - ag.source_est[:2]))
         else:
             radius = float((ARTVA_MOMENT * 1.5 / max(sig, 1e-15)) ** (1.0 / 3.0))
         radius = max(radius, 1.0)
+        ag.support_orbit_radius = radius
 
         for k, partner_id in enumerate(partners):
             partner = agents[partner_id]
@@ -378,10 +409,93 @@ def _transition_to_stop(
                 f"    → Drone {partner_id} SUPPORT {'CW' if cw else 'CCW'} "
                 f"cerchio r={radius:.1f} m attorno a drone {drone_id}"
             )
+
+        n_missing = TRIANGULATE_N_PARTNERS - len(partners)
+        if n_missing > 0:
+            print(
+                f"    ⚠ Consenso: solo {len(partners)}/{TRIANGULATE_N_PARTNERS} partner "
+                f"(Rc={IMDCL_COMM_RADIUS} m) — ricerca aperta per {SUPPORT_SEARCH_TIMEOUT} step"
+            )
+            ag.support_pending  = True
+            ag.support_deadline = step + SUPPORT_SEARCH_TIMEOUT
+            ag.support_n_needed = n_missing
     else:
         print(f"    (consenso già eseguito — nessuna nuova selezione partner)")
 
     return consensus_done
+
+
+# ============================================================================
+# Retry ricerca partner SUPPORT
+# ============================================================================
+
+def _retry_support_search(
+    agents:    Dict[int, DroneAgent],
+    drone_ids: list,
+    terrain:   Terrain,
+    agl:       float,
+    step:      int,
+) -> None:
+    """
+    Chiamata ogni step per ogni drone STOP con ricerca partner aperta.
+    Ritenta l'assegnazione SUPPORT oppure chiude per timeout.
+    """
+    for drone_id in drone_ids:
+        ag = agents[drone_id]
+        if ag.state != DroneState.STOP or not ag.support_pending:
+            continue
+
+        if step >= ag.support_deadline:
+            ag.support_pending = False
+            print(
+                f"\n  ⏱ Drone {drone_id}: timeout supporto al passo {step} — "
+                f"{ag.support_n_needed} partner non trovati. "
+                f"Triangolazione con droni STOP disponibili."
+            )
+            continue
+
+        # Cerca droni non STOP e non già in SUPPORT nel raggio di comunicazione
+        candidates = sorted(
+            [
+                j for j in drone_ids
+                if j != drone_id
+                and agents[j].state not in (DroneState.STOP, DroneState.SUPPORT)
+                and np.linalg.norm(agents[drone_id].x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS
+            ],
+            key=lambda j: np.linalg.norm(agents[drone_id].x[:3] - agents[j].x[:3]),
+        )
+        if not candidates:
+            continue
+
+        to_assign        = candidates[:ag.support_n_needed]
+        already_assigned = TRIANGULATE_N_PARTNERS - ag.support_n_needed
+        radius           = ag.support_orbit_radius
+
+        for k, partner_id in enumerate(to_assign):
+            partner     = agents[partner_id]
+            start_angle = float(np.arctan2(
+                partner.x_est[1] - ag.x_est[1],
+                partner.x_est[0] - ag.x_est[0],
+            ))
+            cw  = ((already_assigned + k) % 2 == 0)
+            wps = circle_waypoints(
+                ag.x_est[:3], radius, start_angle, cw, terrain,
+                n_pts=SUPPORT_CIRCLE_N, agl=agl,
+            )
+            partner.state          = DroneState.SUPPORT
+            partner.support_center = ag.x_est[:3].copy()
+            partner.support_radius = radius
+            partner.support_cw     = cw
+            partner.waypoints      = wps
+            partner.wp_idx         = 0
+            print(
+                f"    → Drone {partner_id} SUPPORT (retry, passo {step}) "
+                f"{'CW' if cw else 'CCW'} r={radius:.1f}m attorno a drone {drone_id}"
+            )
+
+        ag.support_n_needed -= len(to_assign)
+        if ag.support_n_needed <= 0:
+            ag.support_pending = False
 
 
 # ============================================================================
@@ -411,19 +525,8 @@ def _calibrate_noise(
     for i in drone_ids:
         print(f"    Drone {i}: σ̂={sigma_local[i]:.2e}")
 
-    sigma: Dict[int, float] = {i: sigma_local[i] for i in drone_ids}
-    for _ in range(consensus_iters):
-        sigma_new: Dict[int, float] = {}
-        for i in drone_ids:
-            neighbors = [
-                j for j in drone_ids if j != i
-                and np.linalg.norm(agents[i].x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS
-            ]
-            all_vals = [sigma[i]] + [sigma[j] for j in neighbors]
-            sigma_new[i] = float(np.mean(all_vals))
-        sigma = sigma_new
-
-    agreed = float(np.mean(list(sigma.values())))
+    sigma_agreed = _average_consensus(agents, drone_ids, sigma_local, iters=consensus_iters)
+    agreed = float(np.mean([sigma_agreed[i] for i in drone_ids]))
     print(f"  [Calibrazione] σ̂ consensus = {agreed:.2e}")
     return agreed
 
@@ -606,6 +709,9 @@ def simulate(
                     f"\n  ⬛ Drone {i} STOP (SUPPORT→STOP, S={sig:.2e}) "
                     f"al passo {step} (t={t:.2f}s)"
                 )
+
+        # ── 2b. Retry partner SUPPORT pendenti ──────────────────────────
+        _retry_support_search(agents, drone_ids, terrain, agl, step)
 
         # Log waypoint corrente (dopo transizioni, prima di muoversi)
         for i in drone_ids:

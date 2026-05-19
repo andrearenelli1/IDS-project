@@ -29,7 +29,6 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import LightSource
 from mpl_toolkits.mplot3d import Axes3D          # noqa: F401
 from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
-from matplotlib.widgets import Button
 
 from artva import ARTVASource
 from terrain import Terrain
@@ -493,28 +492,6 @@ def animate_mission(
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
-    # ── Bottone velocità ─────────────────────────────────────────────────────
-    _SPEED_LEVELS = [1, 2, 4]
-    _speed_state  = [0]   # indice corrente in _SPEED_LEVELS (lista per chiusura mutabile)
-    _anim_ref     = [None]
-
-    btn_ax    = fig.add_axes([0.455, 0.005, 0.09, 0.038])
-    speed_btn = Button(btn_ax, f"▶ {_SPEED_LEVELS[0]}×",
-                       color="#1e2730", hovercolor="#2a3a4a")
-    speed_btn.label.set_color(_TEXT_COLOR)
-    speed_btn.label.set_fontsize(10)
-    speed_btn.label.set_fontweight("bold")
-
-    def _on_speed_click(_event):
-        _speed_state[0] = (_speed_state[0] + 1) % len(_SPEED_LEVELS)
-        mult = _SPEED_LEVELS[_speed_state[0]]
-        if _anim_ref[0] is not None:
-            _anim_ref[0].event_source.interval = max(16, 1000 // (fps * mult))
-        speed_btn.label.set_text(f"▶ {mult}×")
-        fig.canvas.draw_idle()
-
-    speed_btn.on_clicked(_on_speed_click)
-
     step_skip = max(1, int(round(1.0 / (dt * fps) * speed)))
     frame_idx = list(range(0, T, step_skip))
 
@@ -770,8 +747,7 @@ def animate_mission(
         return all_artists
 
     anim = FuncAnimation(fig, update, frames=len(frame_idx),
-                         init_func=init, blit=True, interval=1000 // fps)
-    _anim_ref[0] = anim
+                         init_func=init, blit=False, interval=1000 // fps)
 
     if save:
         _save_animation(anim, save_path, fps)

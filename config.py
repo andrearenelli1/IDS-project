@@ -74,6 +74,7 @@ DIST_EST_BATCH    = 5      # [-]     misure recenti usate per ogni aggiornamento
 # Triangolazione
 # ============================================================================
 TRIANGULATE_N_PARTNERS = 2  # droni chiamati in supporto al rilevamento
+SUPPORT_SEARCH_TIMEOUT = 60  # [steps] attesa max per trovare partner SUPPORT mancanti
 
 # ============================================================================
 # Consenso distribuito selezione partner (min-consensus su grafo limitato)
@@ -111,6 +112,7 @@ STOP_THRESH   = 0.3     # [m]  soglia raggiungimento waypoint
 # ============================================================================
 # Visualizzazione
 # ============================================================================
+ANIM_SPEED = 10.0   # fattore di accelerazione animazione (1.0 = tempo reale)
 COLORS = {i: c for i, c in enumerate([
     "#e63946", "#2a9d8f", "#e9c46a", "#a8dadc",
     "#f4a261", "#6a4c93", "#1982c4", "#8ac926",
