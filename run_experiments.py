@@ -413,12 +413,15 @@ def _make_pbar(total: int, initial: int, desc: str):
 # ============================================================================
 
 def _read_done_ids(path: str) -> set:
-    """Legge i run_id già completati nel CSV (per resume dopo interruzione)."""
+    """Legge i run_id già completati nel CSV (per resume dopo interruzione).
+    Le righe con note che iniziano per 'ERRORE:' non vengono conteggiate come
+    completate, così vengono rieseguite automaticamente al prossimo run."""
     try:
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
             return {int(row["run_id"]) for row in reader
-                    if row.get("run_id") and row["run_id"] != "run_id"}
+                    if row.get("run_id") and row["run_id"] != "run_id"
+                    and not row.get("note", "").startswith("ERRORE:")}
     except FileNotFoundError:
         return set()
 
