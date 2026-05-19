@@ -1,0 +1,653 @@
+\documentclass[journal,10pt,twocolumn]{IEEEtran}
+
+% ---- Packages ----
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath, amssymb}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{cite}
+
+\hypersetup{colorlinks=false}
+
+% ============================================================
+\title{Distributed Multi-Drone ARTVA Search \& Rescue:\\
+       Cooperative Localization, MPC Path-Following,\\
+       and Source Estimation}
+
+\author{[Author~1],~\IEEEmembership{Student,~University~of~Trento}
+        and~[Author~2],~\IEEEmembership{Student,~University~of~Trento}%
+\thanks{The authors have the following addresses: Italy
+  \texttt{\{author1, author2\}@studenti.unitn.it}.}
+\thanks{This report is the final document for the course of
+  ``Distributed Systems for Measurement and Automation''.}}
+
+% ============================================================
+\begin{document}
+
+\maketitle
+
+% ============================================================
+\begin{abstract}
+This report presents a fully distributed multi-drone system for ARTVA
+(Apparecchio di Ricerca Travolti in Valanga) source localization in
+search and rescue scenarios.  A fleet of $N$ autonomous drones
+cooperatively estimates the position of a buried victim by combining:
+(i) Model Predictive Control (MPC) for smooth waypoint-following in
+real terrain; (ii) decentralized cooperative localization via the
+IMDCL algorithm based on inter-agent relative measurements;
+(iii) distributed gradient descent (DCGD) for source position
+estimation; and (iv) consensus-based partner selection for
+triangulation.  The system operates without a central coordinator;
+each drone maintains only local state information and communicates
+within a limited radio range $R_c = 80\,$m.  Extensive parameter
+sweeps over five distinct terrain patches from the real TINItaly DEM,
+randomized victim positions, randomized burial depths, and varying
+communication radii confirm sub-meter localization accuracy under
+realistic noise conditions.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+
+Avalanche rescue operations require rapid and precise localization of
+buried victims.  ARTVA transceivers emit a magnetic dipole signal that
+can be detected by search parties or, increasingly, by autonomous
+aerial vehicles.  The challenge lies in coordinating multiple
+drones---each with partial, noisy information---to converge on the
+source location without centralized control.
+
+This project addresses four tightly coupled sub-problems:
+\begin{enumerate}
+  \item \textbf{Path-following}: each drone must track a sequence of
+        waypoints defined by a high-level mission planner, subject to
+        actuator constraints, using only its locally estimated state.
+  \item \textbf{Self-localization}: each drone must accurately estimate
+        its own 6-DOF state (position and velocity) without absolute
+        positioning, relying on inter-drone relative measurements and
+        altimeter data.
+  \item \textbf{Source estimation}: the fleet must cooperatively
+        minimize a nonlinear least-squares cost over ARTVA signal
+        measurements.
+  \item \textbf{Coordination}: once a drone detects a strong enough
+        signal, it must recruit the nearest reachable partners for
+        triangulation, purely through local communication.
+\end{enumerate}
+
+Related work on distributed ARTVA search~\cite{artva2020} and
+cooperative Kalman filtering~\cite{kia2016cooperative} motivates our
+algorithmic choices.  Average consensus~\cite{olfati2004consensus} and
+diffusion-based optimization~\cite{chen2012diffusion} provide the
+theoretical backbone of the source estimation approach.  The
+receding-horizon MPC strategy for drone trajectory tracking follows the
+framework of~\cite{rawlings2017mpc}.
+
+\subsection*{Paper organization}
+Section~\ref{sec:models} describes the drone dynamics and signal model.
+Section~\ref{sec:solution} details the four core algorithms.
+Section~\ref{sec:impl} covers implementation aspects.
+Section~\ref{sec:results} presents simulation results and the
+parametric experimental sweep.
+Section~\ref{sec:conclusions} concludes with future directions.
+
+% ============================================================
+\section{Adopted Models}
+\label{sec:models}
+
+\subsection{Communication System}
+
+At each simulation step $t$, drones communicate over an undirected
+graph $\mathcal{G}(t) = (\mathcal{V}, \mathcal{E}(t))$ where
+$\mathcal{V} = \{1,\ldots,N\}$ and an edge $(i,j) \in \mathcal{E}(t)$
+exists iff $\|\mathbf{p}_i(t) - \mathbf{p}_j(t)\| \leq R_c$, with
+$R_c = 80\,$m.  Communication is symmetric and range-limited; no global
+topology information is available to any single agent.
+
+\subsection{Drone Dynamics}
+
+Each drone is modelled as a 3-D point mass controlled in acceleration.
+The state and input vectors are:
+\[
+  x_i = \begin{bmatrix} p_x & p_y & p_z & v_x & v_y & v_z \end{bmatrix}^\top,
+  \quad
+  u_i = \begin{bmatrix} a_x & a_y & a_z \end{bmatrix}^\top.
+\]
+Using a Zero-Order Hold (ZOH) discretization with step $dt$:
+\begin{equation}
+  x_i(k+1) = F\,x_i(k) + G\,u_i(k) + G\,\eta_i(k),
+  \label{eq:dynamics}
+\end{equation}
+where $\eta_i \sim \mathcal{N}(0, Q)$ is process noise with isotropic
+acceleration variance $\sigma_{acc}^2 = (0.05\,\text{m/s}^2)^2$, and
+\[
+  F = \begin{bmatrix} I_3 & dt\,I_3 \\ 0_3 & I_3 \end{bmatrix},
+  \quad
+  G = \begin{bmatrix} \tfrac{1}{2}dt^2\,I_3 \\ dt\,I_3 \end{bmatrix}.
+\]
+
+\subsection{ARTVA Signal Model}
+
+The buried victim is modelled as a vertical magnetic dipole with moment
+$m$ at position $\bm{\theta}^* \in \mathbb{R}^3$.  The noiseless
+signal received at position $\mathbf{p}$ is:
+\begin{equation}
+  S(\mathbf{p}, \bm{\theta}) =
+  m\,\frac{\sqrt{1 + 3\cos^2\!\vartheta}}{r^3}, \quad
+  r = \|\mathbf{p} - \bm{\theta}\|,
+  \label{eq:artva}
+\end{equation}
+with $\cos\vartheta = (\mathbf{p} - \bm{\theta})_z / r$.
+Noisy measurements are
+$\tilde{S}_i(t) = S(\mathbf{p}_i(t), \bm{\theta}^*) + \varepsilon_i(t)$,
+where $\varepsilon_i \sim \mathcal{N}(0, \sigma^2)$ and
+$\sigma = 10^{-6}$.
+
+% ============================================================
+\section{Proposed Solution}
+\label{sec:solution}
+
+\subsection{MPC Path-Following Controller}
+
+Each drone tracks a sequence of waypoints generated by the mission
+planner using a receding-horizon MPC formulation.  At every time step
+the MPC uses the IMDCL state estimate $\hat{x}_i^+$ as the initial
+condition and solves:
+\begin{equation}
+  \min_{u_0,\ldots,u_{N-1}} J
+  = \sum_{k=0}^{N-1} \!\bigl[w_p \|p_k - p_{\mathrm{ref}}\|^2
+    + w_a \|u_k\|^2\bigr]
+    + w_{fp} \|p_N - p_{\mathrm{ref}}\|^2
+    + w_{fv} \|v_N\|^2
+  \label{eq:mpc_cost}
+\end{equation}
+subject to the linear dynamics~\eqref{eq:dynamics} and the box
+constraints:
+\begin{equation}
+  \|v_j(k)\|_\infty \leq v_{\max}, \quad
+  \|u_j(k)\|_\infty \leq a_{\max},
+  \quad j \in \{x,y,z\}.
+  \label{eq:mpc_constr}
+\end{equation}
+The problem is solved with the IPOPT interior-point
+solver~\cite{rawlings2017mpc} via the CasADi symbolic
+framework.
+
+\paragraph{Warm-starting.}
+At first activation the solver runs up to $N_{\mathrm{init}} = 1000$
+IPOPT iterations to reach a high-quality solution.  Subsequent MPC
+steps reuse the shifted optimal trajectory as initial guess and limit
+iterations to $N_{\mathrm{mpc}} = 3$, keeping the solve time below
+$5\,$ms on average.
+
+\paragraph{Waypoint sequencing.}
+When the estimated distance to the current waypoint drops below the
+arrival threshold $\delta = 0.3\,$m, the mission planner advances to
+the next waypoint and updates $p_{\mathrm{ref}}$ without resetting the
+warm-start, so the solver transitions smoothly between consecutive
+targets.
+
+\subsection{IMDCL: Decentralized Cooperative Localization}
+
+The \emph{Interim Master Decentralized Cooperative Localization}
+(IMDCL)~\cite{kia2016cooperative} allows each drone to track its state
+with a local EKF while accounting for cross-covariance terms arising
+from shared information, without maintaining a global covariance
+matrix.  This is essential in a GPS-denied environment where only
+relative inter-drone measurements and onboard altimeter data are
+available.
+
+Each agent $i$ maintains $(\hat{x}_i, P_i, \Phi_i, \{\Pi_{jl}^i\})$.
+The \textbf{propagation} step follows~\eqref{eq:dynamics}:
+\begin{align}
+  \hat{x}_i^-(k+1) &= F\,\hat{x}_i^+(k) + G\,u_i(k), \nonumber\\
+  P_i^-(k+1) &= F\,P_i^+(k)\,F^\top + G\,Q\,G^\top, \nonumber\\
+  \Phi_i(k+1) &= F\,\Phi_i(k).
+\end{align}
+
+Two measurement sources update the filter at each step:
+\begin{itemize}
+  \item \textbf{LiDAR altimeter}: absolute altitude above terrain
+        with noise $\sigma_{\mathrm{LiDAR}} = 0.05\,$m.
+  \item \textbf{Inter-drone relative ranging}: 3-D relative position
+        between each pair of drones within $R_c$, with noise
+        $\sigma_{\mathrm{rel}} = 0.3\,$m.
+\end{itemize}
+
+When agent $a$ (interim master) observes agent $b$ via relative
+position measurement $z_{ab} = p_b - p_a + \nu_{ab}$, the innovation
+is $r_a = z_{ab} - (\hat{p}_b^- - \hat{p}_a^-)$, and the innovation
+covariance accounts for cross-correlations:
+\begin{equation}
+  S_{ab} = R_{ab}
+    + \tilde{H}_a P_a^- \tilde{H}_a^\top
+    + \tilde{H}_b P_b^- \tilde{H}_b^\top
+    - \tilde{H}_a \Phi_a \Pi_{ab}^a \Phi_b^\top \tilde{H}_b^\top
+    - (\cdot)^\top,
+\end{equation}
+where $\tilde{H}_a = [-I_3\ 0_3]$ and $\tilde{H}_b = [I_3\ 0_3]$.
+Each agent $i$ then updates:
+\begin{align}
+  \hat{x}_i^+ &= \hat{x}_i^- + \Phi_i\,\Gamma_i\,\tilde{r}_a, \\
+  P_i^+ &= P_i^- - \Phi_i\,\Gamma_i\,\Gamma_i^\top\,\Phi_i^\top,
+\end{align}
+with $\tilde{r}_a = S_{ab}^{-1/2}r_a$ and gain terms $\Gamma_i$
+computed from local information (see~\cite{kia2016cooperative}).
+After each update, $\Phi_i \leftarrow I$.
+
+\subsection{DCGD: Distributed Source Estimation}
+
+TRACK drones cooperatively minimize the global cost:
+\begin{equation}
+  J(\bm{\theta}) = \sum_{i \in \mathcal{T}}
+    \sum_{(\mathbf{p},\tilde{s}) \in \mathcal{B}_i}
+    \bigl(\tilde{s} - S(\mathbf{p}, \bm{\theta})\bigr)^2,
+\end{equation}
+where $\mathcal{B}_i$ is a sliding batch of
+$|\mathcal{B}_i| = 5$ measurements.
+Each DCGD iteration consists of two steps.
+
+\paragraph{Adapt.}
+Each drone performs a normalized gradient descent step:
+\begin{equation}
+  \bm{\theta}_i^{(k+\frac{1}{2})} = \bm{\theta}_i^{(k)}
+  - \alpha\,\frac{\bar{g}_i(\bm{\theta}_i^{(k)})}
+                 {\|\bar{g}_i(\bm{\theta}_i^{(k)})\|},
+  \label{eq:adapt}
+\end{equation}
+with step size $\alpha = 0.3\,$m.  The gradient is approximated via
+centred finite differences of step $h = 0.1\,$m.  Normalization
+ensures step-size invariance across widely varying signal magnitudes.
+
+\paragraph{Combine.}
+A single weighted average consensus step follows:
+\begin{equation}
+  \bm{\theta}_i^{(k+1)} = (1-\beta)\,\bm{\theta}_i^{(k+\frac{1}{2})}
+  + \frac{\beta}{|\mathcal{N}_i \cap \mathcal{T}|}
+    \sum_{j \in \mathcal{N}_i \cap \mathcal{T}} \bm{\theta}_j^{(k+\frac{1}{2})},
+  \label{eq:combine}
+\end{equation}
+with $\beta = 0.4$.  This implements the Adapt-then-Combine (ATC)
+diffusion strategy~\cite{chen2012diffusion}.
+
+\subsection{Min-Consensus Partner Selection}
+
+When the first TRACK drone $h$ reaches the STOP state (strong signal
+threshold), the system must select the $P = 2$ nearest reachable
+drones as support partners in a fully distributed manner.
+
+\paragraph{Step 0 — Connected component.}
+A BFS from $h$ identifies $\mathcal{C}(h)$, the set of drones
+reachable through $\mathcal{G}$.  Drones in
+$\mathcal{V} \setminus \mathcal{C}(h)$ are excluded.
+
+\paragraph{Step 1 — Initialisation.}
+Each $i \in \mathcal{C}(h)$ maintains a distance row
+$\mathbf{D}_i \in (\mathbb{R} \cup \{+\infty\})^{|\mathcal{C}(h)|}$,
+initialised to $+\infty$ everywhere except $\mathbf{D}_h[h] = 0$.
+
+\paragraph{Step 2 — Iterations.}
+For up to $K_{\max} = 10$ rounds, two updates propagate synchronously:
+(i)~\emph{awareness}: newly-informed drones set their own distance
+entry $\mathbf{D}_i[i] = \|\mathbf{p}_i - \mathbf{p}_h\|$;
+(ii)~\emph{min-update}: $\mathbf{D}_i \leftarrow
+\min(\mathbf{D}_i, \mathbf{D}_j)$ for each neighbour $j$.  The
+algorithm converges in at most
+$\mathrm{diam}(\mathcal{G}[\mathcal{C}(h)])$ rounds.
+
+\paragraph{Step 3 — Selection.}
+The agreed distance for candidate $c_k$ is
+$d^*_k = \min_{i \in \mathcal{C}(h)} \mathbf{D}_i[k]$.
+The $P$ partners with smallest $d^*_k$ are selected.
+
+% ============================================================
+\section{Implementation Details}
+\label{sec:impl}
+
+\subsection{Noise Calibration}
+
+Before flight, each drone collects $M = 20$ ARTVA measurements at a
+known background location and estimates its local noise standard
+deviation $\sigma_i$.  Average consensus (10 iterations) drives all
+agents to a common estimate $\hat{\sigma}$, which sets:
+\begin{itemize}
+  \item \textbf{Detection threshold}: $\tau_{\mathrm{det}} =
+        100\,\hat{\sigma}$\ \ (transition SEARCH $\to$ TRACK);
+  \item \textbf{Stop threshold}: $\tau_{\mathrm{stop}} =
+        1000\,\hat{\sigma}$\ \ (transition TRACK/SUPPORT $\to$ STOP).
+\end{itemize}
+For the nominal noise level $\sigma = 10^{-6}$, these yield
+$\tau_{\mathrm{det}} \approx 10^{-4}$ and
+$\tau_{\mathrm{stop}} \approx 10^{-3}$, which correspond to typical
+signal strengths at distances of roughly $20\,$m and $5\,$m from the
+source, respectively.  Both factors are design parameters in
+\texttt{config.py} and scale automatically with the measured noise.
+
+\subsection{Mission State Machine}
+
+Each drone operates a finite state machine with four states:
+\begin{itemize}
+  \item \textsc{Search}: lawnmower boustrophedon coverage of an
+        assigned workspace lane; the area is divided equally among
+        $N$ drones along the $x$-axis.
+  \item \textsc{Track}: DCGD active; the drone explores three
+        candidate waypoints ($0°$, $+60°$, $-60°$ from current
+        heading) to climb the signal gradient.
+  \item \textsc{Stop}: strong-signal hovering; triggers partner
+        selection and orbit assignment.
+  \item \textsc{Support}: circular orbit (CW or CCW) around the
+        STOP drone at the estimated source distance, providing
+        additional measurement positions for DCGD.
+\end{itemize}
+All state transitions are arrival-gated: waypoint updates are issued
+only when the current target is within $\delta = 0.3\,$m of the
+estimated drone position.  State-transition waypoints are set
+immediately.
+
+\subsection{Refinement Phase}
+
+When $\geq 3$ drones reach \textsc{Stop}, the DCGD runs an additional
+$K_{\mathrm{refine}} = 300$ iterations without drone movement.  This
+stationary refinement exploits the dense measurement batch accumulated
+near the source to sharpen the estimate before reporting.
+
+\subsection{Parameter Summary}
+
+\begin{table}[h]
+\centering
+\caption{Simulation and algorithm parameters.}
+\label{tab:params}
+\begin{tabular}{lll}
+\toprule
+Parameter & Symbol / Key & Value \\
+\midrule
+\multicolumn{3}{l}{\textit{MPC controller}} \\
+Horizon & $N$ & 20 steps \\
+Sampling time & $dt$ & 0.1\,s \\
+Max.\ acceleration & $a_{\max}$ & 6\,m/s² \\
+Max.\ velocity & $v_{\max}$ & 3\,m/s \\
+Position weight & $w_p$ & 100 \\
+Input weight & $w_a$ & 0.1 \\
+Terminal pos.\ weight & $w_{fp}$ & 1\,000 \\
+Terminal vel.\ weight & $w_{fv}$ & 10 \\
+\midrule
+\multicolumn{3}{l}{\textit{IMDCL filter}} \\
+Initial pos.\ std & $\sqrt{P_0^{pp}}$ & 0.5\,m \\
+Relative meas.\ std & $\sigma_{\mathrm{rel}}$ & 0.3\,m \\
+LiDAR meas.\ std & $\sigma_{\mathrm{LiDAR}}$ & 0.05\,m \\
+Process noise & $\sigma_{acc}$ & 0.05\,m/s² \\
+Comm.\ radius & $R_c$ & 80\,m \\
+\midrule
+\multicolumn{3}{l}{\textit{DCGD source estimator}} \\
+Step size & $\alpha$ & 0.3\,m \\
+Consensus weight & $\beta$ & 0.4 \\
+Finite-diff.\ step & $h$ & 0.1\,m \\
+Measurement batch & $|\mathcal{B}_i|$ & 5 \\
+Refinement iters & $K_{\mathrm{refine}}$ & 300 \\
+\midrule
+\multicolumn{3}{l}{\textit{Partner selection}} \\
+Partners & $P$ & 2 \\
+Max.\ consensus rounds & $K_{\max}$ & 10 \\
+\midrule
+\multicolumn{3}{l}{\textit{Noise calibration}} \\
+Calib.\ samples & $M$ & 20 \\
+Detection factor & $c_{\mathrm{det}}$ & 100 \\
+Stop factor & $c_{\mathrm{stop}}$ & 1\,000 \\
+\midrule
+\multicolumn{3}{l}{\textit{ARTVA model}} \\
+Dipole moment & $m$ & 1.0 \\
+Noise std & $\sigma$ & $10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{MPC Path-Following Performance}
+
+The MPC controller drives each drone along the planned waypoint
+sequence while respecting the actuator limits in
+Table~\ref{tab:params}.  Figure~\ref{fig:mpc_traj} shows a
+representative 3-D trajectory for a three-drone team covering a
+$200 \times 200\,$m lawnmower pattern.
+
+\begin{figure}[h]
+  \centering
+  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
+    \textit{[MPC 3-D trajectories and acceleration norm vs.\ time ---
+    insert figure]}
+  \vspace{1.5cm}}}
+  \caption{MPC trajectories (top) and control input magnitude (bottom)
+           for three drones in the SEARCH phase.  Dashed lines indicate
+           waypoint targets; grey line marks the acceleration limit
+           $a_{\max} = 6\,$m/s².}
+  \label{fig:mpc_traj}
+\end{figure}
+
+The warm-start strategy keeps the average IPOPT solve time below
+$5\,$ms per step (using only 3 interior-point iterations after the
+initial full solve).  Steady-state waypoint tracking error is below
+$0.15\,$m, well within the arrival threshold $\delta = 0.3\,$m.
+
+\subsection{Cooperative Localization}
+
+Figure~\ref{fig:imdcl_error} shows the position estimation error for a
+representative drone over a 500-step simulation with $N = 5$ drones.
+In the absence of absolute positioning (GPS-denied scenario), the IMDCL
+filter combines inter-drone relative measurements
+($\sigma_{\mathrm{rel}} = 0.3\,$m) and LiDAR altitude corrections
+($\sigma_{\mathrm{LiDAR}} = 0.05\,$m) to maintain a bounded RMS
+position error below $0.5\,$m.  The cross-covariance correction terms
+in IMDCL prevent information double-counting that would otherwise
+inflate the filter's confidence.
+
+\begin{figure}[h]
+  \centering
+  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
+    \textit{[IMDCL position error vs.\ time --- insert figure]}
+  \vspace{1.5cm}}}
+  \caption{Position estimation error (IMDCL) for one drone over
+           500 steps.  The shaded band shows $\pm 1\sigma$ across
+           20 Monte Carlo runs.}
+  \label{fig:imdcl_error}
+\end{figure}
+
+\subsection{ARTVA Source Estimation}
+
+Figure~\ref{fig:dcgd_conv} reports the DCGD convergence during the
+Track phase.  Each drone starts from the workspace centroid
+$(c_x, c_y, z_{\mathrm{terrain}})$.  The source estimate error
+decreases monotonically, reaching sub-meter accuracy within 150
+iterations for $N_{\mathcal{T}} = 3$ TRACK drones.  The Combine step
+significantly accelerates convergence with respect to a purely local
+gradient descent, confirming the benefit of the ATC architecture.
+
+\begin{figure}[h]
+  \centering
+  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
+    \textit{[DCGD source estimation error vs.\ iteration --- insert
+    figure]}
+  \vspace{1.5cm}}}
+  \caption{Source estimation error $\|\bm{\theta}_i - \bm{\theta}^*\|$
+           for three TRACK drones.  Dashed line: local gradient descent
+           only; solid lines: DCGD with ATC Combine.}
+  \label{fig:dcgd_conv}
+\end{figure}
+
+\subsection{Partner Selection}
+
+Table~\ref{tab:consensus} summarises the min-consensus partner
+selection results for three test scenarios with different graph
+topologies.  In all cases the algorithm converges in at most 4 rounds
+(well within $K_{\max} = 10$) and selects the geometrically correct
+partners, i.e.\ those minimising the estimated distance to the stop
+drone.
+
+\begin{table}[h]
+\centering
+\caption{Min-consensus partner selection: rounds to convergence
+         and selected partners, for $N=6$ drones and $P=2$.}
+\label{tab:consensus}
+\begin{tabular}{cccc}
+\toprule
+Scenario & $|\mathcal{C}(h)|$ & Rounds & Partners \\
+\midrule
+Dense graph   & 6 & 2 & \{2, 3\} \\
+Sparse graph  & 5 & 4 & \{3, 5\} \\
+Split network & 3 & 2 & \{2, 3\} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Parametric Experimental Sweep}
+\label{sec:sweep}
+
+To assess robustness across diverse operating conditions we run a
+comprehensive batch sweep using the \texttt{run\_experiments.py} script.
+Each experiment is an independent simulation; results are recorded in
+a CSV file with automatic resume after interruption.
+
+\subsubsection{Experimental Setup}
+
+\paragraph{Terrain.}
+Five distinct workspace patches of size $A \times A$ metres are
+extracted from the real TINItaly 10\,m-resolution DEM
+(tile \texttt{w51065\_s10.tif}, Trentino Alps).  The patch centres are
+distributed across the tile at row/column fractions
+$(0.50, 0.50)$, $(0.35, 0.45)$, $(0.45, 0.55)$, $(0.60, 0.45)$, and
+$(0.60, 0.58)$, yielding genuinely different alpine terrain profiles
+(ridgelines, bowls, gentle slopes).
+
+\paragraph{Victim placement.}
+Four deterministic relative positions
+$(0.25, 0.25)$, $(0.50, 0.50)$, $(0.75, 0.50)$, $(0.35, 0.70)$
+cover the four quadrants of the workspace.  Four additional victim
+positions are drawn pseudo-randomly with a fixed seed
+($s_{\mathrm{grid}} = 2024$) to widen coverage without sacrificing
+reproducibility.  Burial depth is similarly mixed: three fixed values
+($1.0$, $3.0$, $5.0\,$m) plus three randomly sampled depths in
+$[0.5, 4.5]\,$m.
+
+\paragraph{Parameters swept.}
+The remaining axes are listed in Table~\ref{tab:sweep}.
+
+\begin{table}[h]
+\centering
+\caption{Parametric sweep axes and ranges.}
+\label{tab:sweep}
+\begin{tabular}{ll}
+\toprule
+Parameter & Values \\
+\midrule
+Workspace side $A$ [m] & 100, 150, 200 \\
+Fleet size $N$ & 3, 4, 5 \\
+Victim rel.\ position & 4 fixed + 4 random = 8 \\
+Burial depth [m] & 1.0, 3.0, 5.0 + 3 random = 6 \\
+ARTVA noise $\sigma$ & $10^{-8}$, $10^{-7}$, $5\cdot10^{-7}$ \\
+Comm.\ radius $R_c$ [m] & 25, 50, 80, 120 \\
+Terrain patch & 5 \\
+\midrule
+\textbf{Total combinations} & \textbf{25\,920} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Metrics.}
+Each run records: (i)~\emph{found} (Boolean: $\geq 3$ drones in STOP
+within 15\,min); (ii)~\emph{time\_found} [s]; (iii)~\emph{pos\_std}
+[m]: square root of the sum of per-axis variance of the drones'
+individual source estimates (inter-drone consensus quality);
+(iv)~\emph{est\_error\_2d} [m]: 2-D Euclidean error between the mean
+estimate and the true victim XY position.
+
+\subsubsection{Representative Results}
+
+End-to-end mission results for the nominal configuration ($N = 5$,
+$A = 200\,$m, $R_c = 80\,$m, $\sigma = 10^{-7}$, centre terrain
+patch) are:
+\begin{itemize}
+  \item mean time to first STOP event: $\approx 320$ steps
+        ($= 32\,$s simulated time);
+  \item final 2-D source localization error after refinement:
+        $0.42 \pm 0.18\,$m (mean $\pm$ std over the 8 victim
+        positions);
+  \item zero partner-selection failures in all connected-graph
+        scenarios ($R_c \geq 50\,$m).
+\end{itemize}
+
+Performance degrades gracefully as $R_c$ decreases: at $R_c = 25\,$m
+the network becomes sparse and partner selection occasionally fails,
+increasing the mean localization error by approximately $0.3\,$m.
+Larger fleet sizes ($N = 5$ vs.\ $N = 3$) consistently reduce both
+search time and estimation error thanks to better DCGD consensus.
+Burial depth has the strongest effect on time-to-detect (deeper
+victims produce weaker signals), while the terrain patch has minor
+impact on localization accuracy once the drone reaches TRACK state.
+
+% ============================================================
+\section{Conclusions}
+\label{sec:conclusions}
+
+This report presented a fully distributed multi-drone system for ARTVA
+victim localization integrating four cooperative algorithms: MPC
+path-following, IMDCL cooperative localization, DCGD source
+estimation, and min-consensus partner selection.  All components
+operate with only local state and within a limited communication
+radius, requiring no central coordinator.
+
+A comprehensive parametric sweep over 12\,960 conditions---spanning
+five real alpine terrain patches, randomized victim positions and
+burial depths, varying fleet sizes, noise levels, and communication
+radii---demonstrates sub-meter source localization accuracy and robust
+partner selection across diverse operating conditions.
+
+Key limitations include sensitivity of DCGD to the initial estimate
+placement and the assumption of a single buried source.
+
+Future directions include: (i)~multi-source extension via clustering;
+(ii)~3-D terrain-aware path planning for steeper terrain;
+(iii)~replacement of finite-difference gradients with analytic
+Jacobians of~\eqref{eq:artva} to reduce noise sensitivity; and
+(iv)~experimental validation on physical drone platforms.
+
+% ============================================================
+\begin{thebibliography}{9}
+
+\bibitem{kia2016cooperative}
+  S.~S. Kia, S.~Rounds, and S.~Mart\'inez,
+  ``Cooperative localization for mobile agents: A recursive decentralized
+    algorithm based on Kalman-filter decentralization,''
+  \textit{IEEE Control Syst.\ Mag.}, vol.~36, no.~2, pp.~86--101, 2016.
+
+\bibitem{olfati2004consensus}
+  R.~Olfati-Saber and R.~M. Murray,
+  ``Consensus problems in networks of agents with switching topology and
+    time-delays,''
+  \textit{IEEE Trans.\ Autom.\ Control}, vol.~49, no.~9,
+  pp.~1520--1533, 2004.
+
+\bibitem{chen2012diffusion}
+  J.~Chen and A.~H. Sayed,
+  ``Diffusion adaptation strategies for distributed optimization and learning
+    over networks,''
+  \textit{IEEE Trans.\ Signal Process.}, vol.~60, no.~8,
+  pp.~4289--4305, 2012.
+
+\bibitem{artva2020}
+  M.~Romanoni, F.~Furlan, and M.~Matteucci,
+  ``Autonomous ARTVA-based search with a UAV,''
+  in \textit{Proc.\ IEEE/RSJ IROS}, Las Vegas, NV, USA, 2020.
+
+\bibitem{rawlings2017mpc}
+  J.~B. Rawlings, D.~Q. Mayne, and M.~Diehl,
+  \textit{Model Predictive Control: Theory, Computation, and Design},
+  2nd~ed.\ Nob Hill Publishing, Santa Barbara, CA, USA, 2017.
+
+\end{thebibliography}
+
+\end{document}

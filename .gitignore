@@ -48,4 +48,6 @@ Thumbs.db
 .pyc
 __pycache__/
 IDSvenv/
+
 .csv
+.tex

@@ -246,10 +246,16 @@ class Terrain:
 # Pipeline principale
 # ============================================================================
 
-def build_terrain(tif_path: str = TIF_PATH):
+def build_terrain(tif_path: str = TIF_PATH, center_frac=None):
     """
     Legge il GeoTIFF, estrae area AREA_SIZE_M × AREA_SIZE_M m,
     costruisce un oggetto Terrain interrogabile.
+
+    Parameters
+    ----------
+    tif_path    : percorso al file GeoTIFF
+    center_frac : (row_frac, col_frac) ∈ [0,1]² — centro dell'area come
+                  frazione delle dimensioni del DEM. None = centro del DEM.
 
     Returns
     -------
@@ -260,8 +266,17 @@ def build_terrain(tif_path: str = TIF_PATH):
     transform: tuple       (x_origin, pixel_w, y_origin, pixel_h)
     """
     dem, transform = read_geotiff(tif_path)
+
+    center_row, center_col = None, None
+    if center_frac is not None:
+        rows, cols = dem.shape
+        center_row = int(np.clip(center_frac[0] * rows, 0, rows - 1))
+        center_col = int(np.clip(center_frac[1] * cols, 0, cols - 1))
+
     sub_dem, x_coords, y_coords, _ = extract_area(
-        dem, transform, size_m=AREA_SIZE_M
+        dem, transform,
+        center_row=center_row, center_col=center_col,
+        size_m=AREA_SIZE_M,
     )
 
     if y_coords[0] > y_coords[-1]:

@@ -7,6 +7,7 @@ Per ogni combinazione di parametri esegue la simulazione e registra in
 results.csv:
   - tempo simulato per trovare la vittima [s]
   - varianza planimetrica della stima di posizione tra i droni [m²]
+  - errore planimetrico della stima rispetto alla posizione reale [m]
   - nota di timeout se il tempo supera 15 minuti simulati
 
 Uso
@@ -27,6 +28,20 @@ Configurazione
 --------------
 Modificare le liste nella sezione "GRID DEI PARAMETRI".
 Il numero totale di esperimenti è stampato prima dell'esecuzione.
+
+Workspace
+---------
+WORKSPACE_CENTERS definisce 5 patch di terreno distinte estratte dal DEM
+reale TINItaly. Ogni entry è (row_frac, col_frac) ∈ [0,1]² oppure None
+(= centro del DEM, comportamento originale). Questo permette di valutare
+la robustezza del sistema su terreni alpini diversi.
+
+Vittime casuali
+---------------
+N_RANDOM_VICTIMS posizioni vittima e N_RANDOM_DEPTHS profondità di
+sepoltura vengono campionate con seme fisso _GRID_RNG_SEED e aggiunte
+alle liste fisse, aumentando la diversità senza compromettere la
+riproducibilità.
 """
 
 from __future__ import annotations
@@ -65,14 +80,33 @@ N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
 # Posizione vittima come frazione relativa dell'area [0..1].
 # Convertite in coordinate assolute a runtime → sempre valide per qualunque area.
-VICTIM_REL_XY = [
+_VICTIM_REL_XY_FIXED = [
     (0.25, 0.25),                   # quadrante SW
     (0.50, 0.50),                   # centro
     (0.75, 0.50),                   # metà E
     (0.35, 0.70),                   # zona N-W
 ]
 
-BURIAL_DEPTHS = [1.0, 3.0, 5.0]    # [m]  profondità sepoltura
+# Seme separato per la generazione della griglia (garantisce riproducibilità
+# indipendentemente dal seme della simulazione --seed).
+_GRID_RNG_SEED = 2024
+_rng_grid = np.random.default_rng(_GRID_RNG_SEED)
+
+N_RANDOM_VICTIMS = 4                # posizioni vittima casuali aggiuntive
+_victim_random = [
+    (float(_rng_grid.uniform(0.10, 0.90)),
+     float(_rng_grid.uniform(0.10, 0.90)))
+    for _ in range(N_RANDOM_VICTIMS)
+]
+VICTIM_REL_XY = _VICTIM_REL_XY_FIXED + _victim_random
+
+BURIAL_DEPTHS_FIXED = [1.0, 3.0, 5.0]   # [m]  profondità fisse
+
+N_RANDOM_DEPTHS = 3                 # profondità di sepoltura casuali aggiuntive
+_depths_random = [
+    float(_rng_grid.uniform(0.5, 4.5)) for _ in range(N_RANDOM_DEPTHS)
+]
+BURIAL_DEPTHS = BURIAL_DEPTHS_FIXED + _depths_random
 
 ARTVA_NOISE_STDS = [1e-8, 1e-7, 5e-7]  # rumore segnale ARTVA
 
@@ -83,12 +117,23 @@ ARTVA_NOISE_STDS = [1e-8, 1e-7, 5e-7]  # rumore segnale ARTVA
 #    25 m → condizioni difficili
 COMM_RADII = [25, 50, 80, 120]     # [m]
 
+# Patch di terreno distinte estratte dal DEM TINItaly.
+# Ogni entry è (row_frac, col_frac) come frazioni delle dimensioni del DEM.
+# None = centro del DEM (comportamento originale e di default).
+WORKSPACE_CENTERS = [
+    None,            # patch centrale (default)
+    (0.35, 0.45),    # patch SW
+    (0.45, 0.55),    # patch E
+    (0.60, 0.45),    # patch N-W
+    (0.60, 0.58),    # patch N-E
+]
+
 # ============================================================================
 # Costanti di simulazione
 # ============================================================================
 
 MAX_SIM_SECONDS = 900.0             # 15 minuti → soglia timeout
-DT_SIM          = 0.5               # [s] — deve coincidere con DT_MPC in config
+DT_SIM          = 0.1               # [s] — deve coincidere con DT_MPC in config
 MAX_STEPS       = int(MAX_SIM_SECONDS / DT_SIM)
 SEED            = 42
 
@@ -109,6 +154,8 @@ CSV_FIELDS = [
     "victim_depth_m",
     "artva_noise_std",
     "comm_radius_m",
+    "workspace_frac_r",
+    "workspace_frac_c",
     "found",
     "time_found_s",
     "n_drones_stopped",
@@ -125,10 +172,11 @@ CSV_FIELDS = [
 _terrain_cache: dict = {}
 
 
-def _load_terrain(area_size: float, verbose: bool = False):
+def _load_terrain(area_size: float, center_frac=None, verbose: bool = False):
     """Restituisce (terrain_obj, …) per l'area richiesta, con cache per processo."""
-    if area_size in _terrain_cache:
-        return _terrain_cache[area_size]
+    key = (area_size, center_frac)
+    if key in _terrain_cache:
+        return _terrain_cache[key]
 
     import terrain as terrain_mod
     from terrain import build_terrain
@@ -138,11 +186,11 @@ def _load_terrain(area_size: float, verbose: bool = False):
     try:
         buf = io.StringIO()
         with redirect_stdout(sys.stdout if verbose else buf):
-            result = build_terrain()
+            result = build_terrain(center_frac=center_frac)
     finally:
         terrain_mod.AREA_SIZE_M = old_area
 
-    _terrain_cache[area_size] = result
+    _terrain_cache[key] = result
     return result
 
 
@@ -157,8 +205,9 @@ def run_one(
     victim_depth: float,
     noise_std:    float,
     comm_radius:  float,
-    seed:         int  = SEED,
-    verbose:      bool = False,
+    center_frac              = None,
+    seed:         int        = SEED,
+    verbose:      bool       = False,
 ) -> dict:
     """
     Esegue un esperimento e restituisce le metriche.
@@ -166,6 +215,9 @@ def run_one(
     I parametri vengono patchati sulle variabili globali dei moduli (senza
     toccare config.py su disco) e ripristinati nel finally.
     Ogni processo figlio ha la propria copia dei moduli → nessuna race condition.
+
+    center_frac : (row_frac, col_frac) per la selezione del workspace nel DEM,
+                  oppure None per il centro di default.
     """
     import config
     import terrain    as terrain_mod
@@ -193,7 +245,8 @@ def run_one(
     sink = sys.stdout if verbose else io.StringIO()
 
     try:
-        terrain_obj, *_ = _load_terrain(area_size, verbose=verbose)
+        terrain_obj, *_ = _load_terrain(area_size, center_frac=center_frac,
+                                         verbose=verbose)
 
         span_x   = terrain_obj.x_max - terrain_obj.x_min
         span_y   = terrain_obj.y_max - terrain_obj.y_min
@@ -282,12 +335,12 @@ def run_one(
 
 def _worker(job: tuple) -> tuple:
     """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
-    run_id, (area, n_drones, vrel, depth, noise, rc), seed, verbose = job
+    run_id, (area, n_drones, vrel, depth, noise, rc, ws), seed, verbose = job
     try:
         metrics = run_one(
             area_size=area, n_drones=n_drones, victim_rel=vrel,
             victim_depth=depth, noise_std=noise, comm_radius=rc,
-            seed=seed, verbose=verbose,
+            center_frac=ws, seed=seed, verbose=verbose,
         )
         return run_id, metrics, None
     except Exception:
@@ -323,7 +376,7 @@ class _FallbackBar:
         eta     = (self.total - self.n) / rate if rate > 0 else float("inf")
         bar_w   = 28
         filled  = int(bar_w * self.n / self.total) if self.total else 0
-        bar     = "█" * filled + "░" * (bar_w - filled)
+        bar     = "#" * filled + "." * (bar_w - filled)
         pct     = 100 * self.n / self.total if self.total else 0
         eta_s   = f"{eta:.0f}s" if eta < 3600 else f"{eta/3600:.1f}h"
         line    = (
@@ -369,6 +422,13 @@ def _read_done_ids(path: str) -> set:
         return set()
 
 
+def _ws_label(ws) -> tuple:
+    """Converte workspace center in (frac_r, frac_c) stringhe per il CSV."""
+    if ws is None:
+        return ("center", "center")
+    return (f"{ws[0]:.2f}", f"{ws[1]:.2f}")
+
+
 # ============================================================================
 # Entry point
 # ============================================================================
@@ -397,26 +457,28 @@ def main() -> None:
     # ── Griglia ───────────────────────────────────────────────────────────
     grid = list(itertools.product(
         AREA_SIZES, N_DRONES_LIST, VICTIM_REL_XY,
-        BURIAL_DEPTHS, ARTVA_NOISE_STDS, COMM_RADII,
+        BURIAL_DEPTHS, ARTVA_NOISE_STDS, COMM_RADII, WORKSPACE_CENTERS,
     ))
     total = len(grid)
 
     print(f"Sweep parametrico — {total} esperimenti totali")
-    print(f"  area_sizes:    {AREA_SIZES}")
-    print(f"  n_drones:      {N_DRONES_LIST}")
-    print(f"  victim_rel_xy: {VICTIM_REL_XY}")
-    print(f"  depths [m]:    {BURIAL_DEPTHS}")
-    print(f"  noise_stds:    {ARTVA_NOISE_STDS}")
-    print(f"  comm_radii[m]: {COMM_RADII}")
-    print(f"  timeout:       {MAX_SIM_SECONDS:.0f}s ({MAX_SIM_SECONDS/60:.0f}min) / {MAX_STEPS} passi")
-    print(f"  workers:       {args.workers}")
-    print(f"  output:        {args.out}")
+    print(f"  area_sizes:       {AREA_SIZES}")
+    print(f"  n_drones:         {N_DRONES_LIST}")
+    print(f"  victim_rel_xy:    {len(VICTIM_REL_XY)} pos. ({len(_VICTIM_REL_XY_FIXED)} fisse + {N_RANDOM_VICTIMS} casuali)")
+    print(f"  depths [m]:       {len(BURIAL_DEPTHS)} valori ({len(BURIAL_DEPTHS_FIXED)} fissi + {N_RANDOM_DEPTHS} casuali)")
+    print(f"  noise_stds:       {ARTVA_NOISE_STDS}")
+    print(f"  comm_radii[m]:    {COMM_RADII}")
+    print(f"  workspace_centers: {len(WORKSPACE_CENTERS)} patch DEM")
+    print(f"  timeout:          {MAX_SIM_SECONDS:.0f}s ({MAX_SIM_SECONDS/60:.0f}min) / {MAX_STEPS} passi")
+    print(f"  workers:          {args.workers}")
+    print(f"  output:           {args.out}")
 
     if args.dry_run:
         print("\n[dry-run] Prime 10 combinazioni:")
-        for i, (area, nd, vrel, depth, noise, rc) in enumerate(grid[:10], 1):
-            print(f"  {i:3d}: area={area}m  n={nd}  vrel={vrel}  "
-                  f"depth={depth}m  noise={noise:.0e}  rc={rc}m")
+        for i, (area, nd, vrel, depth, noise, rc, ws) in enumerate(grid[:10], 1):
+            ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
+            print(f"  {i:3d}: area={area}m  n={nd}  vrel=({vrel[0]:.2f},{vrel[1]:.2f})  "
+                  f"depth={depth:.2f}m  noise={noise:.0e}  rc={rc}m  ws={ws_str}")
         if total > 10:
             print(f"  … ({total - 10} altre)")
         return
@@ -438,11 +500,13 @@ def main() -> None:
     # ── Pre-carica terreni nel processo principale ────────────────────────
     # Su Linux (fork) i worker ereditano la cache → non rileggono il DEM.
     # Su macOS/Windows (spawn) ogni worker ricostruisce la propria cache.
-    print("\nPre-caricamento terreni...")
-    for area in AREA_SIZES:
-        t0 = time.perf_counter()
-        _load_terrain(area, verbose=False)
-        print(f"  {area}m × {area}m  ({time.perf_counter() - t0:.1f}s)")
+    unique_terrain_keys = {(a, ws) for a, _, _, _, _, _, ws in grid}
+    print(f"\nPre-caricamento {len(unique_terrain_keys)} configurazioni terreno...")
+    for area, ws in sorted(unique_terrain_keys, key=lambda x: (x[0], str(x[1]))):
+        t0     = time.perf_counter()
+        ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
+        _load_terrain(area, center_frac=ws, verbose=False)
+        print(f"  {area}m × {area}m  ws={ws_str}  ({time.perf_counter() - t0:.1f}s)")
 
     # ── Esecuzione ────────────────────────────────────────────────────────
     write_header = len(done_ids) == 0
@@ -457,7 +521,11 @@ def main() -> None:
 
         def _record(run_id: int, metrics, tb) -> None:
             nonlocal found_n, timeout_n, error_n
-            area, n_drones, vrel, depth, noise, rc = grid[run_id - 1]
+            area, n_drones, vrel, depth, noise, rc, ws = grid[run_id - 1]
+            terrain_obj, *_ = _load_terrain(area, center_frac=ws)
+            span_x = terrain_obj.x_max - terrain_obj.x_min
+            span_y = terrain_obj.y_max - terrain_obj.y_min
+            ws_r, ws_c = _ws_label(ws)
 
             if tb is not None:
                 error_n += 1
@@ -476,19 +544,21 @@ def main() -> None:
                 timeout_n += 1
 
             writer.writerow({
-                "run_id":          run_id,
-                "area_size_m":     area,
-                "n_drones":        n_drones,
-                "victim_x_m":      round(vrel[0] * area, 1),
-                "victim_y_m":      round(vrel[1] * area, 1),
-                "victim_depth_m":  depth,
-                "artva_noise_std": noise,
-                "comm_radius_m":   rc,
+                "run_id":            run_id,
+                "area_size_m":       area,
+                "n_drones":          n_drones,
+                "victim_x_m":        round(vrel[0] * span_x, 1),
+                "victim_y_m":        round(vrel[1] * span_y, 1),
+                "victim_depth_m":    round(depth, 2),
+                "artva_noise_std":   noise,
+                "comm_radius_m":     rc,
+                "workspace_frac_r":  ws_r,
+                "workspace_frac_c":  ws_c,
                 **metrics,
             })
             csvfile.flush()
             pbar.update(1)
-            pbar.set_postfix_str(f"✓{found_n} T{timeout_n} E{error_n}")
+            pbar.set_postfix_str(f"ok={found_n} TO={timeout_n} E={error_n}")
 
         with _make_pbar(total, initial=len(done_ids), desc="sweep") as pbar:
             if args.workers == 1:

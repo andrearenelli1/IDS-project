@@ -175,6 +175,27 @@ def _average_consensus(
 # Consensus distribuito — selezione partner per drone in STOP
 # ============================================================================
 
+def _reachable_from(
+    drone_ids:   list,
+    agents:      Dict[int, DroneAgent],
+    start_id:    int,
+    comm_radius: float,
+) -> list:
+    """BFS: restituisce i drone_ids raggiungibili da start_id nel grafo di comunicazione."""
+    pos       = {did: agents[did].x[:3] for did in drone_ids}
+    reachable = {start_id}
+    frontier  = {start_id}
+    while frontier:
+        new_frontier: set = set()
+        for fid in frontier:
+            for did in drone_ids:
+                if did not in reachable and np.linalg.norm(pos[fid] - pos[did]) <= comm_radius:
+                    reachable.add(did)
+                    new_frontier.add(did)
+        frontier = new_frontier
+    return [did for did in drone_ids if did in reachable]
+
+
 def _consensus_select_partners(
     agents:      Dict[int, DroneAgent],
     drone_ids:   list,
@@ -185,7 +206,16 @@ def _consensus_select_partners(
     """
     Selezione distribuita dei TRIANGULATE_N_PARTNERS più vicini al drone STOP
     tramite min-consensus su grafo limitato a comm_radius.
+
+    Solo i droni nella componente connessa di stop_id partecipano: la richiesta
+    non può propagarsi a cluster isolati, quindi non devono contribuire al consensus.
     """
+    drone_ids = _reachable_from(drone_ids, agents, stop_id, comm_radius)
+    if len(drone_ids) > 1:
+        isolated = len(list(agents.keys())) - len(drone_ids)
+        if isolated:
+            print(f"    [consensus] componente connessa: {drone_ids} ({isolated} droni isolati esclusi)")
+
     n      = len(drone_ids)
     id2idx = {did: k for k, did in enumerate(drone_ids)}
     h_idx  = id2idx[stop_id]
