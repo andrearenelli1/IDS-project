@@ -422,6 +422,13 @@ def preview_workspaces() -> None:
     e una finestra 3-D per ciascun workspace.
     Blocca finché tutte le finestre non vengono chiuse, poi la simulazione parte.
     """
+    import matplotlib
+    for _backend in ("TkAgg", "Qt5Agg", "GTK3Agg", "wxAgg"):
+        try:
+            matplotlib.use(_backend)
+            break
+        except Exception:
+            continue
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     from matplotlib.colors import LightSource
