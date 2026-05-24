@@ -57,11 +57,6 @@ import time
 import traceback
 from contextlib import redirect_stdout
 
-# Forza backend non-interattivo prima di qualunque import matplotlib
-# (necessario nei processi figlio che non hanno display).
-import matplotlib
-matplotlib.use("Agg")
-
 import numpy as np
 
 try:
@@ -79,7 +74,7 @@ AREA_SIZES = [100, 200]        # [m]  lato workspace
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
-N_RANDOM_VICTIMS = 6
+N_RANDOM_VICTIMS = 10
 
 ARTVA_NOISE_STDS = [1e-8, 1e-7, 1e-6]  # rumore segnale ARTVA
 
@@ -317,6 +312,8 @@ def run_one(
 
 def _worker(job: tuple) -> tuple:
     """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
+    import matplotlib.pyplot as _plt
+    _plt.switch_backend("agg")
     run_id, (area, n_drones, victim_idx, noise, rc, ws), seed, verbose = job
     try:
         metrics = run_one(
@@ -416,6 +413,131 @@ def _ws_label(ws) -> tuple:
 
 
 # ============================================================================
+# Preview workspace
+# ============================================================================
+
+def preview_workspaces() -> None:
+    """
+    Mostra il DEM TIF completo con tutti i workspace selezionati evidenziati
+    e una finestra 3-D per ciascun workspace.
+    Blocca finché tutte le finestre non vengono chiuse, poi la simulazione parte.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.colors import LightSource
+    from terrain import (
+        read_geotiff, extract_area, coords_extent,
+        interpolate_surface, TIF_PATH,
+    )
+
+    print("\nCaricamento DEM completo per preview workspace...")
+    dem, transform = read_geotiff(TIF_PATH)
+    rows, cols = dem.shape
+    xmin_f, xmax_f, ymin_f, ymax_f = coords_extent(dem, transform)
+
+    # ── Figura 1: DEM completo con rettangoli workspace ──────────────────
+    ls       = LightSource(azdeg=315, altdeg=45)
+    hs       = ls.hillshade(np.nan_to_num(dem, nan=0.0), vert_exag=2)
+    vmin_dem = np.nanpercentile(dem, 2)
+    vmax_dem = np.nanpercentile(dem, 98)
+
+    fig_map, ax_map = plt.subplots(figsize=(11, 9))
+    ax_map.set_facecolor("#333333")
+    im = ax_map.imshow(
+        dem, cmap="terrain", vmin=vmin_dem, vmax=vmax_dem,
+        extent=[xmin_f, xmax_f, ymin_f, ymax_f],
+        origin="upper", interpolation="bilinear", zorder=2,
+    )
+    ax_map.imshow(
+        hs, cmap="gray", alpha=0.35,
+        extent=[xmin_f, xmax_f, ymin_f, ymax_f],
+        origin="upper", interpolation="bilinear", zorder=3,
+    )
+    fig_map.colorbar(im, ax=ax_map, fraction=0.03, pad=0.02).set_label(
+        "Quota [m s.l.m.]", fontsize=10)
+    ax_map.set_xlabel("E  [m UTM]", fontsize=10)
+    ax_map.set_ylabel("N  [m UTM]", fontsize=10)
+    ax_map.set_title(
+        f"DEM TINItaly — {len(WORKSPACE_CENTERS)} workspace selezionati "
+        f"(area max {max(AREA_SIZES)} m)\n"
+        "Chiudi tutte le finestre per avviare la simulazione",
+        fontsize=11, fontweight="bold",
+    )
+    ax_map.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
+    ax_map.tick_params(labelsize=8)
+
+    _COLORS = ["#ff4444", "#44ff88", "#4488ff", "#ffdd00", "#ff66ff"]
+    area_prev = max(AREA_SIZES)
+
+    workspace_data = []  # lista di (label, sub_dem, x_coords, y_coords, color)
+    for i, ws in enumerate(WORKSPACE_CENTERS):
+        color = _COLORS[i % len(_COLORS)]
+        if ws is None:
+            cr, cc   = rows // 2, cols // 2
+            ws_label = "centro DEM"
+        else:
+            cr       = int(np.clip(ws[0] * rows, 0, rows - 1))
+            cc       = int(np.clip(ws[1] * cols, 0, cols - 1))
+            ws_label = f"r={ws[0]:.2f} c={ws[1]:.2f}"
+
+        sub_i, x_c, y_c, _ = extract_area(
+            dem, transform, center_row=cr, center_col=cc, size_m=area_prev)
+        workspace_data.append((ws_label, sub_i, x_c, y_c, color))
+
+        rx, ry = x_c.min(), y_c.min()
+        rw, rh = x_c.max() - x_c.min(), y_c.max() - y_c.min()
+        ax_map.add_patch(mpatches.Rectangle(
+            (rx, ry), rw, rh,
+            linewidth=0, facecolor=color, alpha=0.18, zorder=5,
+            label=f"WS {i}: {ws_label}",
+        ))
+        ax_map.add_patch(mpatches.Rectangle(
+            (rx, ry), rw, rh,
+            linewidth=2.0, edgecolor=color, facecolor="none",
+            linestyle="--", zorder=6,
+        ))
+        ax_map.text(rx + rw / 2, ry + rh / 2, str(i),
+                    color="white", fontsize=12, fontweight="bold",
+                    ha="center", va="center", zorder=7)
+
+    ax_map.legend(loc="upper right", fontsize=8, framealpha=0.8)
+    fig_map.tight_layout()
+
+    # ── Figure 3-D: una per ogni workspace ───────────────────────────────
+    print(f"  Interpolazione RBF per {len(WORKSPACE_CENTERS)} workspace "
+          f"({area_prev}×{area_prev} m)...")
+    for i, (ws_label, sub_i, x_c, y_c, color) in enumerate(workspace_data):
+        print(f"    WS {i} [{ws_label}]...", end=" ", flush=True)
+        xi, yi, zi = interpolate_surface(sub_i, x_c, y_c, grid_n=60)
+        print("ok")
+
+        valid = sub_i[~np.isnan(sub_i)]
+        vmin_i = float(np.percentile(valid, 1))  if valid.size else 0.0
+        vmax_i = float(np.percentile(valid, 99)) if valid.size else 1.0
+
+        fig3d = plt.figure(figsize=(7, 5))
+        ax3d  = fig3d.add_subplot(111, projection="3d")
+        ax3d.plot_surface(
+            xi, yi, zi,
+            facecolors=plt.get_cmap("plasma")(
+                (zi - vmin_i) / max(vmax_i - vmin_i, 1e-6)),
+            rcount=60, ccount=60, linewidth=0, antialiased=True, alpha=0.95,
+        )
+        ax3d.set_xlabel("E [m UTM]", fontsize=8, labelpad=3)
+        ax3d.set_ylabel("N [m UTM]", fontsize=8, labelpad=3)
+        ax3d.set_zlabel("z [m]", fontsize=8, labelpad=3)
+        ax3d.set_title(f"Vista 3-D — Workspace {i}  [{ws_label}]",
+                       fontweight="bold", fontsize=10)
+        ax3d.tick_params(labelsize=7)
+        ax3d.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
+        ax3d.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
+        fig3d.tight_layout()
+
+    print("\nChiudi tutte le finestre per avviare la simulazione...")
+    plt.show()
+
+
+# ============================================================================
 # Entry point
 # ============================================================================
 
@@ -467,6 +589,9 @@ def main() -> None:
         if total > 10:
             print(f"  … ({total - 10} altre)")
         return
+
+    # ── Preview workspace su DEM + 3-D ────────────────────────────────────
+    preview_workspaces()
 
     # ── Resume ────────────────────────────────────────────────────────────
     done_ids  = _read_done_ids(args.out)
