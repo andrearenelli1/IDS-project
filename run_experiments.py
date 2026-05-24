@@ -78,27 +78,17 @@ AREA_SIZES = [100, 200]        # [m]  lato workspace
 
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
-# Posizione vittima come frazione relativa dell'area [0..1].
-# Convertite in coordinate assolute a runtime → sempre valide per qualunque area.
-_VICTIM_REL_XY_FIXED = [
-    (0.25, 0.25),                   # quadrante SW
-    (0.50, 0.50),                   # centro
-    (0.75, 0.50),                   # metà E
-    (0.35, 0.70),                   # zona N-W
-]
+# Nessun seme fisso: le posizioni cambiano ad ogni esecuzione.
+_rng_grid = np.random.default_rng()
 
-# Seme separato per la generazione della griglia (garantisce riproducibilità
-# indipendentemente dal seme della simulazione --seed).
-_GRID_RNG_SEED = 2024
-_rng_grid = np.random.default_rng(_GRID_RNG_SEED)
-
-N_RANDOM_VICTIMS = 1                # posizioni vittima casuali aggiuntive
-_victim_random = [
+# Posizioni vittima estratte uniformemente sull'area [0..1]².
+# Margine del 10% per evitare i bordi del workspace.
+N_RANDOM_VICTIMS = 2
+VICTIM_REL_XY = [
     (float(_rng_grid.uniform(0.10, 0.90)),
      float(_rng_grid.uniform(0.10, 0.90)))
     for _ in range(N_RANDOM_VICTIMS)
 ]
-VICTIM_REL_XY = _VICTIM_REL_XY_FIXED + _victim_random
 
 BURIAL_DEPTHS_FIXED = [1.0, 3.0, 5.0]   # [m]  profondità fisse
 
@@ -109,6 +99,8 @@ _depths_random = [
 BURIAL_DEPTHS = BURIAL_DEPTHS_FIXED + _depths_random
 
 ARTVA_NOISE_STDS = [1e-8, 1e-7, 1e-6]  # rumore segnale ARTVA
+
+NOISE_DETECT_FACTORS = [50.0, 100.0]   # fattore soglia rilevamento (DETECT_THR = FACTOR × σ̂)
 
 # Raggio comunicazione UWB:
 #   120 m → condizioni ottimali (visibilità diretta)
@@ -153,6 +145,7 @@ CSV_FIELDS = [
     "victim_y_m",
     "victim_depth_m",
     "artva_noise_std",
+    "noise_detect_factor",
     "comm_radius_m",
     "workspace_frac_r",
     "workspace_frac_c",
@@ -199,15 +192,16 @@ def _load_terrain(area_size: float, center_frac=None, verbose: bool = False):
 # ============================================================================
 
 def run_one(
-    area_size:    float,
-    n_drones:     int,
-    victim_rel:   tuple,
-    victim_depth: float,
-    noise_std:    float,
-    comm_radius:  float,
-    center_frac              = None,
-    seed:         int        = SEED,
-    verbose:      bool       = False,
+    area_size:          float,
+    n_drones:           int,
+    victim_rel:         tuple,
+    victim_depth:       float,
+    noise_std:          float,
+    comm_radius:        float,
+    noise_detect_factor: float = 100.0,
+    center_frac                = None,
+    seed:               int   = SEED,
+    verbose:            bool  = False,
 ) -> dict:
     """
     Esegue un esperimento e restituisce le metriche.
@@ -228,19 +222,23 @@ def run_one(
     from drone_agent import DroneState
 
     saved = {
-        "terrain_AREA_SIZE_M":   terrain_mod.AREA_SIZE_M,
-        "artva_ARTVA_NOISE_STD": artva_mod.ARTVA_NOISE_STD,
-        "sim_IMDCL_COMM_RADIUS": sim_mod.IMDCL_COMM_RADIUS,
-        "cfg_AREA_SIZE_M":       config.AREA_SIZE_M,
-        "cfg_ARTVA_NOISE_STD":   config.ARTVA_NOISE_STD,
-        "cfg_IMDCL_COMM_RADIUS": config.IMDCL_COMM_RADIUS,
+        "terrain_AREA_SIZE_M":        terrain_mod.AREA_SIZE_M,
+        "artva_ARTVA_NOISE_STD":      artva_mod.ARTVA_NOISE_STD,
+        "sim_IMDCL_COMM_RADIUS":      sim_mod.IMDCL_COMM_RADIUS,
+        "sim_NOISE_DETECT_FACTOR":    sim_mod.NOISE_DETECT_FACTOR,
+        "cfg_AREA_SIZE_M":            config.AREA_SIZE_M,
+        "cfg_ARTVA_NOISE_STD":        config.ARTVA_NOISE_STD,
+        "cfg_IMDCL_COMM_RADIUS":      config.IMDCL_COMM_RADIUS,
+        "cfg_NOISE_DETECT_FACTOR":    config.NOISE_DETECT_FACTOR,
     }
-    terrain_mod.AREA_SIZE_M   = area_size
-    artva_mod.ARTVA_NOISE_STD = noise_std
-    sim_mod.IMDCL_COMM_RADIUS = comm_radius
-    config.AREA_SIZE_M        = area_size
-    config.ARTVA_NOISE_STD    = noise_std
-    config.IMDCL_COMM_RADIUS  = comm_radius
+    terrain_mod.AREA_SIZE_M        = area_size
+    artva_mod.ARTVA_NOISE_STD      = noise_std
+    sim_mod.IMDCL_COMM_RADIUS      = comm_radius
+    sim_mod.NOISE_DETECT_FACTOR    = noise_detect_factor
+    config.AREA_SIZE_M             = area_size
+    config.ARTVA_NOISE_STD         = noise_std
+    config.IMDCL_COMM_RADIUS       = comm_radius
+    config.NOISE_DETECT_FACTOR     = noise_detect_factor
 
     sink = sys.stdout if verbose else io.StringIO()
 
@@ -321,12 +319,14 @@ def run_one(
         }
 
     finally:
-        terrain_mod.AREA_SIZE_M   = saved["terrain_AREA_SIZE_M"]
-        artva_mod.ARTVA_NOISE_STD = saved["artva_ARTVA_NOISE_STD"]
-        sim_mod.IMDCL_COMM_RADIUS = saved["sim_IMDCL_COMM_RADIUS"]
-        config.AREA_SIZE_M        = saved["cfg_AREA_SIZE_M"]
-        config.ARTVA_NOISE_STD    = saved["cfg_ARTVA_NOISE_STD"]
-        config.IMDCL_COMM_RADIUS  = saved["cfg_IMDCL_COMM_RADIUS"]
+        terrain_mod.AREA_SIZE_M        = saved["terrain_AREA_SIZE_M"]
+        artva_mod.ARTVA_NOISE_STD      = saved["artva_ARTVA_NOISE_STD"]
+        sim_mod.IMDCL_COMM_RADIUS      = saved["sim_IMDCL_COMM_RADIUS"]
+        sim_mod.NOISE_DETECT_FACTOR    = saved["sim_NOISE_DETECT_FACTOR"]
+        config.AREA_SIZE_M             = saved["cfg_AREA_SIZE_M"]
+        config.ARTVA_NOISE_STD         = saved["cfg_ARTVA_NOISE_STD"]
+        config.IMDCL_COMM_RADIUS       = saved["cfg_IMDCL_COMM_RADIUS"]
+        config.NOISE_DETECT_FACTOR     = saved["cfg_NOISE_DETECT_FACTOR"]
 
 
 # ============================================================================
@@ -335,11 +335,12 @@ def run_one(
 
 def _worker(job: tuple) -> tuple:
     """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
-    run_id, (area, n_drones, vrel, depth, noise, rc, ws), seed, verbose = job
+    run_id, (area, n_drones, vrel, depth, noise, detect_factor, rc, ws), seed, verbose = job
     try:
         metrics = run_one(
             area_size=area, n_drones=n_drones, victim_rel=vrel,
             victim_depth=depth, noise_std=noise, comm_radius=rc,
+            noise_detect_factor=detect_factor,
             center_frac=ws, seed=seed, verbose=verbose,
         )
         return run_id, metrics, None
@@ -461,28 +462,29 @@ def main() -> None:
     # ── Griglia ───────────────────────────────────────────────────────────
     grid = list(itertools.product(
         AREA_SIZES, N_DRONES_LIST, VICTIM_REL_XY,
-        BURIAL_DEPTHS, ARTVA_NOISE_STDS, COMM_RADII, WORKSPACE_CENTERS,
+        BURIAL_DEPTHS, ARTVA_NOISE_STDS, NOISE_DETECT_FACTORS, COMM_RADII, WORKSPACE_CENTERS,
     ))
     total = len(grid)
 
     print(f"Sweep parametrico — {total} esperimenti totali")
-    print(f"  area_sizes:       {AREA_SIZES}")
-    print(f"  n_drones:         {N_DRONES_LIST}")
-    print(f"  victim_rel_xy:    {len(VICTIM_REL_XY)} pos. ({len(_VICTIM_REL_XY_FIXED)} fisse + {N_RANDOM_VICTIMS} casuali)")
-    print(f"  depths [m]:       {len(BURIAL_DEPTHS)} valori ({len(BURIAL_DEPTHS_FIXED)} fissi + {N_RANDOM_DEPTHS} casuali)")
-    print(f"  noise_stds:       {ARTVA_NOISE_STDS}")
-    print(f"  comm_radii[m]:    {COMM_RADII}")
-    print(f"  workspace_centers: {len(WORKSPACE_CENTERS)} patch DEM")
+    print(f"  area_sizes:          {AREA_SIZES}")
+    print(f"  n_drones:            {N_DRONES_LIST}")
+    print(f"  victim_rel_xy:       {len(VICTIM_REL_XY)} pos. (uniformi casuali)")
+    print(f"  depths [m]:          {len(BURIAL_DEPTHS)} valori ({len(BURIAL_DEPTHS_FIXED)} fissi + {N_RANDOM_DEPTHS} casuali)")
+    print(f"  noise_stds:          {ARTVA_NOISE_STDS}")
+    print(f"  noise_detect_factors: {NOISE_DETECT_FACTORS}")
+    print(f"  comm_radii[m]:       {COMM_RADII}")
+    print(f"  workspace_centers:   {len(WORKSPACE_CENTERS)} patch DEM")
     print(f"  timeout:          {MAX_SIM_SECONDS:.0f}s ({MAX_SIM_SECONDS/60:.0f}min) / {MAX_STEPS} passi")
     print(f"  workers:          {args.workers}")
     print(f"  output:           {args.out}")
 
     if args.dry_run:
         print("\n[dry-run] Prime 10 combinazioni:")
-        for i, (area, nd, vrel, depth, noise, rc, ws) in enumerate(grid[:10], 1):
+        for i, (area, nd, vrel, depth, noise, detect_factor, rc, ws) in enumerate(grid[:10], 1):
             ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
             print(f"  {i:3d}: area={area}m  n={nd}  vrel=({vrel[0]:.2f},{vrel[1]:.2f})  "
-                  f"depth={depth:.2f}m  noise={noise:.0e}  rc={rc}m  ws={ws_str}")
+                  f"depth={depth:.2f}m  noise={noise:.0e}  detect_factor={detect_factor}  rc={rc}m  ws={ws_str}")
         if total > 10:
             print(f"  … ({total - 10} altre)")
         return
@@ -504,7 +506,7 @@ def main() -> None:
     # ── Pre-carica terreni nel processo principale ────────────────────────
     # Su Linux (fork) i worker ereditano la cache → non rileggono il DEM.
     # Su macOS/Windows (spawn) ogni worker ricostruisce la propria cache.
-    unique_terrain_keys = {(a, ws) for a, _, _, _, _, _, ws in grid}
+    unique_terrain_keys = {(a, ws) for a, _, _, _, _, _, _, ws in grid}
     print(f"\nPre-caricamento {len(unique_terrain_keys)} configurazioni terreno...")
     for area, ws in sorted(unique_terrain_keys, key=lambda x: (x[0], str(x[1]))):
         t0     = time.perf_counter()
@@ -525,7 +527,7 @@ def main() -> None:
 
         def _record(run_id: int, metrics, tb) -> None:
             nonlocal found_n, timeout_n, error_n
-            area, n_drones, vrel, depth, noise, rc, ws = grid[run_id - 1]
+            area, n_drones, vrel, depth, noise, detect_factor, rc, ws = grid[run_id - 1]
             terrain_obj, *_ = _load_terrain(area, center_frac=ws)
             span_x = terrain_obj.x_max - terrain_obj.x_min
             span_y = terrain_obj.y_max - terrain_obj.y_min
@@ -548,16 +550,17 @@ def main() -> None:
                 timeout_n += 1
 
             writer.writerow({
-                "run_id":            run_id,
-                "area_size_m":       area,
-                "n_drones":          n_drones,
-                "victim_x_m":        round(vrel[0] * span_x, 1),
-                "victim_y_m":        round(vrel[1] * span_y, 1),
-                "victim_depth_m":    round(depth, 2),
-                "artva_noise_std":   noise,
-                "comm_radius_m":     rc,
-                "workspace_frac_r":  ws_r,
-                "workspace_frac_c":  ws_c,
+                "run_id":              run_id,
+                "area_size_m":         area,
+                "n_drones":            n_drones,
+                "victim_x_m":          round(vrel[0] * span_x, 1),
+                "victim_y_m":          round(vrel[1] * span_y, 1),
+                "victim_depth_m":      round(depth, 2),
+                "artva_noise_std":     noise,
+                "noise_detect_factor": detect_factor,
+                "comm_radius_m":       rc,
+                "workspace_frac_r":    ws_r,
+                "workspace_frac_c":    ws_c,
                 **metrics,
             })
             csvfile.flush()

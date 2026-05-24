@@ -29,7 +29,7 @@ import numpy as np
 FIELDS = [
     "run_id", "area_size_m", "n_drones",
     "victim_x_m", "victim_y_m", "victim_depth_m",
-    "artva_noise_std", "comm_radius_m",
+    "artva_noise_std", "noise_detect_factor", "comm_radius_m",
     "workspace_frac_r", "workspace_frac_c",
     "found", "time_found_s", "n_drones_stopped",
     "pos_variance_m2", "pos_std_m", "est_error_2d_m", "note",
@@ -52,6 +52,7 @@ def load(path: str) -> list[dict]:
                 "n":       int(r["n_drones"]),
                 "depth":   _flt(r["victim_depth_m"]),
                 "noise":   _flt(r["artva_noise_std"]),
+                "detect":  _flt(r.get("noise_detect_factor", "100.0")),
                 "rc":      int(float(r["comm_radius_m"])),
                 "found":   r["found"].strip() == "True",
                 "time":    _flt(r["time_found_s"]),
@@ -93,11 +94,14 @@ PALETTE = ["#4e79a7", "#f28e2b", "#59a14f"]   # blu, arancio, verde
 AREA_COLORS = {100: "#5778a4", 200: "#e49444"}
 DEPTH_COLORS = {1.0: "#4e79a7", 3.0: "#f28e2b", 5.0: "#e15759"}
 NOISE_LABELS = {1e-8: "10⁻⁸", 1e-7: "10⁻⁷", 1e-6: "10⁻⁶"}
-N_DRONES_LIST = [3, 4, 5]
-AREAS         = [100, 200]
-COMM_RADII    = [25, 50, 80, 120]
-NOISE_STDS    = [1e-8, 1e-7, 1e-6]
-DEPTHS        = [1.0, 3.0, 5.0]
+N_DRONES_LIST  = [3, 4, 5]
+AREAS          = [100, 200]
+COMM_RADII     = [25, 50, 80, 120]
+NOISE_STDS     = [1e-8, 1e-7, 1e-6]
+DEPTHS         = [1.0, 3.0, 5.0]
+DETECT_FACTORS = [50.0, 100.0]
+DETECT_COLORS  = {50.0: "#e15759", 100.0: "#4e79a7"}  # rosso, blu
+DETECT_LABELS  = {50.0: "factor = 50", 100.0: "factor = 100"}
 
 plt.rcParams.update({
     "font.family":  "DejaVu Sans",
@@ -362,6 +366,77 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 7 — Effetto della soglia di detect (50 vs 100)
+#          Riga superiore: tasso di successo per livello di rumore
+#          Riga inferiore: tempo mediano di ricerca (run riusciti)
+#          Colonne: dimensione area — linee tratteggiate/continue per i due fattori
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_detect_factor(rows: list[dict]) -> plt.Figure:
+    noise_sorted = sorted(NOISE_STDS)
+    noise_ticks  = [NOISE_LABELS[n] for n in noise_sorted]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True,
+                             sharey="row")
+    fig.suptitle("Effetto della soglia di rilevamento ARTVA  (NOISE_DETECT_FACTOR)",
+                 fontsize=13, fontweight="bold")
+
+    linestyles = {50.0: "--", 100.0: "-"}
+
+    for col, area in enumerate(AREAS):
+        ax_sr  = axes[0, col]   # success rate
+        ax_t   = axes[1, col]   # median time
+
+        for df in DETECT_FACTORS:
+            sr_vals, t_vals = [], []
+            for noise in noise_sorted:
+                sub = [r for r in rows
+                       if r["area"] == area and r["detect"] == df
+                       and r["noise"] == noise]
+                sr_vals.append(success_rate(sub))
+
+                found_times = [r["time"] for r in sub if r["found"]]
+                t_vals.append(median(found_times))
+
+            color = DETECT_COLORS[df]
+            ls    = linestyles[df]
+            label = DETECT_LABELS[df]
+
+            ax_sr.plot(range(len(noise_sorted)), sr_vals,
+                       marker="o", lw=2.2, ms=8, color=color,
+                       ls=ls, label=label)
+            for x, y in zip(range(len(noise_sorted)), sr_vals):
+                if not math.isnan(y):
+                    ax_sr.annotate(f"{y:.0f}%", (x, y),
+                                   textcoords="offset points", xytext=(0, 7),
+                                   ha="center", fontsize=8, color=color)
+
+            valid_t = [(x, y) for x, y in enumerate(t_vals)
+                       if not math.isnan(y)]
+            if valid_t:
+                xs, ys = zip(*valid_t)
+                ax_t.plot(xs, ys, marker="s", lw=2.2, ms=8, color=color,
+                          ls=ls, label=label)
+                for x, y in zip(xs, ys):
+                    ax_t.annotate(f"{y:.0f}s", (x, y),
+                                  textcoords="offset points", xytext=(0, 7),
+                                  ha="center", fontsize=8, color=color)
+
+        for ax in (ax_sr, ax_t):
+            ax.set_xticks(range(len(noise_sorted)))
+            ax.set_xticklabels(noise_ticks, fontsize=10)
+            ax.set_xlabel("Rumore ARTVA σ", fontsize=10)
+            ax.set_title(f"Area {area} × {area} m", fontsize=11, fontweight="bold")
+            ax.legend(fontsize=9)
+
+        ax_sr.set_ylabel("Tasso di successo [%]", fontsize=10)
+        ax_sr.set_ylim(0, 108)
+        axes[1, 0].set_ylabel("Tempo mediano [s]", fontsize=10)
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -388,6 +463,7 @@ def main() -> None:
     fig_comm_radius(rows)
     fig_cdf(rows)
     fig_consensus_spread(rows)
+    fig_detect_factor(rows)
 
     plt.show()
 
