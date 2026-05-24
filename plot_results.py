@@ -35,6 +35,15 @@ FIELDS = [
     "pos_variance_m2", "pos_std_m", "est_error_2d_m", "note",
 ]
 
+def _depth_bin(d: float) -> str:
+    if math.isnan(d):
+        return "N/A"
+    for i, (lo, hi) in enumerate(zip(DEPTH_BIN_EDGES, DEPTH_BIN_EDGES[1:])):
+        if lo <= d < hi:
+            return DEPTH_BIN_LABELS[i]
+    return DEPTH_BIN_LABELS[-1]
+
+
 def _flt(v: str) -> float:
     try:
         x = float(v)
@@ -50,7 +59,8 @@ def load(path: str) -> list[dict]:
             rows.append({
                 "area":    int(float(r["area_size_m"])),
                 "n":       int(r["n_drones"]),
-                "depth":   _flt(r["victim_depth_m"]),
+                "depth":     _flt(r["victim_depth_m"]),
+                "depth_bin": _depth_bin(_flt(r["victim_depth_m"])),
                 "noise":   _flt(r["artva_noise_std"]),
                 "detect":  _flt(r.get("noise_detect_factor", "100.0")),
                 "rc":      int(float(r["comm_radius_m"])),
@@ -100,6 +110,9 @@ AREAS          = [100, 200]
 COMM_RADII     = [25, 50, 80, 120]
 NOISE_STDS     = [1e-8, 1e-7, 1e-6]
 DEPTHS         = [1.0, 3.0, 5.0]
+DEPTH_BIN_EDGES  = [1.0, 2.0, 3.0, 4.0, 5.01]
+DEPTH_BIN_LABELS = ["1–2 m", "2–3 m", "3–4 m", "4–5 m"]
+DEPTH_BIN_COLORS = ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]
 DETECT_FACTORS = [50.0, 100.0]
 DETECT_COLORS  = {50.0: "#e15759", 100.0: "#4e79a7"}  # rosso, blu
 DETECT_LABELS  = {50.0: "factor = 50", 100.0: "factor = 100"}
@@ -213,7 +226,10 @@ def fig_time_boxplot(rows: list[dict]) -> plt.Figure:
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_estimation_error(rows: list[dict]) -> plt.Figure:
-    found = [r for r in rows if r["found"] and not math.isnan(r["err2d"])]
+    found = [r for r in rows if r["found"] and not math.isnan(r["err2d"])
+             and not math.isnan(r["depth"])]
+    if not found:
+        return None
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 5),
                              constrained_layout=True, sharey=True)
@@ -221,31 +237,29 @@ def fig_estimation_error(rows: list[dict]) -> plt.Figure:
                  fontsize=13, fontweight="bold")
 
     noise_sorted = sorted(NOISE_STDS)
-    bp_kw = dict(patch_artist=True, notch=False, widths=0.55,
-                 medianprops=dict(color="black", lw=2.0),
-                 flierprops=dict(marker=".", markersize=3, alpha=0.3))
 
     for ax, noise in zip(axes, noise_sorted):
-        data = [[r["err2d"] for r in found if r["depth"] == d and r["noise"] == noise]
-                for d in DEPTHS]
-        bp = ax.boxplot(data, positions=range(len(DEPTHS)), **bp_kw)
-        for patch, (d, color) in zip(bp["boxes"], DEPTH_COLORS.items()):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.75)
+        sub = [r for r in found if r["noise"] == noise]
+        if not sub:
+            continue
 
-        ax.set_xticks(range(len(DEPTHS)))
-        ax.set_xticklabels([f"{d:.0f} m" for d in DEPTHS], fontsize=10)
-        ax.set_xlabel("Profondità vittima", fontsize=10)
+        xs = np.array([r["depth"] for r in sub])
+        ys = np.array([r["err2d"] for r in sub])
+
+        ax.scatter(xs, ys, alpha=0.2, s=8, color="#4e79a7", rasterized=True)
+
+        coef = np.polyfit(xs, ys, 1)
+        x_fit = np.linspace(xs.min(), xs.max(), 200)
+        ax.plot(x_fit, np.polyval(coef, x_fit),
+                color="#e15759", lw=2.0, ls="--",
+                label=f"trend  ({coef[0]:+.1f} m/m)")
+
+        ax.set_xlabel("Profondità vittima [m]", fontsize=10)
         ax.set_title(f"Rumore σ = {NOISE_LABELS[noise]}", fontsize=11,
                      fontweight="bold")
         if ax is axes[0]:
             ax.set_ylabel("Errore stima 2D [m]", fontsize=10)
-
-        for pos, d in enumerate(data):
-            if d:
-                med = median(d)
-                ax.text(pos + 0.32, med, f" {med:.1f}m",
-                        va="center", fontsize=8, color="#333333")
+        ax.legend(fontsize=8)
 
     return fig
 
@@ -442,8 +456,8 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
          lambda v: NOISE_LABELS[v],  ["#4e79a7", "#f28e2b", "#e15759"]),
         ("Soglia detect",            "detect", sorted(DETECT_FACTORS),
          lambda v: DETECT_LABELS[v], list(DETECT_COLORS.values())),
-        ("Profondità vittima [m]",   "depth",  DEPTHS,
-         lambda v: f"{v:.0f} m",     list(DEPTH_COLORS.values())),
+        ("Profondità vittima [m]",   "depth_bin", DEPTH_BIN_LABELS,
+         lambda v: v,                 DEPTH_BIN_COLORS),
         ("Raggio comunicazione [m]", "rc",     sorted(COMM_RADII),
          lambda v: f"{v} m",         ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]),
     ]
