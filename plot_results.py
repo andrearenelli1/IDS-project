@@ -56,6 +56,7 @@ def load(path: str) -> list[dict]:
                 "rc":      int(float(r["comm_radius_m"])),
                 "found":   r["found"].strip() == "True",
                 "time":    _flt(r["time_found_s"]),
+                "dist":    _flt(r.get("victim_dist_m", "nan")),
                 "err2d":   _flt(r["est_error_2d_m"]),
                 "pos_std": _flt(r["pos_std_m"]),
                 "note":    r["note"].strip(),
@@ -366,7 +367,123 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 7 — Effetto della soglia di detect (50 vs 100)
+# Fig 7 — Tempo vs distanza vittima-start  (scatter + metrica normalizzata)
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_time_vs_distance(rows: list[dict]) -> plt.Figure:
+    found = [r for r in rows
+             if r["found"] and not math.isnan(r["time"]) and not math.isnan(r["dist"])]
+    if not found:
+        return None
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True)
+    fig.suptitle("Tempo di ricerca vs distanza vittima–punto di partenza",
+                 fontsize=13, fontweight="bold")
+
+    markers = {3: "o", 4: "s", 5: "^"}
+    alpha   = 0.45
+    ms      = 30
+
+    for col, area in enumerate(AREAS):
+        ax_t  = axes[0, col]   # tempo assoluto
+        ax_n  = axes[1, col]   # tempo normalizzato (s/m)
+
+        sub = [r for r in found if r["area"] == area]
+        if not sub:
+            continue
+
+        for n, color in zip(N_DRONES_LIST, PALETTE):
+            pts = [r for r in sub if r["n"] == n]
+            if not pts:
+                continue
+            xs = [r["dist"]          for r in pts]
+            ys = [r["time"]          for r in pts]
+            yn = [r["time"] / r["dist"] for r in pts]
+
+            kw = dict(color=color, alpha=alpha, s=ms,
+                      marker=markers[n], label=f"{n} droni")
+            ax_t.scatter(xs, ys, **kw)
+            ax_n.scatter(xs, yn, **kw)
+
+            # linea di tendenza (regressione lineare)
+            if len(xs) >= 3:
+                for ax, ydata in [(ax_t, ys), (ax_n, yn)]:
+                    coef = np.polyfit(xs, ydata, 1)
+                    x_fit = np.linspace(min(xs), max(xs), 100)
+                    ax.plot(x_fit, np.polyval(coef, x_fit),
+                            color=color, lw=1.5, ls="--", alpha=0.8)
+
+        for ax in (ax_t, ax_n):
+            ax.set_xlabel("Distanza vittima–start [m]", fontsize=10)
+            ax.set_title(f"Area {area} × {area} m", fontsize=11, fontweight="bold")
+            ax.legend(fontsize=9, markerscale=1.4)
+
+        ax_t.set_ylabel("Tempo di ricerca [s]",     fontsize=10)
+        ax_n.set_ylabel("Tempo / distanza [s/m]",   fontsize=10)
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Fig 8 — Istogrammi del tempo di ricerca per parametro
+#          Griglia 3×2: righe = parametro variato, colonne = area
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_time_histograms(rows: list[dict]) -> plt.Figure:
+    found = [r for r in rows if r["found"] and not math.isnan(r["time"])]
+    if not found:
+        return None
+
+    # Ogni entry: (titolo asse, chiave, valori, label_fn, colori)
+    params = [
+        ("Numero di droni",          "n",      N_DRONES_LIST,
+         lambda v: f"{v} droni",     PALETTE),
+        ("Rumore ARTVA σ",           "noise",  sorted(NOISE_STDS),
+         lambda v: NOISE_LABELS[v],  ["#4e79a7", "#f28e2b", "#e15759"]),
+        ("Soglia detect",            "detect", sorted(DETECT_FACTORS),
+         lambda v: DETECT_LABELS[v], list(DETECT_COLORS.values())),
+        ("Profondità vittima [m]",   "depth",  DEPTHS,
+         lambda v: f"{v:.0f} m",     list(DEPTH_COLORS.values())),
+        ("Raggio comunicazione [m]", "rc",     sorted(COMM_RADII),
+         lambda v: f"{v} m",         ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]),
+    ]
+
+    n_rows = len(params)
+    fig, axes = plt.subplots(n_rows, 2, figsize=(13, 3.2 * n_rows),
+                             constrained_layout=True, sharey=False)
+    fig.suptitle("Distribuzione del tempo di ricerca per parametro (run riusciti)",
+                 fontsize=13, fontweight="bold")
+
+    bins = np.linspace(0, 900, 46)   # 0–900 s, bin da 20 s
+
+    for row_i, (xlabel, key, values, label_fn, colors) in enumerate(params):
+        for col, area in enumerate(AREAS):
+            ax = axes[row_i, col]
+            sub = [r for r in found if r["area"] == area]
+
+            for val, color in zip(values, colors):
+                data = [r["time"] for r in sub if r[key] == val]
+                if not data:
+                    continue
+                ax.hist(data, bins=bins, density=True, alpha=0.55,
+                        color=color, label=label_fn(val), edgecolor="none")
+                # linea mediana verticale
+                med = median(data)
+                if not math.isnan(med):
+                    ax.axvline(med, color=color, lw=1.6, ls="--", alpha=0.85)
+
+            ax.set_xlabel("Tempo di ricerca [s]", fontsize=9)
+            ax.set_ylabel("Densità",              fontsize=9)
+            ax.set_title(f"{xlabel}  —  Area {area} × {area} m",
+                         fontsize=10, fontweight="bold")
+            ax.legend(fontsize=8)
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(150))
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Fig 10 — Effetto della soglia di detect (50 vs 100)
 #          Riga superiore: tasso di successo per livello di rumore
 #          Riga inferiore: tempo mediano di ricerca (run riusciti)
 #          Colonne: dimensione area — linee tratteggiate/continue per i due fattori
@@ -463,6 +580,8 @@ def main() -> None:
     fig_comm_radius(rows)
     fig_cdf(rows)
     fig_consensus_spread(rows)
+    fig_time_vs_distance(rows)
+    fig_time_histograms(rows)
     fig_detect_factor(rows)
 
     plt.show()

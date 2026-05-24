@@ -78,17 +78,9 @@ AREA_SIZES = [100, 200]        # [m]  lato workspace
 
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
-# Nessun seme fisso: le posizioni cambiano ad ogni esecuzione.
-_rng_grid = np.random.default_rng()
-
-# Posizioni vittima estratte uniformemente sull'area [0..1]².
-# Margine del 10% per evitare i bordi del workspace.
-N_RANDOM_VICTIMS = 2
-VICTIM_REL_XY = [
-    (float(_rng_grid.uniform(0.10, 0.90)),
-     float(_rng_grid.uniform(0.10, 0.90)))
-    for _ in range(N_RANDOM_VICTIMS)
-]
+# Numero di posizioni vittima casuali per ogni combinazione di parametri.
+# Ogni simulazione campiona una posizione indipendente dentro run_one().
+N_RANDOM_VICTIMS = 3
 
 BURIAL_DEPTHS_FIXED = [1.0, 3.0, 5.0]   # [m]  profondità fisse
 
@@ -143,6 +135,7 @@ CSV_FIELDS = [
     "n_drones",
     "victim_x_m",
     "victim_y_m",
+    "victim_dist_m",
     "victim_depth_m",
     "artva_noise_std",
     "noise_detect_factor",
@@ -192,16 +185,15 @@ def _load_terrain(area_size: float, center_frac=None, verbose: bool = False):
 # ============================================================================
 
 def run_one(
-    area_size:          float,
-    n_drones:           int,
-    victim_rel:         tuple,
-    victim_depth:       float,
-    noise_std:          float,
-    comm_radius:        float,
+    area_size:           float,
+    n_drones:            int,
+    victim_depth:        float,
+    noise_std:           float,
+    comm_radius:         float,
     noise_detect_factor: float = 100.0,
     center_frac                = None,
-    seed:               int   = SEED,
-    verbose:            bool  = False,
+    seed:                int   = SEED,
+    verbose:             bool  = False,
 ) -> dict:
     """
     Esegue un esperimento e restituisce le metriche.
@@ -240,6 +232,10 @@ def run_one(
     config.IMDCL_COMM_RADIUS       = comm_radius
     config.NOISE_DETECT_FACTOR     = noise_detect_factor
 
+    _pos_rng = np.random.default_rng()
+    vrel_x   = float(_pos_rng.uniform(0.10, 0.90))
+    vrel_y   = float(_pos_rng.uniform(0.10, 0.90))
+
     sink = sys.stdout if verbose else io.StringIO()
 
     try:
@@ -248,8 +244,8 @@ def run_one(
 
         span_x   = terrain_obj.x_max - terrain_obj.x_min
         span_y   = terrain_obj.y_max - terrain_obj.y_min
-        victim_x = terrain_obj.x_min + victim_rel[0] * span_x
-        victim_y = terrain_obj.y_min + victim_rel[1] * span_y
+        victim_x = terrain_obj.x_min + vrel_x * span_x
+        victim_y = terrain_obj.y_min + vrel_y * span_y
         victim_z = terrain_obj.z(victim_x, victim_y) - victim_depth
 
         artva = ARTVASource(
@@ -257,7 +253,8 @@ def run_one(
             moment=config.ARTVA_MOMENT,
             rng_seed=seed + 1,
         )
-        deploy_xy = np.array([terrain_obj.x_min + 5.0, terrain_obj.y_min + 5.0])
+        deploy_xy    = np.array([terrain_obj.x_min + 5.0, terrain_obj.y_min + 5.0])
+        victim_dist  = float(np.linalg.norm(np.array([victim_x, victim_y]) - deploy_xy))
 
         with redirect_stdout(sink):
             agents = build_agents(
@@ -309,6 +306,9 @@ def run_one(
             note = f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti"
 
         return {
+            "victim_x_m":       round(victim_x, 1),
+            "victim_y_m":       round(victim_y, 1),
+            "victim_dist_m":    round(victim_dist, 1),
             "found":            found,
             "time_found_s":     time_s,
             "n_drones_stopped": n_stopped,
@@ -335,10 +335,10 @@ def run_one(
 
 def _worker(job: tuple) -> tuple:
     """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
-    run_id, (area, n_drones, vrel, depth, noise, detect_factor, rc, ws), seed, verbose = job
+    run_id, (area, n_drones, victim_idx, depth, noise, detect_factor, rc, ws), seed, verbose = job
     try:
         metrics = run_one(
-            area_size=area, n_drones=n_drones, victim_rel=vrel,
+            area_size=area, n_drones=n_drones,
             victim_depth=depth, noise_std=noise, comm_radius=rc,
             noise_detect_factor=detect_factor,
             center_frac=ws, seed=seed, verbose=verbose,
@@ -461,7 +461,7 @@ def main() -> None:
 
     # ── Griglia ───────────────────────────────────────────────────────────
     grid = list(itertools.product(
-        AREA_SIZES, N_DRONES_LIST, VICTIM_REL_XY,
+        AREA_SIZES, N_DRONES_LIST, range(N_RANDOM_VICTIMS),
         BURIAL_DEPTHS, ARTVA_NOISE_STDS, NOISE_DETECT_FACTORS, COMM_RADII, WORKSPACE_CENTERS,
     ))
     total = len(grid)
@@ -469,7 +469,7 @@ def main() -> None:
     print(f"Sweep parametrico — {total} esperimenti totali")
     print(f"  area_sizes:          {AREA_SIZES}")
     print(f"  n_drones:            {N_DRONES_LIST}")
-    print(f"  victim_rel_xy:       {len(VICTIM_REL_XY)} pos. (uniformi casuali)")
+    print(f"  victim positions:    {N_RANDOM_VICTIMS} (campionate uniformemente in run_one)")
     print(f"  depths [m]:          {len(BURIAL_DEPTHS)} valori ({len(BURIAL_DEPTHS_FIXED)} fissi + {N_RANDOM_DEPTHS} casuali)")
     print(f"  noise_stds:          {ARTVA_NOISE_STDS}")
     print(f"  noise_detect_factors: {NOISE_DETECT_FACTORS}")
@@ -481,9 +481,9 @@ def main() -> None:
 
     if args.dry_run:
         print("\n[dry-run] Prime 10 combinazioni:")
-        for i, (area, nd, vrel, depth, noise, detect_factor, rc, ws) in enumerate(grid[:10], 1):
+        for i, (area, nd, vidx, depth, noise, detect_factor, rc, ws) in enumerate(grid[:10], 1):
             ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
-            print(f"  {i:3d}: area={area}m  n={nd}  vrel=({vrel[0]:.2f},{vrel[1]:.2f})  "
+            print(f"  {i:3d}: area={area}m  n={nd}  victim_idx={vidx}  "
                   f"depth={depth:.2f}m  noise={noise:.0e}  detect_factor={detect_factor}  rc={rc}m  ws={ws_str}")
         if total > 10:
             print(f"  … ({total - 10} altre)")
@@ -527,15 +527,15 @@ def main() -> None:
 
         def _record(run_id: int, metrics, tb) -> None:
             nonlocal found_n, timeout_n, error_n
-            area, n_drones, vrel, depth, noise, detect_factor, rc, ws = grid[run_id - 1]
-            terrain_obj, *_ = _load_terrain(area, center_frac=ws)
-            span_x = terrain_obj.x_max - terrain_obj.x_min
-            span_y = terrain_obj.y_max - terrain_obj.y_min
+            area, n_drones, _vidx, depth, noise, detect_factor, rc, ws = grid[run_id - 1]
             ws_r, ws_c = _ws_label(ws)
 
             if tb is not None:
                 error_n += 1
                 metrics = {
+                    "victim_x_m":       float("nan"),
+                    "victim_y_m":       float("nan"),
+                    "victim_dist_m":    float("nan"),
                     "found":            False,
                     "time_found_s":     float("nan"),
                     "n_drones_stopped": 0,
@@ -553,8 +553,6 @@ def main() -> None:
                 "run_id":              run_id,
                 "area_size_m":         area,
                 "n_drones":            n_drones,
-                "victim_x_m":          round(vrel[0] * span_x, 1),
-                "victim_y_m":          round(vrel[1] * span_y, 1),
                 "victim_depth_m":      round(depth, 2),
                 "artva_noise_std":     noise,
                 "noise_detect_factor": detect_factor,
