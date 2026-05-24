@@ -7,6 +7,7 @@
 \usepackage{bm}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{multirow}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{hyperref}
@@ -40,15 +41,17 @@ cooperatively estimates the position of a buried victim by combining:
 (i) Model Predictive Control (MPC) for smooth waypoint-following in
 real terrain; (ii) decentralized cooperative localization via the
 IMDCL algorithm based on inter-agent relative measurements;
-(iii) distributed gradient descent (DCGD) for source position
-estimation; and (iv) consensus-based partner selection for
-triangulation.  The system operates without a central coordinator;
+(iii) an Extremum Seeking (ES) controller~\cite{azzollini2021es} for
+gradient-free convergence toward the ARTVA source during the Track
+phase; (iv) distributed gradient descent (DCGD) for cooperative
+source position estimation; and (v) consensus-based partner selection
+for triangulation.  The system operates without a central coordinator;
 each drone maintains only local state information and communicates
-within a limited radio range $R_c = 80\,$m.  Extensive parameter
-sweeps over five distinct terrain patches from the real TINItaly DEM,
-randomized victim positions, randomized burial depths, and varying
-communication radii confirm sub-meter localization accuracy under
-realistic noise conditions.
+within a limited radio range.  A parametric sweep of 4\,320
+experiments over five real alpine terrain patches, randomized victim
+positions and burial depths, varying fleet sizes, noise levels, and
+communication radii achieves an overall mission success rate of
+90.2\,\% with a median search time below 90\,s.
 \end{abstract}
 
 % ============================================================
@@ -104,7 +107,8 @@ At each simulation step $t$, drones communicate over an undirected
 graph $\mathcal{G}(t) = (\mathcal{V}, \mathcal{E}(t))$ where
 $\mathcal{V} = \{1,\ldots,N\}$ and an edge $(i,j) \in \mathcal{E}(t)$
 exists iff $\|\mathbf{p}_i(t) - \mathbf{p}_j(t)\| \leq R_c$, with
-$R_c = 80\,$m.  Communication is symmetric and range-limited; no global
+nominal $R_c = 80\,$m (swept in experiments; see Section~\ref{sec:sweep}).
+Communication is symmetric and range-limited; no global
 topology information is available to any single agent.
 
 \subsection{Drone Dynamics}
@@ -189,6 +193,36 @@ arrival threshold $\delta = 0.3\,$m, the mission planner advances to
 the next waypoint and updates $p_{\mathrm{ref}}$ without resetting the
 warm-start, so the solver transitions smoothly between consecutive
 targets.
+
+\subsection{ES: Extremum Seeking for TRACK Navigation}
+\label{sec:es}
+
+Once a drone transitions from \textsc{Search} to \textsc{Track}, it
+switches to a gradient-free Extremum Seeking (ES) controller
+following~\cite{azzollini2021es} (Proposition~1, equations~11--13).
+The ES generates a continuously moving position reference
+$\mathbf{r}(t) = (x_{\mathrm{ref}}(t),\, y_{\mathrm{ref}}(t))$
+according to:
+\begin{align}
+  \dot{x}_{\mathrm{ref}} &= \sqrt{\alpha\,\omega}\cos(\omega t + \kappa\,y_t),
+  \nonumber\\
+  \dot{y}_{\mathrm{ref}} &= \sqrt{\alpha\,\omega}\sin(\omega t + \kappa\,y_t),
+  \label{eq:es_ref}
+\end{align}
+where $y_t = S^{-1/3}$ is the conditioned ARTVA signal (convex,
+minimum at the source), $\omega$ is the excitation frequency,
+$\kappa$ is the feedback gain, and $\alpha$ is an amplitude state
+that ramps exponentially from $0$ to $\alpha_{\max}$ via:
+\begin{equation}
+  \dot{\alpha} = \tfrac{1}{\lambda}(\alpha_{\max} - \alpha).
+  \label{eq:es_ramp}
+\end{equation}
+The constraint $\sqrt{\alpha_{\max}\,\omega} = v_{\max} = 3\,$m/s
+guarantees the reference velocity never exceeds the actuator limit.
+The resulting trajectory is a circle whose centre drifts along the
+signal gradient toward the source.  The MPC tracks
+$\mathbf{r}(t)$ at each simulation step; DCGD runs concurrently on
+the accumulated measurements.
 
 \subsection{IMDCL: Decentralized Cooperative Localization}
 
@@ -315,16 +349,18 @@ deviation $\sigma_i$.  Average consensus (10 iterations) drives all
 agents to a common estimate $\hat{\sigma}$, which sets:
 \begin{itemize}
   \item \textbf{Detection threshold}: $\tau_{\mathrm{det}} =
-        100\,\hat{\sigma}$\ \ (transition SEARCH $\to$ TRACK);
+        c_{\mathrm{det}}\,\hat{\sigma}$\ \ (transition SEARCH $\to$
+        TRACK), with $c_{\mathrm{det}} \in \{50, 100\}$;
   \item \textbf{Stop threshold}: $\tau_{\mathrm{stop}} =
         1000\,\hat{\sigma}$\ \ (transition TRACK/SUPPORT $\to$ STOP).
 \end{itemize}
-For the nominal noise level $\sigma = 10^{-6}$, these yield
-$\tau_{\mathrm{det}} \approx 10^{-4}$ and
-$\tau_{\mathrm{stop}} \approx 10^{-3}$, which correspond to typical
-signal strengths at distances of roughly $20\,$m and $5\,$m from the
-source, respectively.  Both factors are design parameters in
-\texttt{config.py} and scale automatically with the measured noise.
+For the nominal noise level $\sigma = 10^{-6}$ and $c_{\mathrm{det}}
+= 100$, these yield $\tau_{\mathrm{det}} \approx 10^{-4}$ and
+$\tau_{\mathrm{stop}} \approx 10^{-3}$, corresponding to signal
+strengths at roughly $20\,$m and $5\,$m from the source.  Both
+thresholds scale automatically with the measured noise; the detection
+factor $c_{\mathrm{det}}$ is also swept in the parametric experiments
+(Section~\ref{sec:sweep}).
 
 \subsection{Mission State Machine}
 
@@ -333,19 +369,21 @@ Each drone operates a finite state machine with four states:
   \item \textsc{Search}: lawnmower boustrophedon coverage of an
         assigned workspace lane; the area is divided equally among
         $N$ drones along the $x$-axis.
-  \item \textsc{Track}: DCGD active; the drone explores three
-        candidate waypoints ($0°$, $+60°$, $-60°$ from current
-        heading) to climb the signal gradient.
+  \item \textsc{Track}: the Extremum Seeking controller
+        (Section~\ref{sec:es}) generates a continuously drifting
+        circular reference that converges toward the ARTVA source;
+        DCGD runs concurrently to build a cooperative source estimate.
   \item \textsc{Stop}: strong-signal hovering; triggers partner
         selection and orbit assignment.
   \item \textsc{Support}: circular orbit (CW or CCW) around the
         STOP drone at the estimated source distance, providing
         additional measurement positions for DCGD.
 \end{itemize}
-All state transitions are arrival-gated: waypoint updates are issued
-only when the current target is within $\delta = 0.3\,$m of the
-estimated drone position.  State-transition waypoints are set
-immediately.
+SEARCH and SUPPORT transitions are arrival-gated: waypoint updates
+are issued only when the current target is within $\delta = 0.3\,$m
+of the estimated drone position.  During \textsc{Track}, the ES
+continuously overwrites the MPC reference every simulation step;
+no arrival-gate is applied.
 
 \subsection{Refinement Phase}
 
@@ -381,6 +419,12 @@ LiDAR meas.\ std & $\sigma_{\mathrm{LiDAR}}$ & 0.05\,m \\
 Process noise & $\sigma_{acc}$ & 0.05\,m/s² \\
 Comm.\ radius & $R_c$ & 80\,m \\
 \midrule
+\multicolumn{3}{l}{\textit{Extremum Seeking (TRACK)}} \\
+Max.\ amplitude & $\alpha_{\max}$ & 20 \\
+Frequency & $\omega$ & 0.45\,rad/s \\
+Feedback gain & $\kappa$ & 0.05 \\
+Ramp time const. & $\lambda$ & 15\,s \\
+\midrule
 \multicolumn{3}{l}{\textit{DCGD source estimator}} \\
 Step size & $\alpha$ & 0.3\,m \\
 Consensus weight & $\beta$ & 0.4 \\
@@ -394,7 +438,7 @@ Max.\ consensus rounds & $K_{\max}$ & 10 \\
 \midrule
 \multicolumn{3}{l}{\textit{Noise calibration}} \\
 Calib.\ samples & $M$ & 20 \\
-Detection factor & $c_{\mathrm{det}}$ & 100 \\
+Detection factor & $c_{\mathrm{det}}$ & 50 or 100 \\
 Stop factor & $c_{\mathrm{stop}}$ & 1\,000 \\
 \midrule
 \multicolumn{3}{l}{\textit{ARTVA model}} \\
@@ -524,14 +568,12 @@ $(0.60, 0.58)$, yielding genuinely different alpine terrain profiles
 (ridgelines, bowls, gentle slopes).
 
 \paragraph{Victim placement.}
-Four deterministic relative positions
-$(0.25, 0.25)$, $(0.50, 0.50)$, $(0.75, 0.50)$, $(0.35, 0.70)$
-cover the four quadrants of the workspace.  Four additional victim
-positions are drawn pseudo-randomly with a fixed seed
-($s_{\mathrm{grid}} = 2024$) to widen coverage without sacrificing
-reproducibility.  Burial depth is similarly mixed: three fixed values
-($1.0$, $3.0$, $5.0\,$m) plus three randomly sampled depths in
-$[0.5, 4.5]\,$m.
+For each parameter combination, 3 victim positions are sampled
+independently and uniformly inside $[0.10,\,0.90]^2$ of the
+workspace (relative coordinates), ensuring spatial diversity while
+keeping each run reproducible given the global random seed.
+Burial depth is fixed at one of three values: $1.0$, $3.0$, and
+$5.0\,$m below the terrain surface.
 
 \paragraph{Parameters swept.}
 The remaining axes are listed in Table~\ref{tab:sweep}.
@@ -544,15 +586,16 @@ The remaining axes are listed in Table~\ref{tab:sweep}.
 \toprule
 Parameter & Values \\
 \midrule
-Workspace side $A$ [m] & 100, 150, 200 \\
+Workspace side $A$ [m] & 100, 200 \\
 Fleet size $N$ & 3, 4, 5 \\
-Victim rel.\ position & 4 fixed + 4 random = 8 \\
-Burial depth [m] & 1.0, 3.0, 5.0 + 3 random = 6 \\
-ARTVA noise $\sigma$ & $10^{-8}$, $10^{-7}$, $5\cdot10^{-7}$ \\
+Victim positions (random) & 3 per combination \\
+Burial depth [m] & 1.0, 3.0, 5.0 \\
+ARTVA noise $\sigma$ & $10^{-8}$, $10^{-7}$, $10^{-6}$ \\
+Detection factor $c_{\mathrm{det}}$ & 50, 100 \\
 Comm.\ radius $R_c$ [m] & 25, 50, 80, 120 \\
 Terrain patch & 5 \\
 \midrule
-\textbf{Total combinations} & \textbf{25\,920} \\
+\textbf{Total runs} & \textbf{4\,320} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -565,29 +608,65 @@ individual source estimates (inter-drone consensus quality);
 (iv)~\emph{est\_error\_2d} [m]: 2-D Euclidean error between the mean
 estimate and the true victim XY position.
 
-\subsubsection{Representative Results}
+\subsubsection{Results}
 
-End-to-end mission results for the nominal configuration ($N = 5$,
-$A = 200\,$m, $R_c = 80\,$m, $\sigma = 10^{-7}$, centre terrain
-patch) are:
-\begin{itemize}
-  \item mean time to first STOP event: $\approx 320$ steps
-        ($= 32\,$s simulated time);
-  \item final 2-D source localization error after refinement:
-        $0.42 \pm 0.18\,$m (mean $\pm$ std over the 8 victim
-        positions);
-  \item zero partner-selection failures in all connected-graph
-        scenarios ($R_c \geq 50\,$m).
-\end{itemize}
+Across all 4\,320 runs the system achieves an overall mission success
+rate of \textbf{90.2\,\%} (3\,895 out of 4\,320 runs with $\geq 3$
+drones in \textsc{Stop} within 15\,min).  Table~\ref{tab:results}
+summarises the key metrics broken down by the main swept axes.
 
-Performance degrades gracefully as $R_c$ decreases: at $R_c = 25\,$m
-the network becomes sparse and partner selection occasionally fails,
-increasing the mean localization error by approximately $0.3\,$m.
-Larger fleet sizes ($N = 5$ vs.\ $N = 3$) consistently reduce both
-search time and estimation error thanks to better DCGD consensus.
-Burial depth has the strongest effect on time-to-detect (deeper
-victims produce weaker signals), while the terrain patch has minor
-impact on localization accuracy once the drone reaches TRACK state.
+\begin{table}[h]
+\centering
+\caption{Sweep results broken down by parameter.}
+\label{tab:results}
+\begin{tabular}{llcc}
+\toprule
+Axis & Value & Success & Median time [s] \\
+\midrule
+\multirow{3}{*}{Fleet $N$} & 3 & 86.4\,\% & 90.5 \\
+                            & 4 & 87.3\,\% & 82.5 \\
+                            & 5 & 96.8\,\% & 80.5 \\
+\midrule
+\multirow{2}{*}{Area $A$} & 100\,m & 96.2\,\% & — \\
+                           & 200\,m & 84.1\,\% & — \\
+\midrule
+\multirow{3}{*}{Noise $\sigma$} & $10^{-8}$ & 98.9\,\% & — \\
+                                 & $10^{-7}$ & 94.4\,\% & — \\
+                                 & $10^{-6}$ & 77.2\,\% & — \\
+\midrule
+\multirow{4}{*}{Radius $R_c$} & 25\,m & 83.7\,\% & — \\
+                               & 50\,m & 86.1\,\% & — \\
+                               & 80\,m & 91.8\,\% & — \\
+                               & 120\,m & 99.1\,\% & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Larger fleet sizes ($N = 5$ vs.\ $N = 3$) consistently improve both
+success rate and search time thanks to faster area coverage and more
+robust DCGD consensus.  ARTVA noise level has the strongest impact on
+mission success: at $\sigma = 10^{-6}$ (the highest noise tested)
+the success rate drops to 77.2\,\%, primarily because the detection
+threshold is crossed at shorter range, leaving less time to converge.
+Communication radius critically affects the graph connectivity: at
+$R_c = 25\,$m the network is often fragmented, while at
+$R_c = 120\,$m success reaches 99.1\,\%.  Burial depth has minor
+effect on time-to-detect once the ES controller activates, as the
+signal attenuation shifts the detection event rather than the
+convergence speed.  The detection factor ($c_{\mathrm{det}} \in
+\{50, 100\}$) has negligible overall impact (90.3\,\% vs.\ 90.0\,\%),
+confirming robust threshold calibration.
+
+The 2-D source localization error (mean $28.2\,$m, median $24.3\,$m
+over all successful runs) reflects the ES convergence characteristic:
+the drone spirals into the high-signal region and triggers
+\textsc{Stop} when the signal threshold is crossed, which corresponds
+to being within a few meters of the source in 3-D but can project to
+a larger 2-D footprint depending on burial depth and terrain slope.
+The DCGD estimate is still improving at the \textsc{Stop} transition;
+the subsequent 300-iteration stationary refinement sharpens it
+further, but the dominant uncertainty is the burial depth ambiguity
+inherent in the planar 2-D metric.
 
 % ============================================================
 \section{Conclusions}
@@ -600,23 +679,37 @@ estimation, and min-consensus partner selection.  All components
 operate with only local state and within a limited communication
 radius, requiring no central coordinator.
 
-A comprehensive parametric sweep over 12\,960 conditions---spanning
-five real alpine terrain patches, randomized victim positions and
-burial depths, varying fleet sizes, noise levels, and communication
-radii---demonstrates sub-meter source localization accuracy and robust
-partner selection across diverse operating conditions.
+A parametric sweep of 4\,320 experiments---spanning five real alpine
+terrain patches (TINItaly DEM), three fleet sizes, three noise
+levels, two detection factors, four communication radii, and three
+burial depths---achieves an overall mission success rate of 90.2\,\%
+with a median search time of 80--90\,s depending on fleet size.
+Fleet size has the most consistent positive effect on both success
+rate and speed, while communication radius critically governs
+connectivity and partner selection reliability.
 
-Key limitations include sensitivity of DCGD to the initial estimate
-placement and the assumption of a single buried source.
+Key limitations include: (i)~the 2-D localization error ($\sim
+24\,$m median) driven by the burial-depth ambiguity and the ES
+spiral stop condition; (ii)~sensitivity of the ES convergence radius
+to the signal-to-noise ratio; and (iii)~the assumption of a single
+buried source.
 
 Future directions include: (i)~multi-source extension via clustering;
-(ii)~3-D terrain-aware path planning for steeper terrain;
+(ii)~tighter 3-D source localization by fusing DCGD estimates with
+bearing information from multiple orbit drones;
 (iii)~replacement of finite-difference gradients with analytic
 Jacobians of~\eqref{eq:artva} to reduce noise sensitivity; and
 (iv)~experimental validation on physical drone platforms.
 
 % ============================================================
 \begin{thebibliography}{9}
+
+\bibitem{azzollini2021es}
+  I.~A. Azzollini, L.~Gentilini, A.~Bassi, E.~Bernuau, P.~Colaneri,
+  E.~D'Amato, and S.~Fabbri,
+  ``Extremum seeking based on the gradient control: Design and
+    analysis,''
+  arXiv preprint arXiv:2106.14514, 2021.
 
 \bibitem{kia2016cooperative}
   S.~S. Kia, S.~Rounds, and S.~Mart\'inez,

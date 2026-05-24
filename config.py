@@ -91,7 +91,7 @@ DIST_EST_BATCH    = 5      # [-]     misure recenti usate per ogni aggiornamento
 # Triangolazione
 # ============================================================================
 TRIANGULATE_N_PARTNERS = 2  # droni chiamati in supporto al rilevamento
-SUPPORT_SEARCH_TIMEOUT = 500  # [steps] attesa max per trovare partner SUPPORT mancanti
+SUPPORT_SEARCH_TIMEOUT = 1000  # [steps] attesa max per trovare partner SUPPORT mancanti
 
 # ============================================================================
 # Consenso distribuito selezione partner (min-consensus su grafo limitato)
