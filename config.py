@@ -54,12 +54,29 @@ ARTVA_DETECT_THR = NOISE_DETECT_FACTOR * ARTVA_NOISE_STD   # ≈ 1e-5
 TRACK_STOP_THR   = NOISE_STOP_FACTOR   * ARTVA_NOISE_STD   # ≈ 1e-4
 
 # ============================================================================
-# Hill-climbing online (fase TRACK)
+# Hill-climbing online (fase TRACK) — parametri legacy (non usati con ES)
 # ============================================================================
 TRACK_STEP_M      = 5.0    # [m]  passo nel piano xy
 TRACK_TURN_DEG    = 60.0   # [°]  rotazione quando il segnale cala
 SUPPORT_CIRCLE_N  = 9      # [-]  punti per la circonferenza percorsa dai droni SUPPORT
 N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA per step (interpolate lungo il moto)
+
+# ============================================================================
+# Extremum Seeking (ES) — TRACK mode  [Azzollini et al., 2021 — eq. 11-13]
+#
+#   ẋ_ref = √(α·ω) · cos(ω·t + κ·yt)
+#   ẏ_ref = √(α·ω) · sin(ω·t + κ·yt)
+#   ẏt    = (−1/λ)·α + (1/λ)·α_max     (rampa α da 0 → α_max)
+#
+#   yt = 1/∛S  — segnale condizionato (min in sorgente, convesso)
+#
+# Vincolo velocità: √(α_max · ω) ≤ V_MAX = 3.0 m/s  →  ω = V_MAX²/α_max
+# ============================================================================
+ES_ALPHA_MAX = 20.0    # [-]   ampiezza massima α (raggio cerchio ≈ √(α/ω) m)
+ES_OMEGA     = 0.45    # [rad/s] frequenza: √(20·0.45) = 3.0 m/s = V_MAX  ✓
+ES_KAPPA     = 0.05    # [-]   guadagno feedback segnale condizionato
+ES_LAMBDA    = 15.0    # [s]   costante di tempo rampa α (α → α_max in ~3λ s)
+ES_EPS       = 1e-12   # [-]   floor per evitare 1/cbrt(0)
 
 # ============================================================================
 # Stima distribuita posizione sorgente — DCGD (fase TRACK)

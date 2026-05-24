@@ -196,6 +196,12 @@ class DroneAgent:
     support_deadline:     int   = 0      # step entro cui chiudere la ricerca
     support_n_needed:     int   = 0      # partner SUPPORT ancora mancanti
 
+    # TRACK-ES — stato interno Extremum Seeking  [Azzollini et al. 2021, eq. 11-13]
+    es_x_ref: float = 0.0   # riferimento x corrente generato dall'ES [m]
+    es_y_ref: float = 0.0   # riferimento y corrente generato dall'ES [m]
+    es_alpha: float = 0.0   # valore corrente di α (rampa 0 → ES_ALPHA_MAX)
+    es_time:  float = 0.0   # tempo interno ES [s]
+
     # ── Proprietà ──────────────────────────────────────────────────────────
 
     @property
@@ -255,4 +261,18 @@ class DroneAgent:
         self.track_cand_signals = [float('nan')] * 3
         self.track_cand_idx     = 0
         self.waypoints = [self.track_candidates[0]]
+        self.wp_idx    = 0
+
+    def init_es(self, terrain: Terrain, agl: float) -> None:
+        """
+        Inizializza lo stato ES alla transizione SEARCH → TRACK.
+        Il riferimento parte dalla posizione stimata corrente;
+        α parte da 0 e rampa verso ES_ALPHA_MAX secondo eq. 13.
+        """
+        self.es_x_ref = float(self.x_est[0])
+        self.es_y_ref = float(self.x_est[1])
+        self.es_alpha = 0.0
+        self.es_time  = 0.0
+        z = terrain.agl_z(self.es_x_ref, self.es_y_ref, agl)
+        self.waypoints = [np.array([self.es_x_ref, self.es_y_ref, z])]
         self.wp_idx    = 0

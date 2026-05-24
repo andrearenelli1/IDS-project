@@ -61,6 +61,7 @@ from config import (
     CONSENSUS_K_MAX,
     N_NOISE_CALIB_SAMPLES, NOISE_CONSENSUS_ITERS,
     NOISE_DETECT_FACTOR, NOISE_STOP_FACTOR,
+    ES_ALPHA_MAX, ES_OMEGA, ES_KAPPA, ES_LAMBDA, ES_EPS,
 )
 
 
@@ -131,6 +132,62 @@ def _dcgd_refine(
 ) -> None:
     for _ in range(n_iters):
         _dcgd_step(agents, drone_ids)
+
+
+# ============================================================================
+# Extremum Seeking — TRACK mode  [Azzollini et al. 2021]
+# ============================================================================
+
+def _es_condition_signal(sig: float) -> float:
+    """
+    Condiziona il segnale ARTVA secondo eq. 5 del paper:
+        yt = 1 / ∛S
+    La mappa risultante è continua, limitata, con minimo globale in 0
+    corrispondente al massimo del segnale grezzo (= posizione sorgente).
+    """
+    return 1.0 / np.cbrt(max(sig, ES_EPS))
+
+
+def _es_update(
+    ag:      "DroneAgent",
+    yt:      float,
+    dt:      float,
+    terrain: Terrain,
+    agl:     float,
+) -> None:
+    """
+    Un passo dell'algoritmo ES a bounded update rate (Proposition 1,
+    Azzollini et al. 2021, eq. 11-13), discretizzato con Euler in avanti.
+
+    Aggiorna ag.es_alpha, ag.es_time, ag.es_x_ref, ag.es_y_ref
+    e scrive ag.waypoints[0] con il nuovo riferimento per l'MPC.
+
+    La velocità istantanea del riferimento è √(α·ω) ≤ √(α_max·ω) = V_MAX.
+    Il centro del cerchio converge verso il minimo di yt (= sorgente ARTVA)
+    seguendo la dinamica media di discesa del gradiente (eq. 12).
+    """
+    # α-filter ramp: α̇ = (α_max − α) / λ  →  α → α_max esponenzialmente
+    ag.es_alpha += dt * (ES_ALPHA_MAX - ag.es_alpha) / ES_LAMBDA
+
+    # Velocità istantanea del riferimento (costante in modulo)
+    speed = np.sqrt(ag.es_alpha * ES_OMEGA)
+
+    # Fase: ωt + κ·yt  (il termine κ·yt sposta il centro verso il minimo)
+    phase = ES_OMEGA * ag.es_time + ES_KAPPA * yt
+
+    # Euler forward integration of eq. 11
+    ag.es_x_ref += dt * speed * np.cos(phase)
+    ag.es_y_ref += dt * speed * np.sin(phase)
+    ag.es_time  += dt
+
+    # Il riferimento è clampato ai bordi del workspace (non modifica l'integrazione
+    # interna per non interrompere la dinamica del cerchio)
+    x = float(np.clip(ag.es_x_ref, terrain.x_min, terrain.x_max))
+    y = float(np.clip(ag.es_y_ref, terrain.y_min, terrain.y_max))
+    z = terrain.agl_z(x, y, agl)
+
+    ag.waypoints = [np.array([x, y, z])]
+    ag.wp_idx    = 0
 
 
 # ============================================================================
@@ -361,16 +418,15 @@ def _transition_search_to_track(
     cx_ws:         float,
     cy_ws:         float,
 ) -> None:
-    """SEARCH → TRACK quando segnale ≥ ARTVA_DETECT_THR."""
-    ag.state    = DroneState.TRACK
-    ag.detected = True
-    ag.init_track_dir(lawnmower_orig[drone_id])
+    """SEARCH → TRACK: avvia l'Extremum Seeking dalla posizione corrente."""
+    ag.state      = DroneState.TRACK
+    ag.detected   = True
     ag.source_est = np.array([cx_ws, cy_ws, terrain.z(cx_ws, cy_ws)])
-    ag.init_track_round(sig, terrain, agl)
+    ag.init_es(terrain, agl)
     print(
-        f"\n  ★ Drone {drone_id} TRACK (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
+        f"\n  ★ Drone {drone_id} TRACK-ES (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
         f"\n    pos reale={ag.x[:3].round(2)}  stimata={ag.x_est[:3].round(2)}"
-        f"\n    direzione={ag.track_dir.round(3)}"
+        f"\n    ES ref init=({ag.es_x_ref:.1f}, {ag.es_y_ref:.1f})"
     )
 
 
@@ -743,6 +799,15 @@ def simulate(
         # ── 2b. Retry partner SUPPORT pendenti ──────────────────────────
         _retry_support_search(agents, drone_ids, terrain, agl, step)
 
+        # ── 2c. ES update per droni in TRACK ────────────────────────────
+        # Aggiorna il riferimento ES e scrive waypoints[0] prima che l'MPC
+        # calcoli il controllo, garantendo la separazione temporale ES↔MPC.
+        for i in drone_ids:
+            ag = agents[i]
+            if ag.state == DroneState.TRACK:
+                yt = _es_condition_signal(signals[i])
+                _es_update(ag, yt, dt, terrain, agl)
+
         # Log waypoint corrente (dopo transizioni, prima di muoversi)
         for i in drone_ids:
             agents[i].wp_target_log.append(agents[i].current_target().copy())
@@ -820,8 +885,12 @@ def simulate(
         _dcgd_step(agents, drone_ids)
 
         # ── 7. Avanza waypoint (arrival-gated) ───────────────────────────
+        # I droni in TRACK sono guidati dall'ES (aggiornato al passo 2c)
+        # e non usano l'arrival gate — il loro target cambia ogni step.
         for i in drone_ids:
             ag = agents[i]
+            if ag.state == DroneState.TRACK:
+                continue
             if np.linalg.norm(ag.x_est[:3] - ag.current_target()) < STOP_THRESH:
                 _on_wp_reached(ag, signals[i], terrain, agl)
 

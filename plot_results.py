@@ -46,7 +46,7 @@ def _flt(v: str) -> float:
 def load(path: str) -> list[dict]:
     rows = []
     with open(path, newline="") as f:
-        for r in csv.DictReader(f, fieldnames=FIELDS):
+        for r in csv.DictReader(f):
             rows.append({
                 "area":    int(float(r["area_size_m"])),
                 "n":       int(r["n_drones"]),
