@@ -473,6 +473,8 @@ def main() -> None:
 
     print(f"Caricamento {args.csv} …")
     rows = load(args.csv)
+    _noise_set = set(NOISE_STDS)
+    rows = [r for r in rows if r["noise"] in _noise_set]
     total   = len(rows)
     n_found = sum(r["found"] for r in rows)
     n_fail  = total - n_found
