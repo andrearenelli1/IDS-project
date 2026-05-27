@@ -50,6 +50,7 @@ import argparse
 import csv
 import io
 import itertools
+import math
 import multiprocessing as mp
 import os
 import sys
@@ -255,8 +256,7 @@ def run_one(
         steps_run = len(next(iter(agents.values())).history) - 1
         time_s    = steps_run * DT_SIM
 
-        n_stopped = sum(1 for ag in agents.values() if ag.state == DroneState.STOP)
-        found     = n_stopped >= STOP_THRESHOLD
+        n_stopped  = sum(1 for ag in agents.values() if ag.state == DroneState.STOP)
 
         valid_ests = [ag.source_est for ag in agents.values() if ag.source_est is not None]
         if len(valid_ests) >= 2:
@@ -272,6 +272,14 @@ def run_one(
             est_error = float(np.linalg.norm(est_mean - artva.position[:2]))
         else:
             est_error = float("nan")
+
+        # Criterio found: ≥3 droni in STOP E stima entro FOUND_RADIUS dalla
+        # vittima reale. Evita falsi positivi in cui i droni si fermano lontano
+        # dalla sorgente (es. rumore bassissimo → ES converge su ottimo locale).
+        from config import FOUND_RADIUS
+        found = (n_stopped >= STOP_THRESHOLD
+                 and not math.isnan(est_error)
+                 and est_error < FOUND_RADIUS)
 
         if found:
             note = ""

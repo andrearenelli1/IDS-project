@@ -60,7 +60,7 @@ from config import (
     ARTVA_MOMENT,
     CONSENSUS_K_MAX,
     N_NOISE_CALIB_SAMPLES, NOISE_CONSENSUS_ITERS,
-    NOISE_DETECT_FACTOR, NOISE_STOP_FACTOR,
+    NOISE_DETECT_FACTOR, NOISE_STOP_FACTOR, ES_DETECT_MAX_R,
     ES_ALPHA_MAX, ES_OMEGA, ES_KAPPA, ES_LAMBDA, ES_EPS,
 )
 
@@ -467,11 +467,16 @@ def _transition_to_stop(
             'step': step, 'stop_id': drone_id,
             'rounds': rounds_log, 'partners': partners,
         })
-        # Raggio = distanza stimata dalla sorgente
+        # Raggio dal segnale locale (sempre affidabile al punto di STOP):
+        # r_signal = (moment/S)^(1/3) — stima fisica diretta della distanza.
+        # Se disponibile, confronta con la distanza DCGD e usa il minimo:
+        # la stima DCGD può essere ancora errata mentre quella dal segnale no.
+        r_signal = float((ARTVA_MOMENT / max(sig, 1e-15)) ** (1.0 / 3.0))
         if ag.source_est is not None:
-            radius = float(np.linalg.norm(ag.x_est[:2] - ag.source_est[:2]))
+            r_dcgd = float(np.linalg.norm(ag.x_est[:2] - ag.source_est[:2]))
+            radius = min(r_signal, r_dcgd)
         else:
-            radius = float((ARTVA_MOMENT * 1.5 / max(sig, 1e-15)) ** (1.0 / 3.0))
+            radius = r_signal
         radius = max(radius, 1.0)
         ag.support_orbit_radius = radius
 
@@ -737,12 +742,18 @@ def simulate(
     consensus_done:   bool = False
 
     # ── Calibrazione rumore e soglie dinamiche ───────────────────────────────
+    # Floor fisico: DETECT_THR ≥ moment/r_max³  (Azzollini et al., r_max=50m)
+    # Impedisce che con rumore bassissimo la soglia scenda tanto da triggerare
+    # TRACK dal punto di deployment, fuori dal bacino di convergenza dell'ES.
     print("Calibrazione rumore ARTVA...")
-    sigma_noise      = _calibrate_noise(agents, artva)
-    artva_detect_thr = NOISE_DETECT_FACTOR * sigma_noise
-    track_stop_thr   = NOISE_STOP_FACTOR   * sigma_noise
+    sigma_noise       = _calibrate_noise(agents, artva)
+    detect_floor      = ARTVA_MOMENT / ES_DETECT_MAX_R**3
+    stop_floor        = (NOISE_STOP_FACTOR / NOISE_DETECT_FACTOR) * detect_floor
+    artva_detect_thr  = max(NOISE_DETECT_FACTOR * sigma_noise, detect_floor)
+    track_stop_thr    = max(NOISE_STOP_FACTOR   * sigma_noise, stop_floor)
     print(
-        f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}\n"
+        f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}"
+        f"  (floor: {detect_floor:.2e} / {stop_floor:.2e})\n"
     )
 
     R_rel   = np.eye(3) * IMDCL_R_MEAS_STD**2

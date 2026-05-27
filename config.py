@@ -48,6 +48,18 @@ NOISE_CONSENSUS_ITERS = 10     # iterazioni average-consensus tra droni
 NOISE_DETECT_FACTOR   = 100.0  # DETECT_THR = FACTOR × σ̂_noise  (SEARCH→TRACK)
 NOISE_STOP_FACTOR     = 1000.0 # STOP_THR   = FACTOR × σ̂_noise  (TRACK/SUPPORT→STOP)
 
+# Portata massima affidabile per l'ES — da Azzollini et al. (arXiv:2106.14514),
+# Sec. IV-A SITL: distanza iniziale drone-sorgente ≈ 50 m, da cui l'ES
+# dimostra convergenza con α=20, κ=0.07, ω=0.65.
+# Usata come floor assoluto per DETECT_THR: impedisce che rumore bassissimo
+# abbassi la soglia fino a triggerare TRACK dall'intero workspace.
+ES_DETECT_MAX_R = 50.0   # [m]
+
+# Raggio entro cui la stima della sorgente è considerata "trovata".
+# Azzollini et al. usa 5×5 m come bounding box pratica per il soccorritore;
+# usiamo 10 m per tenere conto delle approssimazioni della simulazione.
+FOUND_RADIUS = 10.0      # [m]
+
 # Valori nominali per la visualizzazione (derivati da ARTVA_NOISE_STD × fattori).
 # La simulazione usa soglie dinamiche misurate — questi servono solo ai plot.
 ARTVA_DETECT_THR = NOISE_DETECT_FACTOR * ARTVA_NOISE_STD   # ≈ 1e-5

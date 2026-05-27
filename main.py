@@ -24,9 +24,14 @@ from __future__ import annotations
 import argparse
 import numpy as np
 
+import config
+import artva   as artva_mod
+import simulation as sim_mod
+import terrain as terrain_mod
+
 from config import (
     N_DRONES, AGL_HEIGHT, N_SIM, DT_SIM, SIGMA_ACC_SIM,
-    ARTVA_MOMENT, ARTVA_NOISE_STD, VICTIM_XY, VICTIM_DEPTH,
+    ARTVA_MOMENT, VICTIM_XY, VICTIM_DEPTH,
     ANIM_SPEED,
 )
 from terrain import build_terrain
@@ -45,27 +50,64 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Simulazione ricerca valanga multi-drone MPC + IMDCL"
     )
-    parser.add_argument("--n",       type=int,   default=N_DRONES,
+    parser.add_argument("--n",            type=int,   default=N_DRONES,
                         help="Numero di droni")
-    parser.add_argument("--agl",     type=float, default=AGL_HEIGHT,
+    parser.add_argument("--agl",          type=float, default=AGL_HEIGHT,
                         help="Altezza sopra terreno [m]")
-    parser.add_argument("--steps",   type=int,   default=N_SIM,
+    parser.add_argument("--steps",        type=int,   default=N_SIM,
                         help="Passi simulazione")
-    parser.add_argument("--animate", action="store_true",
+    parser.add_argument("--animate",      action="store_true",
                         help="Mostra animazione 3-D")
-    parser.add_argument("--save",    action="store_true",
+    parser.add_argument("--save",         action="store_true",
                         help="Salva animazione su disco")
-    parser.add_argument("--seed",    type=int,   default=42)
+    parser.add_argument("--seed",         type=int,   default=42)
+    parser.add_argument("--noise",        type=float, default=None,
+                        help="ARTVA noise std (override config, es: 1e-8)")
+    parser.add_argument("--rc",           type=float, default=None,
+                        help="Raggio comunicazione [m] (override config)")
+    parser.add_argument("--area",         type=float, default=None,
+                        help="Lato workspace [m] (override config)")
+    parser.add_argument("--victim-x",     type=float, default=None,
+                        help="Posizione x vittima [m] nel workspace locale")
+    parser.add_argument("--victim-y",     type=float, default=None,
+                        help="Posizione y vittima [m] nel workspace locale")
+    parser.add_argument("--victim-depth", type=float, default=None,
+                        help="Profondità sepoltura [m] (override config)")
+    parser.add_argument("--ws",           type=str,   default=None,
+                        help="Workspace center: 'center' oppure 'r,c' (es: 0.60,0.45)")
     args = parser.parse_args()
+
+    # — Patch parametri sui moduli (prima di qualsiasi import lazy) —
+    if args.noise is not None:
+        artva_mod.ARTVA_NOISE_STD  = args.noise
+        config.ARTVA_NOISE_STD     = args.noise
+    if args.rc is not None:
+        sim_mod.IMDCL_COMM_RADIUS  = args.rc
+        config.IMDCL_COMM_RADIUS   = args.rc
+    if args.area is not None:
+        terrain_mod.AREA_SIZE_M    = args.area
+        config.AREA_SIZE_M         = args.area
+
+    victim_depth = args.victim_depth if args.victim_depth is not None else VICTIM_DEPTH
+
+    if args.ws is None:
+        center_frac = (0.60, 0.58)   # default originale main.py
+    elif args.ws == "center":
+        center_frac = None           # centro DEM (come run_experiments)
+    else:
+        r_s, c_s = args.ws.split(",")
+        center_frac = (float(r_s), float(c_s))
 
     print("=" * 62)
     print("  ARTVA Search & Rescue — simulazione multi-drone MPC")
     print(f"  Droni: {args.n}   AGL: {args.agl} m   Passi: {args.steps}")
+    if args.noise is not None:
+        print(f"  noise={args.noise:.0e}  rc={args.rc}m  area={args.area}m")
     print("=" * 62)
 
     # — Costruzione ambiente —
     print("\nLettura e interpolazione DEM...")
-    terrain_obj, x_coords, y_coords, sub_dem, transform = build_terrain()
+    terrain_obj, x_coords, y_coords, sub_dem, transform = build_terrain(center_frac)
     print(f"  Workspace: x=[{terrain_obj.x_min:.0f}, {terrain_obj.x_max:.0f}]  "
           f"y=[{terrain_obj.y_min:.0f}, {terrain_obj.y_max:.0f}] m  "
           f"(UTM origine: E≈{terrain_obj.utm_origin[0]:.0f}, N≈{terrain_obj.utm_origin[1]:.0f})")
@@ -77,13 +119,16 @@ def main() -> None:
     ])
 
     # — Posizione vittima —
-    if VICTIM_XY is not None:
+    if args.victim_x is not None and args.victim_y is not None:
+        victim_x = terrain_obj.x_min + args.victim_x
+        victim_y = terrain_obj.y_min + args.victim_y
+    elif VICTIM_XY is not None:
         victim_x, victim_y = float(VICTIM_XY[0]), float(VICTIM_XY[1])
     else:
         rng_main = np.random.default_rng(args.seed)
         victim_x = rng_main.uniform(terrain_obj.x_min + 30, terrain_obj.x_max - 30)
         victim_y = rng_main.uniform(terrain_obj.y_min + 30, terrain_obj.y_max - 30)
-    victim_z = terrain_obj.z(victim_x, victim_y) - VICTIM_DEPTH
+    victim_z = terrain_obj.z(victim_x, victim_y) - victim_depth
 
     artva = ARTVASource(
         position=np.array([victim_x, victim_y, victim_z]),

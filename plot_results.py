@@ -104,11 +104,11 @@ def median(vals: list[float]) -> float:
 PALETTE = ["#4e79a7", "#f28e2b", "#59a14f"]   # blu, arancio, verde
 AREA_COLORS = {100: "#5778a4", 200: "#e49444"}
 DEPTH_COLORS = {1.0: "#4e79a7", 3.0: "#f28e2b", 5.0: "#e15759"}
-NOISE_LABELS = {1e-8: "10⁻⁸", 1e-7: "10⁻⁷", 1e-6: "10⁻⁶"}
+NOISE_LABELS = {1e-8: "10⁻⁸", 1e-7: "10⁻⁷", 1e-6: "10⁻⁶", 1e-5: "10⁻⁵"}
 N_DRONES_LIST  = [3, 4, 5]
 AREAS          = [100, 200]
 COMM_RADII     = [25, 50, 80, 120]
-NOISE_STDS     = [1e-8, 1e-7, 1e-6]
+NOISE_STDS     = [1e-8, 1e-7, 1e-6, 1e-5]
 DEPTHS         = [1.0, 3.0, 5.0]
 DEPTH_BIN_EDGES  = [1.0, 2.0, 3.0, 4.0, 5.01]
 DEPTH_BIN_LABELS = ["1–2 m", "2–3 m", "3–4 m", "4–5 m"]
@@ -222,49 +222,6 @@ def fig_time_boxplot(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 3 — Errore di stima 2D: dipendenza da rumore e profondità vittima
-# ════════════════════════════════════════════════════════════════════════════
-
-def fig_estimation_error(rows: list[dict]) -> plt.Figure:
-    found = [r for r in rows if r["found"] and not math.isnan(r["err2d"])
-             and not math.isnan(r["depth"])]
-    if not found:
-        return None
-
-    fig, axes = plt.subplots(1, 3, figsize=(14, 5),
-                             constrained_layout=True, sharey=True)
-    fig.suptitle("Errore di stima 2D della sorgente  —  Profondità × Rumore ARTVA",
-                 fontsize=13, fontweight="bold")
-
-    noise_sorted = sorted(NOISE_STDS)
-
-    for ax, noise in zip(axes, noise_sorted):
-        sub = [r for r in found if r["noise"] == noise]
-        if not sub:
-            continue
-
-        xs = np.array([r["depth"] for r in sub])
-        ys = np.array([r["err2d"] for r in sub])
-
-        ax.scatter(xs, ys, alpha=0.2, s=8, color="#4e79a7", rasterized=True)
-
-        coef = np.polyfit(xs, ys, 1)
-        x_fit = np.linspace(xs.min(), xs.max(), 200)
-        ax.plot(x_fit, np.polyval(coef, x_fit),
-                color="#e15759", lw=2.0, ls="--",
-                label=f"trend  ({coef[0]:+.1f} m/m)")
-
-        ax.set_xlabel("Profondità vittima [m]", fontsize=10)
-        ax.set_title(f"Rumore σ = {NOISE_LABELS[noise]}", fontsize=11,
-                     fontweight="bold")
-        if ax is axes[0]:
-            ax.set_ylabel("Errore stima 2D [m]", fontsize=10)
-        ax.legend(fontsize=8)
-
-    return fig
-
-
-# ════════════════════════════════════════════════════════════════════════════
 # Fig 4 — Raggio di comunicazione: tasso di successo vs comm_radius
 #          linee per n_droni, pannelli per area
 # ════════════════════════════════════════════════════════════════════════════
@@ -354,7 +311,7 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
                  flierprops=dict(marker=".", markersize=3, alpha=0.3))
 
     noise_sorted = sorted(NOISE_STDS)
-    noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
+    noise_colors = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"]
 
     for ax, area in zip(axes, AREAS):
         data = [[r["pos_std"] for r in found if r["noise"] == noise and r["area"] == area]
@@ -453,9 +410,7 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
         ("Numero di droni",          "n",      N_DRONES_LIST,
          lambda v: f"{v} droni",     PALETTE),
         ("Rumore ARTVA σ",           "noise",  sorted(NOISE_STDS),
-         lambda v: NOISE_LABELS[v],  ["#4e79a7", "#f28e2b", "#e15759"]),
-        ("Soglia detect",            "detect", sorted(DETECT_FACTORS),
-         lambda v: DETECT_LABELS[v], list(DETECT_COLORS.values())),
+         lambda v: NOISE_LABELS[v],  ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"]),
         ("Profondità vittima [m]",   "depth_bin", DEPTH_BIN_LABELS,
          lambda v: v,                 DEPTH_BIN_COLORS),
         ("Raggio comunicazione [m]", "rc",     sorted(COMM_RADII),
@@ -503,70 +458,6 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
 #          Colonne: dimensione area — linee tratteggiate/continue per i due fattori
 # ════════════════════════════════════════════════════════════════════════════
 
-def fig_detect_factor(rows: list[dict]) -> plt.Figure:
-    noise_sorted = sorted(NOISE_STDS)
-    noise_ticks  = [NOISE_LABELS[n] for n in noise_sorted]
-
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True,
-                             sharey="row")
-    fig.suptitle("Effetto della soglia di rilevamento ARTVA  (NOISE_DETECT_FACTOR)",
-                 fontsize=13, fontweight="bold")
-
-    linestyles = {50.0: "--", 100.0: "-"}
-
-    for col, area in enumerate(AREAS):
-        ax_sr  = axes[0, col]   # success rate
-        ax_t   = axes[1, col]   # median time
-
-        for df in DETECT_FACTORS:
-            sr_vals, t_vals = [], []
-            for noise in noise_sorted:
-                sub = [r for r in rows
-                       if r["area"] == area and r["detect"] == df
-                       and r["noise"] == noise]
-                sr_vals.append(success_rate(sub))
-
-                found_times = [r["time"] for r in sub if r["found"]]
-                t_vals.append(median(found_times))
-
-            color = DETECT_COLORS[df]
-            ls    = linestyles[df]
-            label = DETECT_LABELS[df]
-
-            ax_sr.plot(range(len(noise_sorted)), sr_vals,
-                       marker="o", lw=2.2, ms=8, color=color,
-                       ls=ls, label=label)
-            for x, y in zip(range(len(noise_sorted)), sr_vals):
-                if not math.isnan(y):
-                    ax_sr.annotate(f"{y:.0f}%", (x, y),
-                                   textcoords="offset points", xytext=(0, 7),
-                                   ha="center", fontsize=8, color=color)
-
-            valid_t = [(x, y) for x, y in enumerate(t_vals)
-                       if not math.isnan(y)]
-            if valid_t:
-                xs, ys = zip(*valid_t)
-                ax_t.plot(xs, ys, marker="s", lw=2.2, ms=8, color=color,
-                          ls=ls, label=label)
-                for x, y in zip(xs, ys):
-                    ax_t.annotate(f"{y:.0f}s", (x, y),
-                                  textcoords="offset points", xytext=(0, 7),
-                                  ha="center", fontsize=8, color=color)
-
-        for ax in (ax_sr, ax_t):
-            ax.set_xticks(range(len(noise_sorted)))
-            ax.set_xticklabels(noise_ticks, fontsize=10)
-            ax.set_xlabel("Rumore ARTVA σ", fontsize=10)
-            ax.set_title(f"Area {area} × {area} m", fontsize=11, fontweight="bold")
-            ax.legend(fontsize=9)
-
-        ax_sr.set_ylabel("Tasso di successo [%]", fontsize=10)
-        ax_sr.set_ylim(0, 108)
-        axes[1, 0].set_ylabel("Tempo mediano [s]", fontsize=10)
-
-    return fig
-
-
 # ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
@@ -590,14 +481,11 @@ def main() -> None:
 
     fig_success_heatmap(rows)
     fig_time_boxplot(rows)
-    fig_estimation_error(rows)
     fig_comm_radius(rows)
     fig_cdf(rows)
     fig_consensus_spread(rows)
     fig_time_vs_distance(rows)
     fig_time_histograms(rows)
-    fig_detect_factor(rows)
-
     plt.show()
 
 

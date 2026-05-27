@@ -246,7 +246,7 @@ class Terrain:
 # Pipeline principale
 # ============================================================================
 
-def build_terrain(tif_path: str = TIF_PATH, center_frac=None):
+def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
     """
     Legge il GeoTIFF, estrae area AREA_SIZE_M × AREA_SIZE_M m,
     costruisce un oggetto Terrain interrogabile.
