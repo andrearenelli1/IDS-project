@@ -19,7 +19,8 @@
 | **IMDCL** | *Information-based Multi-agent Decentralized Cooperative Localization* — filtro Kalman distribuito che combina misure locali e relative inter-drone |
 | **FSM** | *Finite State Machine* — macchina a stati del drone: `SEARCH` → `TRACK` |
 | **lawnmower** | Pattern di volo a greca (corsie parallele) per coprire sistematicamente l'area |
-| **hill-climbing** | Algoritmo greedy reattivo: avanza nella direzione che massimizza il segnale ARTVA |
+| **ES** | *Extremum Seeking* — algoritmo model-free che fa percorrere al drone una traiettoria circolare il cui centro converge verso il massimo del segnale ARTVA; usato in fase TRACK (Azzollini et al. arXiv:2106.14514) |
+| **hill-climbing** | ~~Algoritmo greedy reattivo~~ — **sostituito da ES** in fase TRACK; il termine compare ancora nel codice legacy ma non è il comportamento attivo |
 | **warm-start** | Inizializzazione del solver MPC con una soluzione ammissibile per ridurre il tempo di calcolo al primo passo |
 | **landmark message** | Messaggio IMDCL che codifica la stima di posizione di un drone per essere usata come riferimento da un vicino |
 
@@ -42,5 +43,7 @@
 | **DCGD** | *Distributed Consensus Gradient Descent* — stima online distribuita della posizione sorgente ARTVA |
 | **Adapt** | Passo locale: `theta_i -= alpha * grad_J_i / \|\|grad_J_i\|\|` su batch di misure recenti |
 | **Combine** | Passo consensus: media pesata con vicini TRACK entro `IMDCL_COMM_RADIUS` |
-| `TRACK_STOP_THR` | Soglia segnale ARTVA oltre cui il drone si ferma in hovering (~15 m dalla sorgente) |
+| `TRACK_STOP_THR` | Soglia dinamica: `max(NOISE_STOP_FACTOR × σ̂, floor)` — il drone si ferma quando il segnale la supera; con i parametri nominali corrisponde a ~20 m dalla sorgente |
+| `ES_DETECT_MAX_R` | Portata massima affidabile per l'ES (50 m, da paper SITL); usata come floor per `DETECT_THR` e `STOP_THR` |
+| `FOUND_RADIUS` | Raggio entro cui la stima DCGD deve cadere perché un run sia `found=True` (10 m) |
 | **raffinamento** | `DIST_EST_REFINE` iterazioni DCGD extra eseguite quando tutti i droni TRACK si fermano |
