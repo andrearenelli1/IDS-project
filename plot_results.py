@@ -104,11 +104,11 @@ def median(vals: list[float]) -> float:
 PALETTE = ["#4e79a7", "#f28e2b", "#59a14f"]   # blu, arancio, verde
 AREA_COLORS = {100: "#5778a4", 200: "#e49444"}
 DEPTH_COLORS = {1.0: "#4e79a7", 3.0: "#f28e2b", 5.0: "#e15759"}
-NOISE_LABELS = {1e-8: "10⁻⁸", 1e-7: "10⁻⁷", 1e-6: "10⁻⁶", 1e-5: "10⁻⁵"}
+NOISE_LABELS = {1e-7: "10⁻⁷", 1e-6: "10⁻⁶", 1e-5: "10⁻⁵"}
 N_DRONES_LIST  = [3, 4, 5]
 AREAS          = [100, 200]
 COMM_RADII     = [25, 50, 80, 120]
-NOISE_STDS     = [1e-8, 1e-7, 1e-6, 1e-5]
+NOISE_STDS     = [1e-7, 1e-6, 1e-5]
 DEPTHS         = [1.0, 3.0, 5.0]
 DEPTH_BIN_EDGES  = [1.0, 2.0, 3.0, 4.0, 5.01]
 DEPTH_BIN_LABELS = ["1–2 m", "2–3 m", "3–4 m", "4–5 m"]
@@ -311,7 +311,7 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
                  flierprops=dict(marker=".", markersize=3, alpha=0.3))
 
     noise_sorted = sorted(NOISE_STDS)
-    noise_colors = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"]
+    noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
 
     for ax, area in zip(axes, AREAS):
         data = [[r["pos_std"] for r in found if r["noise"] == noise and r["area"] == area]
@@ -410,7 +410,7 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
         ("Numero di droni",          "n",      N_DRONES_LIST,
          lambda v: f"{v} droni",     PALETTE),
         ("Rumore ARTVA σ",           "noise",  sorted(NOISE_STDS),
-         lambda v: NOISE_LABELS[v],  ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2"]),
+         lambda v: NOISE_LABELS[v],  ["#4e79a7", "#f28e2b", "#e15759"]),
         ("Profondità vittima [m]",   "depth_bin", DEPTH_BIN_LABELS,
          lambda v: v,                 DEPTH_BIN_COLORS),
         ("Raggio comunicazione [m]", "rc",     sorted(COMM_RADII),

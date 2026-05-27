@@ -77,7 +77,7 @@ N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
 N_RANDOM_VICTIMS = 15
 
-ARTVA_NOISE_STDS = [1e-8, 1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
+ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
 
 # Raggio comunicazione UWB:
 #   120 m → condizioni ottimali (visibilità diretta)
