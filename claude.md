@@ -11,6 +11,8 @@
 4. **Modificare `ag.waypoints` → resettare sempre `ag.wp_idx = 0`**.
 5. **`np.random.default_rng(seed)`** ovunque, mai `np.random.*` globale.
 6. **FSM 4 stati**: SEARCH (lawnmower) → TRACK (3 candidati ±60°, arrival-gated) → STOP (hovering + sceglie 2 SUPPORT) / SUPPORT (circonferenza CW/CCW attorno al drone STOP, raggio = distanza stimata sorgente) → STOP. Tutte le assegnazioni waypoint sono arrival-gated; eccezione solo su transizione di stato.
+   - **Consenso SUPPORT**: i droni in stato SUPPORT partecipano al consenso sulla source estimate insieme al drone STOP.
+   - **Timeout chiamata SUPPORT**: se entro `SUPPORT_CALL_TIMEOUT` step (default 1000) non si trovano 2 droni nel raggio di comunicazione, l'affinazione della stima avviene comunque con i droni disponibili (anche solo 1 SUPPORT + STOP).
 7. **Soglie dinamiche**: `ARTVA_DETECT_THR` e `TRACK_STOP_THR` **non esistono più** come costanti. Le soglie vengono calcolate a runtime in `simulate()` tramite `_calibrate_noise()`: ogni drone misura la σ locale (std di `N_NOISE_CALIB_SAMPLES` misure) → average-consensus → soglie = `NOISE_DETECT_FACTOR × σ̂` e `NOISE_STOP_FACTOR × σ̂`. Modificare i fattori in `config.py`, mai le soglie direttamente.
 
 ## Struttura .context/

@@ -92,18 +92,19 @@ def _grad_S(pos: np.ndarray, theta: np.ndarray, moment: float) -> np.ndarray:
 # ============================================================================
 
 def _dcgd_step(agents: Dict[int, DroneAgent], drone_ids: list) -> None:
-    """Un passo DCGD (Adapt + Combine) per tutti i droni TRACK con source_est."""
-    track_ids = [
+    """Un passo DCGD (Adapt + Combine) per droni TRACK/SUPPORT/STOP con source_est."""
+    active_ids = [
         i for i in drone_ids
-        if agents[i].state == DroneState.TRACK and agents[i].source_est is not None
+        if agents[i].state in (DroneState.TRACK, DroneState.SUPPORT, DroneState.STOP)
+        and agents[i].source_est is not None
     ]
-    if not track_ids:
+    if not active_ids:
         return
 
-    snap = {i: agents[i].source_est.copy() for i in track_ids}
+    snap = {i: agents[i].source_est.copy() for i in active_ids}
 
     # Adapt: gradient descent locale
-    for i in track_ids:
+    for i in active_ids:
         ag      = agents[i]
         theta_i = snap[i].copy()
 
@@ -121,9 +122,9 @@ def _dcgd_step(agents: Dict[int, DroneAgent], drone_ids: list) -> None:
         ag.source_est = theta_i
 
     # Combine: average consensus pesato sui valori post-adapt
-    adapted  = {i: agents[i].source_est.copy() for i in track_ids}
-    combined = _average_consensus(agents, track_ids, adapted, iters=1, beta=DIST_EST_BETA)
-    for i in track_ids:
+    adapted  = {i: agents[i].source_est.copy() for i in active_ids}
+    combined = _average_consensus(agents, active_ids, adapted, iters=1, beta=DIST_EST_BETA)
+    for i in active_ids:
         agents[i].source_est = combined[i]
 
 
@@ -491,6 +492,8 @@ def _transition_to_stop(
             partner.support_cw     = cw
             partner.waypoints      = wps
             partner.wp_idx         = 0
+            if partner.source_est is None and ag.source_est is not None:
+                partner.source_est = ag.source_est.copy()
             print(
                 f"    → Drone {partner_id} SUPPORT {'CW' if cw else 'CCW'} "
                 f"cerchio r={radius:.1f} m attorno a drone {drone_id}"
@@ -533,11 +536,19 @@ def _retry_support_search(
 
         if step >= ag.support_deadline:
             ag.support_pending = False
+            refine_ids = [
+                j for j in drone_ids
+                if agents[j].state in (DroneState.STOP, DroneState.SUPPORT)
+                and agents[j].source_est is not None
+            ]
+            n_avail = len(refine_ids)
             print(
                 f"\n  ⏱ Drone {drone_id}: timeout supporto al passo {step} — "
                 f"{ag.support_n_needed} partner non trovati. "
-                f"Triangolazione con droni STOP disponibili."
+                f"Raffinamento DCGD con {n_avail} droni disponibili..."
             )
+            if n_avail >= 2:
+                _dcgd_refine(agents, refine_ids, DIST_EST_REFINE)
             continue
 
         # Cerca droni non STOP e non già in SUPPORT nel raggio di comunicazione
@@ -574,6 +585,8 @@ def _retry_support_search(
             partner.support_cw     = cw
             partner.waypoints      = wps
             partner.wp_idx         = 0
+            if partner.source_est is None and ag.source_est is not None:
+                partner.source_est = ag.source_est.copy()
             print(
                 f"    → Drone {partner_id} SUPPORT (retry, passo {step}) "
                 f"{'CW' if cw else 'CCW'} r={radius:.1f}m attorno a drone {drone_id}"

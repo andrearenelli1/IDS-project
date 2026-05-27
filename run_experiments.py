@@ -74,9 +74,9 @@ AREA_SIZES = [100, 200]        # [m]  lato workspace
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
-N_RANDOM_VICTIMS = 10
+N_RANDOM_VICTIMS = 15
 
-ARTVA_NOISE_STDS = [1e-8, 1e-7, 1e-6]  # rumore segnale ARTVA
+ARTVA_NOISE_STDS = [1e-8, 1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
 
 # Raggio comunicazione UWB:
 #   120 m → condizioni ottimali (visibilità diretta)
@@ -90,7 +90,7 @@ COMM_RADII = [25, 50, 80, 120]     # [m]
 # None = centro del DEM (comportamento originale e di default).
 WORKSPACE_CENTERS = [
     None,            # patch centrale (default)
-    (0.35, 0.45),    # patch SW
+    (0.35, 0.4),    # patch SW
     (0.45, 0.55),    # patch E
     (0.60, 0.45),    # patch N-W
     (0.60, 0.58),    # patch N-E
@@ -422,13 +422,6 @@ def preview_workspaces() -> None:
     e una finestra 3-D per ciascun workspace.
     Blocca finché tutte le finestre non vengono chiuse, poi la simulazione parte.
     """
-    import matplotlib
-    for _backend in ("TkAgg", "Qt5Agg", "GTK3Agg", "wxAgg"):
-        try:
-            matplotlib.use(_backend)
-            break
-        except Exception:
-            continue
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     from matplotlib.colors import LightSource
