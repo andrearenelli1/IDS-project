@@ -751,10 +751,27 @@ def simulate(
     stop_floor        = (NOISE_STOP_FACTOR / NOISE_DETECT_FACTOR) * detect_floor
     artva_detect_thr  = max(NOISE_DETECT_FACTOR * sigma_noise, detect_floor)
     track_stop_thr    = max(NOISE_STOP_FACTOR   * sigma_noise, stop_floor)
+    r_detect    = (ARTVA_MOMENT / artva_detect_thr) ** (1.0 / 3.0)
+    strip_width = (terrain.x_max - terrain.x_min) / len(agents)
+    n_lanes     = max(1, int(np.ceil(strip_width / (2.0 * r_detect))))
+    lane_spacing = strip_width / n_lanes
     print(
         f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}"
         f"  (floor: {detect_floor:.2e} / {stop_floor:.2e})\n"
+        f"  r_detect={r_detect:.1f} m  →  {n_lanes} corsia/e per drone"
+        f"  (lane_spacing={lane_spacing:.1f} m)\n"
     )
+
+    _n  = len(agents)
+    _xm = terrain.x_min;  _xM = terrain.x_max
+    _ym = terrain.y_min;  _yM = terrain.y_max
+    for i, ag in agents.items():
+        wps = lawnmower_waypoints(
+            i, _n, _xm, _xM, _ym, _yM, terrain,
+            lane_spacing=lane_spacing, agl=agl,
+        )
+        ag.waypoints = wps
+        ag.wp_idx    = 0
 
     R_rel   = np.eye(3) * IMDCL_R_MEAS_STD**2
     R_lidar = np.array([[IMDCL_R_LIDAR_STD**2]])

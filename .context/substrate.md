@@ -18,15 +18,24 @@ Terminazione: ≥ 3 droni in STOP **E** stima entro `FOUND_RADIUS` (10 m) dalla 
 Il controllo traiettoria usa MPC a orizzonte finito; la localizzazione distribuita usa filtro IMDCL (cooperative Kalman).
 Tutte le coordinate sono in **metri locali del workspace** (origine = angolo SW dell'area DEM estratta); `terrain.utm_origin` contiene l'offset UTM.
 
-## Soglie dinamiche
+## Soglie dinamiche e lane spacing adattivo
 
-Le soglie di rilevamento non sono costanti — vengono calcolate a runtime:
+Le soglie di rilevamento non sono costanti — vengono calcolate a runtime in `simulate()`:
 ```
 σ̂ = consensus(misure locali di ogni drone)
 DETECT_THR = max(NOISE_DETECT_FACTOR × σ̂,  ARTVA_MOMENT / ES_DETECT_MAX_R³)
 STOP_THR   = max(NOISE_STOP_FACTOR   × σ̂,  10 × ARTVA_MOMENT / ES_DETECT_MAX_R³)
 ```
 Il floor fisico (`ES_DETECT_MAX_R = 50 m`, da paper SITL) garantisce che il TRACK parta sempre entro il bacino di convergenza dell'ES.
+
+Subito dopo, il lane spacing del lawnmower viene ricalcolato adattivamente:
+```
+r_detect     = (ARTVA_MOMENT / DETECT_THR)^(1/3)
+strip_width  = area_x / n_drones
+n_lanes      = ceil(strip_width / (2 × r_detect))
+lane_spacing = strip_width / n_lanes
+```
+Questo garantisce copertura completa senza gap per qualsiasi livello di rumore. I waypoint vengono rigenerati e `wp_idx` azzerato per ogni drone. Il valore di `LANE_SPACING` in `config.py` è usato solo per il warm-start iniziale prima della calibrazione.
 
 ## Livelli di rumore attivi
 
@@ -91,6 +100,7 @@ python plot_results.py results.csv
 | Calibrazione rumore (campioni, consensus) | `simulation.py → _calibrate_noise` |
 | Parametri ES (alpha, omega, kappa) | `config.py → ES_*` |
 | Cambiare il pattern SEARCH | `drone_agent.py → lawnmower_waypoints` |
+| Cambiare il lane spacing (adattivo) | `simulation.py` (formula dopo `_calibrate_noise`) |
 | Cambiare la navigazione TRACK | `drone_agent.py` (ES logic) |
 | Cambiare la circonferenza SUPPORT | `drone_agent.py → circle_waypoints`, `simulation.py → _transition_to_stop` |
 | Migliorare la stima posizione | `imdcl.py`, `simulation.py → _dcgd_step` |

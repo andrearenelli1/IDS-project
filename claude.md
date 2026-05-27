@@ -11,6 +11,7 @@
 4. **Modificare `ag.waypoints` → resettare sempre `ag.wp_idx = 0`**.
 5. **`np.random.default_rng(seed)`** ovunque, mai `np.random.*` globale.
 6. **FSM 4 stati**: SEARCH (lawnmower) → TRACK (Extremum Seeking ES, Azzollini et al. arXiv:2106.14514) → STOP (hovering + sceglie 2 SUPPORT) / SUPPORT (circonferenza CW/CCW attorno al drone STOP, raggio = `min(r_segnale, r_dcgd)` con `r_segnale = (moment/S)^(1/3)`) → STOP. Tutte le assegnazioni waypoint sono arrival-gated; eccezione solo su transizione di stato.
+   - **Lane spacing adattivo**: il lane spacing del lawnmower non è fisso ma viene ricalcolato in `simulate()` dopo la calibrazione del rumore: `n_lanes = ceil(strip_width / (2 × r_detect))`, `lane_spacing = strip_width / n_lanes`. Garantisce copertura completa senza gap. I waypoint vengono rigenerati e `wp_idx = 0` dopo il calcolo.
    - **Consenso SUPPORT**: i droni in stato SUPPORT partecipano al consenso sulla source estimate insieme al drone STOP.
    - **Timeout chiamata SUPPORT**: se entro `SUPPORT_CALL_TIMEOUT` step (default 1000) non si trovano 2 droni nel raggio di comunicazione, l'affinazione della stima avviene comunque con i droni disponibili.
 7. **Soglie dinamiche con floor fisico**: le soglie si calcolano a runtime in `simulate()` tramite `_calibrate_noise()`:

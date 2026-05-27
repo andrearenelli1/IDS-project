@@ -42,6 +42,14 @@ Il `k` (SNR al momento del rilevamento) rimane il parametro di design principale
 
 ---
 
+## Lane spacing adattivo al raggio di rilevamento
+
+**Decisione**: il lane spacing del lawnmower non è più fisso (`LANE_SPACING = 15 m`), ma viene calcolato in `simulate()` dopo la calibrazione del rumore: `n_lanes = ceil(strip_width / (2 × r_detect))`, `lane_spacing = strip_width / n_lanes`.
+
+**Perché**: con lane spacing fisso, il lawnmower era sovra-denso per rumore basso (es. 1e-7, r_detect ≈ 47 m → 15 m spacing = 3× ridondanza inutile, ricerca lenta) e potenzialmente sotto-denso per rumore alto (1e-5, r_detect ≈ 13 m → spacing fisso 15 m > 2×13 = 26 m → piccoli gap di copertura). Il lane spacing adattivo garantisce copertura esatta con il minimo numero di corsie, rendendo il tempo di ricerca proporzionale alla difficoltà del problema.
+
+---
+
 ## Replay da CLI (main.py --noise --rc --area --victim-x/y/depth --ws)
 
 **Decisione**: aggiunta di parametri CLI a `main.py` per replicare esattamente i run dal CSV dello sweep.
