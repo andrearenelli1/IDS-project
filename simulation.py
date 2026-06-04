@@ -60,7 +60,7 @@ from config import (
     ARTVA_MOMENT,
     CONSENSUS_K_MAX,
     N_NOISE_CALIB_SAMPLES, NOISE_CONSENSUS_ITERS,
-    NOISE_DETECT_FACTOR, NOISE_STOP_FACTOR, ES_DETECT_MAX_R,
+    NOISE_DETECT_FACTOR, NOISE_STOP_FACTOR, ES_DETECT_MAX_R, FOUND_RADIUS,
     ES_ALPHA_MAX, ES_OMEGA, ES_KAPPA, ES_LAMBDA, ES_EPS,
 )
 
@@ -621,18 +621,20 @@ def _calibrate_noise(
     artva:           ARTVASource,
     n_samples:       int = N_NOISE_CALIB_SAMPLES,
     consensus_iters: int = NOISE_CONSENSUS_ITERS,
-) -> float:
+) -> tuple[float, float]:
     """
     Ogni drone stima σ_noise da misure ripetute alla propria posizione iniziale
     (std delle misure è indipendente dal segnale medio → stima robusta).
     Poi average-consensus distribuito converge a una σ̂ comune.
     """
     drone_ids = list(agents.keys())
-
+    
+    mu_local: Dict[int, float] = {}
     sigma_local: Dict[int, float] = {}
     for i in drone_ids:
         pos     = agents[i].x[:3]
         samples = [artva.signal(pos, noisy=True) for _ in range(n_samples)]
+        mu_local[i] = np.mean(samples)
         sigma_local[i] = float(np.std(samples))
 
     print("  [Calibrazione] σ_noise locale per drone:")
@@ -640,9 +642,11 @@ def _calibrate_noise(
         print(f"    Drone {i}: σ̂={sigma_local[i]:.2e}")
 
     sigma_agreed = _average_consensus(agents, drone_ids, sigma_local, iters=consensus_iters)
-    agreed = float(np.mean([sigma_agreed[i] for i in drone_ids]))
-    print(f"  [Calibrazione] σ̂ consensus = {agreed:.2e}")
-    return agreed
+    mu_agreed = _average_consensus(agents, drone_ids, mu_local, iters=consensus_iters)
+    mu_agreed = float(np.mean([mu_agreed[i] for i in drone_ids]))
+    sigma_agreed = float(np.mean([sigma_agreed[i] for i in drone_ids]))
+    print(f"  [Calibrazione] σ̂ consensus = {sigma_agreed:.2e}")
+    return mu_agreed, sigma_agreed
 
 
 # ============================================================================
@@ -756,11 +760,13 @@ def simulate(
     # Impedisce che con rumore bassissimo la soglia scenda tanto da triggerare
     # TRACK dal punto di deployment, fuori dal bacino di convergenza dell'ES.
     print("Calibrazione rumore ARTVA...")
-    sigma_noise       = _calibrate_noise(agents, artva)
-    detect_floor      = ARTVA_MOMENT / ES_DETECT_MAX_R**3
-    stop_floor        = (NOISE_STOP_FACTOR / NOISE_DETECT_FACTOR) * detect_floor
-    artva_detect_thr  = max(NOISE_DETECT_FACTOR * sigma_noise, detect_floor)
-    track_stop_thr    = max(NOISE_STOP_FACTOR   * sigma_noise, stop_floor)
+    mu_noise, sigma_noise = _calibrate_noise(agents, artva)
+    # detect_floor      = ARTVA_MOMENT / ES_DETECT_MAX_R**3
+    # stop_floor        = (NOISE_STOP_FACTOR / NOISE_DETECT_FACTOR) * detect_floor
+    # artva_detect_thr  = max(NOISE_DETECT_FACTOR * sigma_noise, detect_floor)
+    # track_stop_thr    = max(NOISE_STOP_FACTOR   * sigma_noise, stop_floor)
+    artva_detect_thr = artva_detect_thr = max(mu_noise + 5*sigma_noise, ARTVA_MOMENT / ES_DETECT_MAX_R**3)
+    track_stop_thr   = ARTVA_MOMENT / FOUND_RADIUS**3
     r_detect     = (ARTVA_MOMENT / artva_detect_thr) ** (1.0 / 3.0)
     workspace_w  = terrain.x_max - terrain.x_min
     n_agents     = len(agents)
@@ -775,7 +781,7 @@ def simulate(
     )
     print(
         f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}"
-        f"  (floor: {detect_floor:.2e} / {stop_floor:.2e})\n"
+        # f"  (floor: {detect_floor:.2e} / {stop_floor:.2e})\n"
         f"  r_detect={r_detect:.1f} m  →  {n_cov_lanes} corsie di copertura"
         f"  →  {n_passes} passate di pettine  ×  {n_agents} droni"
         f"  =  {n_lanes_tot} corsie totali  (lane_spacing={lane_spacing:.1f} m)\n"
