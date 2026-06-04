@@ -379,6 +379,7 @@ def animate_mission(
     dt:               float = DT_SIM,
     fps:              int   = 30,
     speed:            float = 2.0,
+    interval:         int   = None,
     save:             bool  = False,
     save_path:        str   = "mission_animation",
     consensus_events: list  = None,
@@ -750,7 +751,8 @@ def animate_mission(
         return all_artists
 
     anim = FuncAnimation(fig, update, frames=len(frame_idx),
-                         init_func=init, blit=False, interval=1000 // fps)
+                         init_func=init, blit=False,
+                         interval=interval if interval is not None else 1000 // fps)
 
     if save:
         _save_animation(anim, save_path, fps)

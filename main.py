@@ -60,6 +60,8 @@ def main() -> None:
                         help="Mostra animazione 3-D")
     parser.add_argument("--fps",          type=int,   default=30,
                         help="Frame per secondo animazione (default: 30)")
+    parser.add_argument("--interval",     type=int,   default=None,
+                        help="Intervallo display tra frame [ms] (default: 1000/fps)")
     parser.add_argument("--save",         action="store_true",
                         help="Salva animazione su disco")
     parser.add_argument("--seed",         type=int,   default=42)
@@ -171,6 +173,7 @@ def main() -> None:
             terrain_obj, artva, agents,
             dt=DT_SIM, speed=ANIM_SPEED,
             fps=args.fps,
+            interval=args.interval,
             save=args.save,
             consensus_events=consensus_events,
         )
