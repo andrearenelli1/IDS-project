@@ -58,6 +58,8 @@ def main() -> None:
                         help="Passi simulazione")
     parser.add_argument("--animate",      action="store_true",
                         help="Mostra animazione 3-D")
+    parser.add_argument("--fps",          type=int,   default=30,
+                        help="Frame per secondo animazione (default: 30)")
     parser.add_argument("--save",         action="store_true",
                         help="Salva animazione su disco")
     parser.add_argument("--seed",         type=int,   default=42)
@@ -168,6 +170,7 @@ def main() -> None:
         anim = animate_mission(
             terrain_obj, artva, agents,
             dt=DT_SIM, speed=ANIM_SPEED,
+            fps=args.fps,
             save=args.save,
             consensus_events=consensus_events,
         )

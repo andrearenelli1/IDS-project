@@ -76,6 +76,22 @@ def lawnmower_waypoints(
     return waypoints
 
 
+def single_lane_waypoints(
+    x:       float,
+    go_up:   bool,
+    y_min:   float,
+    y_max:   float,
+    terrain: Terrain,
+    agl:     float = AGL_HEIGHT,
+) -> List[np.ndarray]:
+    """Genera i 2 waypoint di una singola corsia verticale (y_min↔y_max a x fisso)."""
+    y_start, y_end = (y_min, y_max) if go_up else (y_max, y_min)
+    return [
+        np.array([x, y_start, terrain.agl_z(x, y_start, agl)]),
+        np.array([x, y_end,   terrain.agl_z(x, y_end,   agl)]),
+    ]
+
+
 def circle_waypoints(
     center:    np.ndarray,
     radius:    float,
@@ -195,6 +211,12 @@ class DroneAgent:
     support_pending:      bool  = False  # True se si attendono ancora partner
     support_deadline:     int   = 0      # step entro cui chiudere la ricerca
     support_n_needed:     int   = 0      # partner SUPPORT ancora mancanti
+
+    # SEARCH — stato lawnmower a corsie globali
+    lane_xs:          np.ndarray = field(default_factory=lambda: np.array([]))
+    current_lane_idx: int        = 0
+    n_drones_total:   int        = 1
+    lane_go_up:       bool       = True
 
     # TRACK-ES — stato interno Extremum Seeking  [Azzollini et al. 2021, eq. 11-13]
     es_x_ref: float = 0.0   # riferimento x corrente generato dall'ES [m]

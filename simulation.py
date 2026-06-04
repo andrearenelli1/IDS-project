@@ -43,7 +43,7 @@ from artva import ARTVASource
 from terrain import Terrain
 from drone_agent import (
     DroneAgent, DroneState,
-    lawnmower_waypoints, circle_waypoints,
+    lawnmower_waypoints, single_lane_waypoints, circle_waypoints,
 )
 from config import (
     N_DRONES, DEPLOY_OFFSET,
@@ -344,7 +344,16 @@ def _on_wp_reached(
     """
     if ag.state == DroneState.SEARCH:
         if not ag.advance_waypoint():
-            ag.wp_idx = 0  # lawnmower finito senza rilevamento: ricomincia
+            next_idx = ag.current_lane_idx + ag.n_drones_total
+            if next_idx >= len(ag.lane_xs):
+                next_idx = ag.id % len(ag.lane_xs)  # wrap: ricomincia dalla corsia iniziale
+            ag.current_lane_idx = next_idx
+            ag.lane_go_up = not ag.lane_go_up
+            ag.waypoints = single_lane_waypoints(
+                ag.lane_xs[next_idx], ag.lane_go_up,
+                terrain.y_min, terrain.y_max, terrain, agl,
+            )
+            ag.wp_idx = 0
 
     elif ag.state == DroneState.TRACK:
         _track_on_wp_reached(ag, sig, terrain, agl)
@@ -752,27 +761,36 @@ def simulate(
     stop_floor        = (NOISE_STOP_FACTOR / NOISE_DETECT_FACTOR) * detect_floor
     artva_detect_thr  = max(NOISE_DETECT_FACTOR * sigma_noise, detect_floor)
     track_stop_thr    = max(NOISE_STOP_FACTOR   * sigma_noise, stop_floor)
-    r_detect    = (ARTVA_MOMENT / artva_detect_thr) ** (1.0 / 3.0)
-    strip_width = (terrain.x_max - terrain.x_min) / len(agents)
-    n_lanes     = max(1, int(np.ceil(strip_width / (2.0 * r_detect))))
-    lane_spacing = strip_width / n_lanes
+    r_detect     = (ARTVA_MOMENT / artva_detect_thr) ** (1.0 / 3.0)
+    workspace_w  = terrain.x_max - terrain.x_min
+    n_agents     = len(agents)
+    n_cov_lanes  = max(1, int(np.ceil(workspace_w / (2.0 * r_detect))))
+    n_passes     = max(1, int(np.ceil(n_cov_lanes / n_agents)))
+    n_lanes_tot  = n_passes * n_agents
+    lane_spacing = workspace_w / n_lanes_tot
+    all_lane_xs  = np.arange(
+        terrain.x_min + lane_spacing / 2,
+        terrain.x_max,
+        lane_spacing,
+    )
     print(
         f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}"
         f"  (floor: {detect_floor:.2e} / {stop_floor:.2e})\n"
-        f"  r_detect={r_detect:.1f} m  →  {n_lanes} corsia/e per drone"
-        f"  (lane_spacing={lane_spacing:.1f} m)\n"
+        f"  r_detect={r_detect:.1f} m  →  {n_cov_lanes} corsie di copertura"
+        f"  →  {n_passes} passate di pettine  ×  {n_agents} droni"
+        f"  =  {n_lanes_tot} corsie totali  (lane_spacing={lane_spacing:.1f} m)\n"
     )
 
-    _n  = len(agents)
-    _xm = terrain.x_min;  _xM = terrain.x_max
-    _ym = terrain.y_min;  _yM = terrain.y_max
     for i, ag in agents.items():
-        wps = lawnmower_waypoints(
-            i, _n, _xm, _xM, _ym, _yM, terrain,
-            lane_spacing=lane_spacing, agl=agl,
+        ag.lane_xs          = all_lane_xs
+        ag.n_drones_total   = n_agents
+        ag.current_lane_idx = i % len(all_lane_xs)
+        ag.lane_go_up       = True
+        ag.waypoints = single_lane_waypoints(
+            all_lane_xs[ag.current_lane_idx], True,
+            terrain.y_min, terrain.y_max, terrain, agl,
         )
-        ag.waypoints = wps
-        ag.wp_idx    = 0
+        ag.wp_idx = 0
 
     R_rel   = np.eye(3) * IMDCL_R_MEAS_STD**2
     R_lidar = np.array([[IMDCL_R_LIDAR_STD**2]])
