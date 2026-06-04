@@ -739,7 +739,7 @@ def simulate(
     rng              = np.random.default_rng(rng_seed)
     model            = PointMass3DModel(sigma_acc=sigma)
     drone_ids        = list(agents.keys())
-    consensus_events: list = []
+    consensus_events: list = []   # log eventi consenso per analisi post-simulazione
     consensus_done:   bool = False
 
     # ── Calibrazione rumore e soglie dinamiche ───────────────────────────────
@@ -981,4 +981,4 @@ def simulate(
         ag = agents[i]
         print(f"    Drone {i}: |x_real - x_est| = {np.linalg.norm(ag.x[:3] - ag.x_est[:3]):.3f} m")
 
-    return agents, consensus_events
+    return agents, consensus_events, artva_detect_thr, track_stop_thr

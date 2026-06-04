@@ -147,6 +147,9 @@ def plot_mission(
     x_coords: np.ndarray,
     y_coords: np.ndarray,
     sub_dem:  np.ndarray,
+    TRACK_STOP_THR: float = TRACK_STOP_THR,
+    ARTVA_DETECT_THR: float = ARTVA_DETECT_THR,
+    
 ) -> plt.Figure:
     """
     Figura missione — 6 pannelli:

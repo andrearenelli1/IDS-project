@@ -148,7 +148,7 @@ def main() -> None:
 
     # — Simulazione —
     print("\nAvvio simulazione...\n")
-    agents, consensus_events = simulate(
+    agents, consensus_events, artva_detect_thr, track_stop_thr = simulate(
         terrain=terrain_obj,
         artva=artva,
         agents=agents,
@@ -160,7 +160,7 @@ def main() -> None:
     )
 
     # — Plot risultati —
-    plot_mission(terrain_obj, artva, agents, x_coords, y_coords, sub_dem)
+    plot_mission(terrain_obj, artva, agents, x_coords, y_coords, sub_dem, TRACK_STOP_THR=track_stop_thr, ARTVA_DETECT_THR=artva_detect_thr)
 
     # — Animazione (opzionale) —
     anim = None
