@@ -24,7 +24,7 @@ from mpc_drone import DroneMPC
 from terrain import Terrain
 from config import (
     AGL_HEIGHT, LANE_SPACING, STOP_THRESH,
-    TRACK_STEP_M, SUPPORT_CIRCLE_N,
+    TRACK_STEP_M, SUPPORT_CIRCLE_N, TAU_FILTER_ARTVA, DT_MPC,
 )
 
 
@@ -224,6 +224,10 @@ class DroneAgent:
     es_alpha: float = 0.0   # valore corrente di α (rampa 0 → ES_ALPHA_MAX)
     es_time:  float = 0.0   # tempo interno ES [s]
 
+    # ARTVA signal filtering
+    sig_filt: Optional[float] = None
+    sig_raw_last: float = 0.0
+
     # ── Proprietà ──────────────────────────────────────────────────────────
 
     @property
@@ -298,3 +302,25 @@ class DroneAgent:
         z = terrain.agl_z(self.es_x_ref, self.es_y_ref, agl)
         self.waypoints = [np.array([self.es_x_ref, self.es_y_ref, z])]
         self.wp_idx    = 0
+
+    def update_signal_filter(self, sig: float,) -> float:
+        """
+        First-order low-pass filter.
+        alpha=0.1:
+        ~10 samples memory
+
+        alpha=0.05:
+        ~20 samples memory
+        given the desired filter time constant τ and the sampling interval Δt,
+        the smoothing factor α can be calculated as:
+        α = Δt / (τ + Δt)
+        α = 1-exp(-Δt/τ) for an exponential moving average interpretation
+        """
+        self.sig_raw_last = sig
+        alpha = 1 - np.exp(-DT_MPC / TAU_FILTER_ARTVA)  
+        if self.sig_filt is None:
+            self.sig_filt = sig
+        else:
+            self.sig_filt = ((1.0 - alpha) * self.sig_filt + alpha * sig)   
+
+        return self.sig_filt

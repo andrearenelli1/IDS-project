@@ -831,8 +831,10 @@ def simulate(
                 artva.signal(prev_pos * (1.0 - a) + ag.x[:3] * a, noisy=True)
                 for a in alphas
             ]))
-            ag.signal_log.append((ag.x[:3].copy(), sig))
-            signals[i] = sig
+            
+            sig_filt = ag.update_signal_filter(sig)
+            ag.signal_log.append((ag.x[:3].copy(), sig_filt))
+            signals[i] = sig_filt
 
         # ── 2. Transizioni di stato ──────────────────────────────────────
         for i in drone_ids:
@@ -1006,3 +1008,4 @@ def simulate(
         print(f"    Drone {i}: |x_real - x_est| = {np.linalg.norm(ag.x[:3] - ag.x_est[:3]):.3f} m")
 
     return agents, consensus_events, artva_detect_thr, track_stop_thr
+

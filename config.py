@@ -65,6 +65,9 @@ FOUND_RADIUS = 10.0      # [m]
 ARTVA_DETECT_THR = NOISE_DETECT_FACTOR * ARTVA_NOISE_STD   # ≈ 1e-5
 TRACK_STOP_THR   = NOISE_STOP_FACTOR   * ARTVA_NOISE_STD   # ≈ 1e-4
 
+# filtro esponenziale per segnale ARTVA (per ridurre l'effetto del rumore nelle decisioni)
+TAU_FILTER_ARTVA = 0.5   # [s] costante di tempo
+
 # ============================================================================
 # Hill-climbing online (fase TRACK) — parametri legacy (non usati con ES)
 # ============================================================================
