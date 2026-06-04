@@ -124,7 +124,7 @@ V_MAX   = 3.0    # [m/s]
 # ============================================================================
 # IMDCL
 # ============================================================================
-IMDCL_SIGMA_ACC   = 0.05   # [m/s²] rumore processo del filtro
+IMDCL_SIGMA_ACC   = 0.15   # [m/s²] rumore processo del filtro (3× SIGMA_ACC_SIM — filtro conservativo)
 IMDCL_P0_POS      = 0.5    # [m]    dev.std iniziale posizione
 IMDCL_P0_VEL      = 0.1    # [m/s]  dev.std iniziale velocità
 IMDCL_COMM_RADIUS = 80  # [m]    raggio comunicazione inter-drone
@@ -138,7 +138,7 @@ IMDCL_H_LIDAR     = np.array([[0., 0., 1., 0., 0., 0.]])  # H per pz (1×6)
 # ============================================================================
 N_SIM         = 600     # passi massimi
 DT_SIM        = DT_MPC
-SIGMA_ACC_SIM = IMDCL_SIGMA_ACC   # rumore accelerazione = rumore filtro
+SIGMA_ACC_SIM = 0.05   # [m/s²] rumore accelerazione simulazione (< IMDCL_SIGMA_ACC)
 STOP_THRESH   = 0.3     # [m]  soglia raggiungimento waypoint
 
 # ============================================================================

@@ -60,6 +60,7 @@ def load(path: str) -> list[dict]:
                 "noise":     _flt(r["artva_noise_std"]),
                 "detect":    _flt(r.get("noise_detect_factor", "100.0")),
                 "rc":        int(float(r["comm_radius_m"])),
+                "acc_sim":   _flt(r.get("acc_sim_ms2", "0.05")),
                 "found":     r["found"].strip() == "True",
                 "time":      _flt(r["time_found_s"]),
                 "dist":      _flt(r.get("victim_dist_m", "nan")),
@@ -110,6 +111,9 @@ DEPTH_BIN_COLORS = ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]
 DETECT_FACTORS   = [50.0, 100.0]
 DETECT_COLORS    = {50.0: "#e15759", 100.0: "#4e79a7"}
 DETECT_LABELS    = {50.0: "factor = 50", 100.0: "factor = 100"}
+ACC_SIM_LIST     = [0.05, 0.20]
+ACC_SIM_LABELS   = {0.05: r"$0.05\,\mathrm{m/s^2}$ (calm)", 0.20: r"$0.20\,\mathrm{m/s^2}$ (wind)"}
+ACC_SIM_COLORS   = {0.05: "#4e79a7", 0.20: "#e15759"}
 
 
 def _setup_ieee_style() -> None:
@@ -445,14 +449,17 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
         return None
 
     params = [
-        (r"Number of drones",          "n",         N_DRONES_LIST,
-         lambda v: rf"{v} drones",     PALETTE),
-        (r"ARTVA noise $\sigma$",       "noise",     sorted(NOISE_STDS),
-         lambda v: NOISE_LABELS[v],    ["#4e79a7", "#f28e2b", "#e15759"]),
-        (r"Victim depth [m]",           "depth_bin", DEPTH_BIN_LABELS,
-         lambda v: v,                   DEPTH_BIN_COLORS),
-        (r"Comm.\ radius [m]",          "rc",        sorted(COMM_RADII),
-         lambda v: rf"{v}\,m",         ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]),
+        (r"Number of drones",                    "n",        N_DRONES_LIST,
+         lambda v: rf"{v} drones",               PALETTE),
+        (r"ARTVA noise $\sigma$",                "noise",    sorted(NOISE_STDS),
+         lambda v: NOISE_LABELS[v],              ["#4e79a7", "#f28e2b", "#e15759"]),
+        (r"Motion noise $\sigma_{\mathrm{acc}}$","acc_sim",  ACC_SIM_LIST,
+         lambda v: ACC_SIM_LABELS.get(v, rf"{v}"),
+         [ACC_SIM_COLORS[a] for a in ACC_SIM_LIST]),
+        (r"Victim depth [m]",                    "depth_bin",DEPTH_BIN_LABELS,
+         lambda v: v,                             DEPTH_BIN_COLORS),
+        (r"Comm.\ radius [m]",                   "rc",       sorted(COMM_RADII),
+         lambda v: rf"{v}\,m",                   ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]),
     ]
 
     n_rows = len(params)
@@ -493,6 +500,91 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 9 — Rumore accelerazione: success rate e tempo mediano
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_acc_sim(rows: list[dict]) -> plt.Figure:
+    acc_vals = sorted(set(r["acc_sim"] for r in rows if not math.isnan(r["acc_sim"])))
+    if len(acc_vals) < 2:
+        return None   # CSV vecchio senza la colonna: nulla da mostrare
+
+    found = [r for r in rows if r["found"] and not math.isnan(r["time"])]
+
+    fig, axes = plt.subplots(2, 2, figsize=(7.16, 5.5), constrained_layout=True)
+    fig.suptitle(
+        r"Effect of motion noise $\sigma_{\mathrm{acc}}$ on success rate and search time",
+        fontsize=10, fontweight="bold",
+    )
+
+    for col, area in enumerate(AREAS):
+        ax_sr  = axes[0, col]
+        ax_t   = axes[1, col]
+
+        # — riga 0: success rate per n_drones, linee per acc_sim —
+        for n, color in zip(N_DRONES_LIST, PALETTE):
+            sr_vals = []
+            for acc in acc_vals:
+                sub = [r for r in rows if r["n"] == n and r["area"] == area
+                       and r["acc_sim"] == acc]
+                sr_vals.append(success_rate(sub))
+            xs = range(len(acc_vals))
+            ax_sr.plot(list(xs), sr_vals, marker="o", ms=5,
+                       color=color, label=rf"{n} drones")
+            for x, y in zip(xs, sr_vals):
+                ax_sr.annotate(rf"{y:.0f}\%", (x, y),
+                               textcoords="offset points", xytext=(0, 6),
+                               ha="center", fontsize=7, color=color)
+
+        ax_sr.set_xticks(range(len(acc_vals)))
+        ax_sr.set_xticklabels([ACC_SIM_LABELS.get(a, rf"{a}") for a in acc_vals])
+        ax_sr.set_ylabel(r"Success rate [\%]")
+        ax_sr.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+        ax_sr.set_ylim(0, 108)
+        ax_sr.legend()
+
+        # — riga 1: boxplot tempo per acc_sim, raggruppati per n_drones —
+        n_groups  = len(N_DRONES_LIST)
+        n_acc     = len(acc_vals)
+        group_w   = 0.8
+        bar_w     = group_w / n_acc
+        positions = []
+        bp_kw = dict(patch_artist=True, notch=False,
+                     medianprops=dict(color="black", lw=1.5),
+                     flierprops=dict(marker=".", markersize=3, alpha=0.3))
+
+        for gi, n in enumerate(N_DRONES_LIST):
+            for ai, acc in enumerate(acc_vals):
+                data = [r["time"] for r in found
+                        if r["n"] == n and r["area"] == area and r["acc_sim"] == acc]
+                pos  = gi + (ai - (n_acc - 1) / 2) * bar_w
+                positions.append(pos)
+                if not data:
+                    continue
+                bp = ax_t.boxplot(
+                    data, positions=[pos], widths=bar_w * 0.85,
+                    **bp_kw,
+                )
+                bp["boxes"][0].set_facecolor(ACC_SIM_COLORS.get(acc, "#aaaaaa"))
+                bp["boxes"][0].set_alpha(0.75)
+
+        ax_t.set_xticks(range(n_groups))
+        ax_t.set_xticklabels([rf"{n} drones" for n in N_DRONES_LIST])
+        ax_t.set_ylabel(r"Search time [s]")
+        ax_t.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+
+        # legenda colori acc_sim
+        from matplotlib.patches import Patch
+        legend_patches = [
+            Patch(facecolor=ACC_SIM_COLORS.get(a, "#aaaaaa"), alpha=0.75,
+                  label=ACC_SIM_LABELS.get(a, rf"{a}"))
+            for a in acc_vals
+        ]
+        ax_t.legend(handles=legend_patches, fontsize=7)
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -523,6 +615,7 @@ def main() -> None:
     fig_consensus_spread(rows)
     fig_time_vs_distance(rows)
     fig_time_histograms(rows)
+    fig_acc_sim(rows)
     plt.show()
 
 

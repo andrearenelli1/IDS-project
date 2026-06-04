@@ -70,14 +70,19 @@ except ImportError:
 # GRID DEI PARAMETRI — modificare per restringere/ampliare lo sweep
 # ============================================================================
 
-AREA_SIZES = [100, 200]        # [m]  lato workspace
+AREA_SIZES = [200]        # [m]  lato workspace
 
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
-N_RANDOM_VICTIMS = 10
+N_RANDOM_VICTIMS = 15
 
 ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
+
+# Rumore accelerazione simulazione:
+#   0.05 m/s² → condizioni calme / near-indoor
+#   0.20 m/s² → vento leggero / outdoor realistico
+ACC_SIM_LIST = [0.05, 0.20]             # [m/s²]
 
 # Raggio comunicazione UWB:
 #   120 m → condizioni ottimali (visibilità diretta)
@@ -123,6 +128,7 @@ CSV_FIELDS = [
     "victim_dist_m",
     "victim_depth_m",
     "artva_noise_std",
+    "acc_sim_ms2",
     "comm_radius_m",
     "workspace_frac_r",
     "workspace_frac_c",
@@ -173,6 +179,7 @@ def run_one(
     n_drones:    int,
     noise_std:   float,
     comm_radius: float,
+    acc_sim:     float = 0.05,
     center_frac        = None,
     seed:        int   = SEED,
     verbose:     bool  = False,
@@ -202,6 +209,7 @@ def run_one(
         "cfg_AREA_SIZE_M":       config.AREA_SIZE_M,
         "cfg_ARTVA_NOISE_STD":   config.ARTVA_NOISE_STD,
         "cfg_IMDCL_COMM_RADIUS": config.IMDCL_COMM_RADIUS,
+        "cfg_SIGMA_ACC_SIM":     config.SIGMA_ACC_SIM,
     }
     terrain_mod.AREA_SIZE_M   = area_size
     artva_mod.ARTVA_NOISE_STD = noise_std
@@ -209,6 +217,7 @@ def run_one(
     config.AREA_SIZE_M        = area_size
     config.ARTVA_NOISE_STD    = noise_std
     config.IMDCL_COMM_RADIUS  = comm_radius
+    config.SIGMA_ACC_SIM      = acc_sim
 
     _pos_rng     = np.random.default_rng()
     vrel_x       = float(_pos_rng.uniform(0.10, 0.90))
@@ -248,7 +257,7 @@ def run_one(
                 agents=agents,
                 n_steps=MAX_STEPS,
                 dt=DT_SIM,
-                sigma=config.SIGMA_ACC_SIM,
+                sigma=acc_sim,
                 agl=config.AGL_HEIGHT,
                 rng_seed=seed,
             )
@@ -312,6 +321,7 @@ def run_one(
         config.AREA_SIZE_M        = saved["cfg_AREA_SIZE_M"]
         config.ARTVA_NOISE_STD    = saved["cfg_ARTVA_NOISE_STD"]
         config.IMDCL_COMM_RADIUS  = saved["cfg_IMDCL_COMM_RADIUS"]
+        config.SIGMA_ACC_SIM      = saved["cfg_SIGMA_ACC_SIM"]
 
 
 # ============================================================================
@@ -322,11 +332,12 @@ def _worker(job: tuple) -> tuple:
     """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
     import matplotlib.pyplot as _plt
     _plt.switch_backend("agg")
-    run_id, (area, n_drones, victim_idx, noise, rc, ws), seed, verbose = job
+    run_id, (area, n_drones, victim_idx, noise, acc_sim, rc, ws), seed, verbose = job
     try:
         metrics = run_one(
             area_size=area, n_drones=n_drones,
             noise_std=noise, comm_radius=rc,
+            acc_sim=acc_sim,
             center_frac=ws, seed=seed, verbose=verbose,
         )
         return run_id, metrics, None
@@ -573,7 +584,7 @@ def main() -> None:
     # ── Griglia ───────────────────────────────────────────────────────────
     grid = list(itertools.product(
         AREA_SIZES, N_DRONES_LIST, range(N_RANDOM_VICTIMS),
-        ARTVA_NOISE_STDS, COMM_RADII, WORKSPACE_CENTERS,
+        ARTVA_NOISE_STDS, ACC_SIM_LIST, COMM_RADII, WORKSPACE_CENTERS,
     ))
     total = len(grid)
 
@@ -582,6 +593,7 @@ def main() -> None:
     print(f"  n_drones:          {N_DRONES_LIST}")
     print(f"  victim positions:  {N_RANDOM_VICTIMS} (posizione e profondità uniformi casuali in run_one)")
     print(f"  noise_stds:        {ARTVA_NOISE_STDS}")
+    print(f"  acc_sim [m/s²]:    {ACC_SIM_LIST}")
     print(f"  comm_radii[m]:     {COMM_RADII}")
     print(f"  workspace_centers: {len(WORKSPACE_CENTERS)} patch DEM")
     print(f"  timeout:          {MAX_SIM_SECONDS:.0f}s ({MAX_SIM_SECONDS/60:.0f}min) / {MAX_STEPS} passi")
@@ -590,10 +602,10 @@ def main() -> None:
 
     if args.dry_run:
         print("\n[dry-run] Prime 10 combinazioni:")
-        for i, (area, nd, vidx, noise, rc, ws) in enumerate(grid[:10], 1):
+        for i, (area, nd, vidx, noise, acc_sim, rc, ws) in enumerate(grid[:10], 1):
             ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
             print(f"  {i:3d}: area={area}m  n={nd}  victim_idx={vidx}  "
-                  f"noise={noise:.0e}  rc={rc}m  ws={ws_str}")
+                  f"noise={noise:.0e}  acc_sim={acc_sim:.2f}  rc={rc}m  ws={ws_str}")
         if total > 10:
             print(f"  … ({total - 10} altre)")
         return
@@ -618,7 +630,7 @@ def main() -> None:
     # ── Pre-carica terreni nel processo principale ────────────────────────
     # Su Linux (fork) i worker ereditano la cache → non rileggono il DEM.
     # Su macOS/Windows (spawn) ogni worker ricostruisce la propria cache.
-    unique_terrain_keys = {(a, ws) for a, _, _, _, _, ws in grid}
+    unique_terrain_keys = {(a, ws) for a, _, _, _, _, _, ws in grid}
     print(f"\nPre-caricamento {len(unique_terrain_keys)} configurazioni terreno...")
     for area, ws in sorted(unique_terrain_keys, key=lambda x: (x[0], str(x[1]))):
         t0     = time.perf_counter()
@@ -639,7 +651,7 @@ def main() -> None:
 
         def _record(run_id: int, metrics, tb) -> None:
             nonlocal found_n, timeout_n, error_n
-            area, n_drones, _vidx, noise, rc, ws = grid[run_id - 1]
+            area, n_drones, _vidx, noise, acc_sim, rc, ws = grid[run_id - 1]
             ws_r, ws_c = _ws_label(ws)
 
             if tb is not None:
@@ -667,6 +679,7 @@ def main() -> None:
                 "area_size_m":      area,
                 "n_drones":         n_drones,
                 "artva_noise_std":  noise,
+                "acc_sim_ms2":      acc_sim,
                 "comm_radius_m":    rc,
                 "workspace_frac_r": ws_r,
                 "workspace_frac_c": ws_c,
