@@ -500,7 +500,7 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 9 — Rumore accelerazione: success rate e tempo mediano
+# Fig 9 — Rumore accelerazione: tasso di successo vs σ_acc
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_acc_sim(rows: list[dict]) -> plt.Figure:
@@ -508,19 +508,14 @@ def fig_acc_sim(rows: list[dict]) -> plt.Figure:
     if len(acc_vals) < 2:
         return None   # CSV vecchio senza la colonna: nulla da mostrare
 
-    found = [r for r in rows if r["found"] and not math.isnan(r["time"])]
-
-    fig, axes = plt.subplots(2, 2, figsize=(7.16, 5.5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
+                             constrained_layout=True, sharey=True)
     fig.suptitle(
-        r"Effect of motion noise $\sigma_{\mathrm{acc}}$ on success rate and search time",
+        r"Effect of motion noise $\sigma_{\mathrm{acc}}$ on success rate",
         fontsize=10, fontweight="bold",
     )
 
-    for col, area in enumerate(AREAS):
-        ax_sr  = axes[0, col]
-        ax_t   = axes[1, col]
-
-        # — riga 0: success rate per n_drones, linee per acc_sim —
+    for ax, area in zip(axes, AREAS):
         for n, color in zip(N_DRONES_LIST, PALETTE):
             sr_vals = []
             for acc in acc_vals:
@@ -528,58 +523,20 @@ def fig_acc_sim(rows: list[dict]) -> plt.Figure:
                        and r["acc_sim"] == acc]
                 sr_vals.append(success_rate(sub))
             xs = range(len(acc_vals))
-            ax_sr.plot(list(xs), sr_vals, marker="o", ms=5,
-                       color=color, label=rf"{n} drones")
+            ax.plot(list(xs), sr_vals, marker="o", ms=5,
+                    color=color, label=rf"{n} drones")
             for x, y in zip(xs, sr_vals):
-                ax_sr.annotate(rf"{y:.0f}\%", (x, y),
-                               textcoords="offset points", xytext=(0, 6),
-                               ha="center", fontsize=7, color=color)
+                ax.annotate(rf"{y:.0f}\%", (x, y),
+                            textcoords="offset points", xytext=(0, 6),
+                            ha="center", fontsize=7, color=color)
 
-        ax_sr.set_xticks(range(len(acc_vals)))
-        ax_sr.set_xticklabels([ACC_SIM_LABELS.get(a, rf"{a}") for a in acc_vals])
-        ax_sr.set_ylabel(r"Success rate [\%]")
-        ax_sr.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
-        ax_sr.set_ylim(0, 108)
-        ax_sr.legend()
-
-        # — riga 1: boxplot tempo per acc_sim, raggruppati per n_drones —
-        n_groups  = len(N_DRONES_LIST)
-        n_acc     = len(acc_vals)
-        group_w   = 0.8
-        bar_w     = group_w / n_acc
-        positions = []
-        bp_kw = dict(patch_artist=True, notch=False,
-                     medianprops=dict(color="black", lw=1.5),
-                     flierprops=dict(marker=".", markersize=3, alpha=0.3))
-
-        for gi, n in enumerate(N_DRONES_LIST):
-            for ai, acc in enumerate(acc_vals):
-                data = [r["time"] for r in found
-                        if r["n"] == n and r["area"] == area and r["acc_sim"] == acc]
-                pos  = gi + (ai - (n_acc - 1) / 2) * bar_w
-                positions.append(pos)
-                if not data:
-                    continue
-                bp = ax_t.boxplot(
-                    data, positions=[pos], widths=bar_w * 0.85,
-                    **bp_kw,
-                )
-                bp["boxes"][0].set_facecolor(ACC_SIM_COLORS.get(acc, "#aaaaaa"))
-                bp["boxes"][0].set_alpha(0.75)
-
-        ax_t.set_xticks(range(n_groups))
-        ax_t.set_xticklabels([rf"{n} drones" for n in N_DRONES_LIST])
-        ax_t.set_ylabel(r"Search time [s]")
-        ax_t.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
-
-        # legenda colori acc_sim
-        from matplotlib.patches import Patch
-        legend_patches = [
-            Patch(facecolor=ACC_SIM_COLORS.get(a, "#aaaaaa"), alpha=0.75,
-                  label=ACC_SIM_LABELS.get(a, rf"{a}"))
-            for a in acc_vals
-        ]
-        ax_t.legend(handles=legend_patches, fontsize=7)
+        ax.set_xticks(range(len(acc_vals)))
+        ax.set_xticklabels([ACC_SIM_LABELS.get(a, rf"{a:.2f}") for a in acc_vals])
+        ax.set_xlabel(r"Motion noise $\sigma_{\mathrm{acc}}$")
+        ax.set_ylabel(r"Success rate [\%]")
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+        ax.set_ylim(0, 108)
+        ax.legend()
 
     return fig
 
