@@ -81,8 +81,8 @@ ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
 
 # Rumore accelerazione simulazione:
 #   0.05 m/s² → condizioni calme / near-indoor
-#   0.20 m/s² → vento leggero / outdoor realistico
-ACC_SIM_LIST = [0.05, 0.20]             # [m/s²]
+#   0.1 m/s² → vento leggero / outdoor realistico
+ACC_SIM_LIST = [0.05, 0.1]             # [m/s²]
 
 # Raggio comunicazione UWB:
 #   120 m → condizioni ottimali (visibilità diretta)
