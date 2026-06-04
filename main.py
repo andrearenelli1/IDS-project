@@ -30,7 +30,7 @@ import simulation as sim_mod
 import terrain as terrain_mod
 
 from config import (
-    N_DRONES, AGL_HEIGHT, N_SIM, DT_SIM, SIGMA_ACC_SIM,
+    N_DRONES, AGL_HEIGHT, N_SIM, DT_SIM,
     ARTVA_MOMENT, VICTIM_XY, VICTIM_DEPTH,
     ANIM_SPEED,
 )
@@ -67,6 +67,8 @@ def main() -> None:
     parser.add_argument("--seed",         type=int,   default=42)
     parser.add_argument("--noise",        type=float, default=None,
                         help="ARTVA noise std (override config, es: 1e-8)")
+    parser.add_argument("--acc-noise",    type=float, default=None,
+                        help="Rumore accelerazione simulazione σ_acc [m/s²] (override config)")
     parser.add_argument("--rc",           type=float, default=None,
                         help="Raggio comunicazione [m] (override config)")
     parser.add_argument("--area",         type=float, default=None,
@@ -91,6 +93,9 @@ def main() -> None:
     if args.area is not None:
         terrain_mod.AREA_SIZE_M    = args.area
         config.AREA_SIZE_M         = args.area
+    if args.acc_noise is not None:
+        config.SIGMA_ACC_SIM       = args.acc_noise
+        config.IMDCL_SIGMA_ACC     = args.acc_noise
 
     victim_depth = args.victim_depth if args.victim_depth is not None else VICTIM_DEPTH
 
@@ -158,7 +163,7 @@ def main() -> None:
         agents=agents,
         n_steps=args.steps,
         dt=DT_SIM,
-        sigma=SIGMA_ACC_SIM,
+        sigma=config.SIGMA_ACC_SIM,
         agl=args.agl,
         rng_seed=args.seed,
     )
