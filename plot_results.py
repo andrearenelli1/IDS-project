@@ -261,6 +261,45 @@ def fig_comm_radius(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 4b — Rumore ARTVA: tasso di successo vs noise_std
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_noise_success(rows: list[dict]) -> plt.Figure:
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
+                             constrained_layout=True, sharey=True)
+    fig.suptitle(r"Effect of ARTVA noise $\sigma$ on success rate",
+                 fontsize=10, fontweight="bold")
+
+    noise_sorted = sorted(NOISE_STDS)
+    noise_ticks  = [NOISE_LABELS[n] for n in noise_sorted]
+
+    for ax, area in zip(axes, AREAS):
+        for n, color in zip(N_DRONES_LIST, PALETTE):
+            sr = []
+            for noise in noise_sorted:
+                sub = [r for r in rows if r["n"] == n and r["area"] == area
+                       and r["noise"] == noise]
+                sr.append(success_rate(sub))
+            xs = range(len(noise_sorted))
+            ax.plot(list(xs), sr, marker="o", ms=5,
+                    color=color, label=rf"{n} drones")
+            for x, y in zip(xs, sr):
+                ax.annotate(rf"{y:.0f}\%", (x, y),
+                            textcoords="offset points", xytext=(0, 6),
+                            ha="center", fontsize=7, color=color)
+
+        ax.set_xticks(range(len(noise_sorted)))
+        ax.set_xticklabels(noise_ticks)
+        ax.set_xlabel(r"ARTVA noise $\sigma$")
+        ax.set_ylabel(r"Success rate [\%]")
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+        ax.set_ylim(0, 108)
+        ax.legend()
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Fig 5 — CDF del tempo di ricerca
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -479,6 +518,7 @@ def main() -> None:
     fig_success_heatmap(rows)
     fig_time_boxplot(rows)
     fig_comm_radius(rows)
+    fig_noise_success(rows)
     fig_cdf(rows)
     fig_consensus_spread(rows)
     fig_time_vs_distance(rows)

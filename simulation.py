@@ -343,7 +343,8 @@ def _on_wp_reached(
     Calcola il prossimo waypoint in base allo stato FSM.
     """
     if ag.state == DroneState.SEARCH:
-        ag.advance_waypoint()
+        if not ag.advance_waypoint():
+            ag.wp_idx = 0  # lawnmower finito senza rilevamento: ricomincia
 
     elif ag.state == DroneState.TRACK:
         _track_on_wp_reached(ag, sig, terrain, agl)
