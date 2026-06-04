@@ -72,10 +72,10 @@ except ImportError:
 
 AREA_SIZES = [200]        # [m]  lato workspace
 
-N_DRONES_LIST = [3, 4, 5]          # numero di agenti
+N_DRONES_LIST = [4, 5]          # numero di agenti
 
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
-N_RANDOM_VICTIMS = 15
+N_RANDOM_VICTIMS = 10
 
 ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
 
@@ -89,7 +89,7 @@ ACC_SIM_LIST = [0.05, 0.20]             # [m/s²]
 #    80 m → ambiente aperto con ostacoli leggeri
 #    50 m → condizioni miste
 #    25 m → condizioni difficili
-COMM_RADII = [25, 50, 80, 120]     # [m]
+COMM_RADII = [25, 80, 120]     # [m]
 
 # Patch di terreno distinte estratte dal DEM TINItaly.
 # Ogni entry è (row_frac, col_frac) come frazioni delle dimensioni del DEM.
