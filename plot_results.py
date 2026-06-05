@@ -51,10 +51,13 @@ def _flt(v: str) -> float:
 def load(path: str) -> list[dict]:
     rows = []
     with open(path, newline="") as f:
-        for r in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        for r in reader:
             rows.append({
                 "area":      int(float(r["area_size_m"])),
                 "n":         int(r["n_drones"]),
+                "vx":        _flt(r.get("victim_x_m", "nan")),
+                "vy":        _flt(r.get("victim_y_m", "nan")),
                 "depth":     _flt(r["victim_depth_m"]),
                 "depth_bin": _depth_bin(_flt(r["victim_depth_m"])),
                 "noise":     _flt(r["artva_noise_std"]),
@@ -571,6 +574,43 @@ def fig_acc_sim(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 10 — Mappa posizioni vittima
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_victim_map(rows: list[dict]) -> plt.Figure:
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.8), constrained_layout=True)
+    fig.suptitle(r"Victim positions --- green: found, red: not found",
+                 fontsize=10, fontweight="bold")
+
+    for ax, area in zip(axes, AREAS):
+        ax.set_xlim(0, area)
+        ax.set_ylim(0, area)
+        ax.set_aspect("equal")
+        ax.set_xlabel(r"$x$ [m]")
+        ax.set_ylabel(r"$y$ [m]")
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+
+        sub     = [r for r in rows if r["area"] == area
+                   and not math.isnan(r["vx"]) and not math.isnan(r["vy"])]
+        found_r = [r for r in sub if r["found"]]
+        fail_r  = [r for r in sub if not r["found"]]
+
+        for r_list, color, label in [
+            (fail_r,  "#d62728", rf"Not found ({len(fail_r)})"),
+            (found_r, "#2ca02c", rf"Found ({len(found_r)})"),
+        ]:
+            if not r_list:
+                continue
+            ax.scatter([r["vx"] for r in r_list],
+                       [r["vy"] for r in r_list],
+                       c=color, s=1, alpha=0.5, zorder=3, label=label)
+
+        ax.legend(fontsize=7, loc="upper right")
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -602,6 +642,7 @@ def main() -> None:
     fig_time_vs_distance(rows)
     fig_time_histograms(rows)
     fig_acc_sim(rows)
+    fig_victim_map(rows)
     plt.show()
 
 
