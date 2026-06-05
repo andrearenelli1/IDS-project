@@ -345,8 +345,14 @@ def fig_cdf(rows: list[dict]) -> plt.Figure:
 def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
     found = [r for r in rows if r["found"] and not math.isnan(r["pos_std"])]
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
-                             constrained_layout=True, sharey=True)
+    noise_sorted = sorted(NOISE_STDS)
+    noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
+
+    fig, axes = plt.subplots(
+        2, 2, figsize=(7.16, 5.5),
+        constrained_layout=True,
+        gridspec_kw={"width_ratios": [2, 1]},
+    )
     fig.suptitle(
         r"Inter-drone estimate spread ($\sigma$ position) --- effect of noise",
         fontsize=10, fontweight="bold")
@@ -355,29 +361,52 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
                  medianprops=dict(color="black", lw=1.5),
                  flierprops=dict(marker=".", markersize=3, alpha=0.3))
 
-    noise_sorted = sorted(NOISE_STDS)
-    noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
+    all_vals = [r["pos_std"] for r in found]
+    y_min = max(0, min(all_vals) * 0.9) if all_vals else 0
+    y_max = max(all_vals) * 1.05 if all_vals else 1
+    n_bins = 30
+    bins = np.linspace(y_min, y_max, n_bins + 1)
 
-    for ax, area in zip(axes, AREAS):
+    for row_i, area in enumerate(AREAS):
+        ax_bp   = axes[row_i, 0]
+        ax_hist = axes[row_i, 1]
+        ax_hist.sharey(ax_bp)
+
         data = [[r["pos_std"] for r in found if r["noise"] == noise and r["area"] == area]
                 for noise in noise_sorted]
-        bp = ax.boxplot(data, positions=range(len(noise_sorted)), **bp_kw)
+
+        # ── boxplot ──────────────────────────────────────────────────────
+        bp = ax_bp.boxplot(data, positions=range(len(noise_sorted)), **bp_kw)
         for patch, color in zip(bp["boxes"], noise_colors):
             patch.set_facecolor(color)
             patch.set_alpha(0.75)
 
-        ax.set_xticks(range(len(noise_sorted)))
-        ax.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted])
-        ax.set_xlabel(r"ARTVA noise $\sigma$")
-        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
-        if ax is axes[0]:
-            ax.set_ylabel(r"$\sigma$ position [m]")
+        ax_bp.set_xticks(range(len(noise_sorted)))
+        ax_bp.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted])
+        ax_bp.set_xlabel(r"ARTVA noise $\sigma$")
+        ax_bp.set_ylabel(r"$\sigma$ position [m]")
+        ax_bp.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
 
         for pos, d in enumerate(data):
             if d:
                 med = median(d)
-                ax.text(pos + 0.32, med, rf" {med:.3f}\,m",
-                        va="center", fontsize=7, color="#333333")
+                ax_bp.text(pos + 0.32, med, rf" {med:.3f}\,m",
+                           va="center", fontsize=7, color="#333333")
+
+        # ── istogramma orizzontale (condivide asse y col boxplot) ─────────
+        for d, color, noise in zip(data, noise_colors, noise_sorted):
+            if not d:
+                continue
+            ax_hist.hist(d, bins=bins, orientation="horizontal",
+                         alpha=0.55, color=color,
+                         label=NOISE_LABELS[noise], edgecolor="none")
+            med = median(d)
+            if not math.isnan(med):
+                ax_hist.axhline(med, color=color, lw=1.1, ls="--", alpha=0.85)
+
+        ax_hist.set_xlabel(r"Count")
+        ax_hist.tick_params(labelleft=False)
+        ax_hist.legend(fontsize=7)
 
     return fig
 
