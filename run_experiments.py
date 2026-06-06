@@ -75,13 +75,11 @@ AREA_SIZES = [100, 200]        # [m]  lato workspace
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
-N_RANDOM_VICTIMS = 5
+N_RANDOM_VICTIMS = 20
 
 ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
 
 # Rumore accelerazione simulazione:
-#   0.05 m/s² → condizioni calme / near-indoor
-#   0.1 m/s² → vento leggero / outdoor realistico
 ACC_SIM_LIST = [0.05, 0.1]             # [m/s²]
 
 # Raggio comunicazione UWB:
@@ -220,8 +218,8 @@ def run_one(
     config.SIGMA_ACC_SIM      = acc_sim
 
     _pos_rng     = np.random.default_rng()
-    vrel_x       = float(_pos_rng.uniform(0.10, 0.90))
-    vrel_y       = float(_pos_rng.uniform(0.10, 0.90))
+    vrel_x       = float(_pos_rng.uniform(0.02, 0.98))
+    vrel_y       = float(_pos_rng.uniform(0.02, 0.98))
     victim_depth = float(_pos_rng.uniform(1.0, 5.0))
 
     sink = sys.stdout if verbose else io.StringIO()
