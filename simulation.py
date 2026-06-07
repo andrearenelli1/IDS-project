@@ -278,8 +278,8 @@ def _consensus_select_partners(
     id2idx = {did: k for k, did in enumerate(drone_ids)}
     h_idx  = id2idx[stop_id]
 
-    stop_pos        = agents[stop_id].x[:3].copy()
-    pos             = np.array([agents[did].x[:3] for did in drone_ids])
+    stop_pos        = agents[stop_id].x_est[:3].copy()
+    pos             = np.array([agents[did].x_est[:3] for did in drone_ids])
     pairwise        = np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
     in_range        = pairwise <= comm_radius
     np.fill_diagonal(in_range, False)
