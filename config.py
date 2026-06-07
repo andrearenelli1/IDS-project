@@ -99,7 +99,7 @@ ES_EPS       = 1e-12   # [-]   floor per evitare 1/cbrt(0)
 DIST_EST_ALPHA    = 0.3    # [m]     passo normalizzato discesa del gradiente
 DIST_EST_BETA     = 0.4    # [-]     peso consensus inter-drone
 DIST_EST_H        = 0.1    # [m]     passo differenze finite per gradiente numerico
-DIST_EST_REFINE   = 300    # [-]     iterazioni extra di raffinamento post-blocco
+DIST_EST_REFINE   = 50     # [-]     iterazioni extra di raffinamento post-blocco
 DIST_EST_BATCH    = 5      # [-]     misure recenti usate per ogni aggiornamento online
 
 # ============================================================================

@@ -692,6 +692,7 @@ def build_agents(
             state=DroneState.SEARCH,
         )
         agent.history.append(x0.copy())
+        agent.state_log.append(DroneState.SEARCH)
         agent.est_history.append(imdcl_agent.x_hat.copy())
         agents[i] = agent
 
@@ -901,6 +902,7 @@ def simulate(
                 ag.x[2] = z_floor
                 ag.x[5] = max(0.0, ag.x[5])
             ag.history.append(ag.x.copy())
+            ag.state_log.append(ag.state)
             ag.input_log.append(u_commands[i].copy())
 
         # ── 5a. IMDCL — propagazione ─────────────────────────────────────

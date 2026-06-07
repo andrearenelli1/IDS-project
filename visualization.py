@@ -678,8 +678,18 @@ def animate_mission(
             else:
                 wp_dots2[i].set_data([], [])
 
-            # Testo stato
-            if sig < ARTVA_DETECT_THR:
+            # Testo stato — usa lo state_log reale se disponibile
+            if ag.state_log and ti < len(ag.state_log):
+                _s = ag.state_log[ti]
+                if _s == DroneState.SEARCH:
+                    st = "SRCH"
+                elif _s == DroneState.TRACK:
+                    st = "TRCK"
+                elif _s == DroneState.STOP:
+                    st = "STOP"
+                else:
+                    st = "SUPP"
+            elif sig < ARTVA_DETECT_THR:
                 st = "SRCH"
             elif ti >= stop_steps.get(i, T):
                 st = "STOP"

@@ -183,6 +183,7 @@ class DroneAgent:
     wp_idx:       int        = 0
     signal_log:   list       = field(default_factory=list)
     history:      list       = field(default_factory=list)
+    state_log:    list       = field(default_factory=list)   # DroneState ad ogni step (parallelo a history)
     est_history:  list       = field(default_factory=list)
     input_log:    list       = field(default_factory=list)
     solve_t_log:  list       = field(default_factory=list)
