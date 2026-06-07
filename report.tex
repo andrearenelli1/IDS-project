@@ -12,6 +12,8 @@
 \usepackage{algpseudocode}
 \usepackage{hyperref}
 \usepackage{cite}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc}
 
 \hypersetup{colorlinks=false}
 
@@ -157,6 +159,10 @@ where $\bm{\theta}^*$ denotes the unknown source position,
 $r$ is the Euclidean distance between the sensor and the source,
 and $\cos\vartheta = (\mathbf{p} - \bm{\theta})_z / r$ is the cosine
 of the angle between the relative position vector and the dipole axis.
+The dipole moment $m = 1$ is a dimensionless scaling factor that sets
+the unit of $S$; since all signal thresholds and noise levels are
+expressed in the same units, the absolute value of $m$ does not affect
+system behaviour.
 Noisy measurements are modelled as
 $\tilde{S}_i(t) = S(\mathbf{p}_i(t), \bm{\theta}^*) + \varepsilon_i(t)$,
 with $\varepsilon_i \sim \mathcal{N}(0,\sigma^2)$.
@@ -167,7 +173,7 @@ maximum shifts laterally from the victim's true position~\cite{azzollini2021es};
 however, this is not a limitation specific to the proposed approach.
 Any gradient-following strategy converges to the same signal maximum
 $p^*$, which is precisely the point the drone marks for the rescuer to
-begin excavation, i.e. the same reference a hand-held ARTVA search would
+begin excavation, i.e.\ the same reference a hand-held ARTVA search would
 provide. The rescuer then refines the position empirically as digging
 proceeds and the signal strengthens.
 
@@ -205,7 +211,7 @@ average solve time below $5\,$ms.
 
 \paragraph{Waypoint sequencing.}
 When the estimated distance to the active waypoint drops below
-$\delta = 0.5\,$m, the mission planner advances to the next target and updates
+$\delta = 0.3\,$m, the mission planner advances to the next target and updates
 $p_{\rm ref}$ without triggering a new initialisation solve.
 The shifted warm-start from the current step carries over to the new reference,
 ensuring smooth transitions between consecutive waypoints.
@@ -213,34 +219,27 @@ ensuring smooth transitions between consecutive waypoints.
 \subsection{ES: Extremum Seeking for Track Navigation}
 \label{sec:es}
 
-Extremum Seeking (ES) is a real-time, model-free optimisation technique that
-finds the extremum of an unknown objective function by injecting a sinusoidal
-perturbation into the search variable and demodulating the resulting output to
-extract an approximate gradient, which is then used to drive a slow integrator
-toward the optimum.  In this work the objective is the received ARTVA signal
-strength and the search variable is the drone's horizontal position; the
-perturbation produces a circular dither trajectory whose centre drifts
-automatically toward the buried source without requiring any analytical model of
-the magnetic field.
+Extremum Seeking (ES) is a model-free optimisation technique that locates
+the extremum of an unknown objective by injecting a sinusoidal perturbation
+into the search variable and demodulating the output to extract an approximate
+gradient.  Here the objective is the received ARTVA signal strength and the
+search variable is the drone's horizontal position: the perturbation produces
+a circular dither whose centre drifts automatically toward the buried source
+(Fig.~\ref{fig:es_example}).
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{ES_example.png}
-  \caption{Illustration of the ES source-localization principle.
-           The dither circle's centre drifts along the signal gradient,
-           producing a spiralling trajectory that converges to the ARTVA
-           source.  Figure adapted from~\cite{azzollini2021es}.}
+  \includegraphics[width=0.8\linewidth]{ES_example.png}
+  \caption{ES source-localization principle: the dither circle's centre drifts
+           along the signal gradient, producing a spiralling trajectory that
+           converges to the ARTVA source.  Figure adapted
+           from~\cite{azzollini2021es}.}
   \label{fig:es_example}
 \end{figure}
 
-ES provides reactive gradient-following navigation that converges
-asymptotically to the source, but yields a reliable position estimate only
-after the dither amplitude has fully ramped up (${\approx}3\lambda \approx
-45\,$s), so it used to guide the drone toward the source rather than estimate the source
-
-On transition to \textsc{Track}, the drone switches to the gradient-free ES
-controller.  The ES generates a continuously moving reference
-$\mathbf{r}(t) = (x_{\rm ref}(t),\,y_{\rm ref}(t))$:
+On transition to \textsc{Track}, the drone switches to the ES controller, which
+generates a continuously moving reference
+$\mathbf{r}(t)=(x_{\rm ref}(t),\,y_{\rm ref}(t))$:
 \begin{align}
   \dot{x}_{\rm ref} &= \sqrt{\alpha\,\omega}\cos(\omega t + \kappa\,y_t),
   \nonumber\\
@@ -254,13 +253,27 @@ $\alpha$ ramps from $0$ to $\alpha_{\max}$ via:
   \dot{\alpha} = \tfrac{1}{\lambda}(\alpha_{\max} - \alpha).
   \label{eq:es_ramp}
 \end{equation}
-The constraint $\sqrt{\alpha_{\max}\omega} = v_{\max} = 3\,$m/s ensures the
-reference velocity never exceeds the actuator limit.  The trajectory is a circle
-whose centre drifts along the signal gradient toward the source.  The MPC tracks
-$\mathbf{r}(t)$ at each simulation step; DCGD runs concurrently on the
-accumulated measurements.
+The constraint $\sqrt{\alpha_{\max}\omega}=v_{\max}=3\,$m/s caps the reference
+velocity at the actuator limit.  The MPC tracks $\mathbf{r}(t)$ at every step;
+DCGD runs concurrently on the accumulated measurements.  Because a reliable
+position estimate requires the dither amplitude to fully ramp up
+(${\approx}3\lambda\approx45\,$s), ES is used solely to guide the drone toward
+the source, with DCGD responsible for the explicit position estimate.
 
-
+\paragraph{Convergence and parameter choice.}
+Proposition~1 of~\cite{azzollini2021es} establishes $(1/\omega)$-SPUUB
+convergence: for any target neighbourhood $\delta>0$, a sufficiently large
+$\kappa\alpha_{\max}$ guarantees convergence from any initial condition in a
+corresponding domain of attraction, which can be \emph{arbitrarily enlarged} by
+increasing $\kappa\alpha_{\max}$---at the cost of slower convergence.
+The SITL evaluation of~\cite{azzollini2021es} validated these parameters up to
+$50\,$m from the source (the operating range of commercial ARTVA receivers) with
+$\alpha_{\max}=20$, $\kappa=0.07$, $\omega=0.65\,$rad/s.  We retain
+$\alpha_{\max}=20$ but lower $\omega$ to $0.45\,$rad/s and $\kappa$ to $0.05$
+to satisfy our tighter velocity ceiling ($3\,$m/s vs.\ $3.6\,$m/s
+in~\cite{azzollini2021es}), and take $R_{\rm ES}=50\,$m as the empirically
+validated convergence range, used as the physical floor of the detection
+threshold (Section~\ref{sec:impl}).
 
 \subsection{IMDCL: Decentralised Cooperative Localisation}
 
@@ -272,7 +285,8 @@ The key insight is that cross-covariance terms between agents $i$ and $j$,
 while never stored globally, can be reconstructed locally whenever a
 relative measurement occurs.
 To this end each agent $i$ maintains four quantities:
-the state estimate $\hat{x}_i^+$, error covariance $P_i^+$, the cumulative
+the state estimate $\hat{x}_i^+$, error covariance $P_i^+$ (initialised
+with position standard deviation $\sqrt{P_0^{pp}} = 0.5\,$m), the cumulative
 Jacobian product $\Phi_i$ (initialised to $I$ and multiplied by $F$ at every
 propagation step), and local copies of the cross-covariance seed matrices
 $\{\Pi^i_{jl}\}$ for all pairs $(j,l)$.
@@ -317,7 +331,7 @@ The gain factors for the measuring agent $a$ and the landmark $b$ are
 Agent $a$ packs
 $\bigl(\Gamma_a,\,\Gamma_b,\;\Phi_b^\top\tilde{H}_b^\top S_{ab}^{-1/2},\;
 \Phi_a^\top\tilde{H}_a^\top S_{ab}^{-1/2}\bigr)$
-into the \emph{update-message} and broadcasts it to the whole team.
+into the \emph{update-message} and broadcasts it to the whole reachable team.
 Every agent $i\notin\{a,b\}$ derives its own gain locally from its $\Pi$
 copies (eq.~S11 in~\cite{kia2016cooperative}):
 \begin{equation}
@@ -417,20 +431,20 @@ distributedly.
 A BFS (\textit{Breadth-First Search}) from $h$ identifies $\mathcal{C}(h)$, the set of drones reachable through
 $\mathcal{G}$.  Drones in $\mathcal{V} \setminus \mathcal{C}(h)$ are excluded.
 
-\paragraph{Step 1 — Initialisation.}
+\paragraph{Step 1 — Initialisation}
 Each $i \in \mathcal{C}(h)$ maintains a distance row
-$\mathbf{D}_i \in (\mathbb{R} \cup \{+\infty\})^{|\mathcal{C}(h)|}$,
+$\mathbf{D}_i \in \mathbb{R}^{|\mathcal{C}(h)|}$,
 initialised to $+\infty$ everywhere except $\mathbf{D}_h[h] = 0$.
 
-\paragraph{Step 2 — Iterations.}
+\paragraph{Step 2 — Iterations}
 For up to $K_{\max} = 10$ rounds two updates propagate synchronously:
 (i)~\emph{awareness}: newly-informed drones set $\mathbf{D}_i[i] =
-\|\mathbf{p}_i - \mathbf{p}_h\|$;
+\|\hat{\mathbf{p}}_i - \hat{\mathbf{p}}_h\|$;
 (ii)~\emph{min-update}: $\mathbf{D}_i \leftarrow \min(\mathbf{D}_i,
 \mathbf{D}_j)$ for each neighbour $j$.  Convergence is guaranteed in at most
 $\mathrm{diam}(\mathcal{G}[\mathcal{C}(h)])$ rounds.
 
-\paragraph{Step 3 — Selection.}
+\paragraph{Step 3 — Selection}
 The agreed distance for candidate $c_k$ is
 $d^*_k = \min_{i \in \mathcal{C}(h)} \mathbf{D}_i[k]$.
 The $P$ partners with smallest $d^*_k$ are selected.
@@ -442,49 +456,149 @@ The $P$ partners with smallest $d^*_k$ are selected.
 \subsection{Noise Calibration}
 
 Before flight each drone collects $M = 20$ ARTVA background measurements and
-estimates its local noise standard deviation $\hat{\sigma}_i$.  Ten iterations of
-average consensus~\cite{olfati2004consensus} drive all agents to a common estimate
-$\hat{\sigma}$, which sets:
-\begin{itemize}
-  \item \textbf{Detection threshold}:
-        $\tau_{\rm det} = c_{\rm det}\,\hat{\sigma}$ (SEARCH $\to$ TRACK),
-        with $c_{\rm det} \in \{50, 100\}$, floored at the signal strength
-        corresponding to $R = 50\,$m from the source (ES convergence range);
-  \item \textbf{Stop threshold}:
-        $\tau_{\rm stop} = 1000\,\hat{\sigma}$ (TRACK/SUPPORT $\to$ STOP).
-\end{itemize}
-For the nominal $\sigma = 10^{-6}$ and $c_{\rm det} = 100$, these correspond to
-detection at $\sim\!20\,$m and stopping at $\sim\!5\,$m from the source.  Both
-thresholds scale automatically with the measured noise.
+computes its local mean $\hat{\mu}_i$ and standard deviation $\hat{\sigma}_i$.
+Ten iterations of average consensus drive all agents to shared estimates
+$\hat{\mu}$ and $\hat{\sigma}$.
+
+\paragraph{Detection threshold (SEARCH $\to$ TRACK).}
+The threshold combines a $5\sigma$ exceedance test with a physical floor tied
+to the ES convergence range:
+\begin{equation}
+  \tau_{\rm det} =
+  \max\!\bigl(\,\hat{\mu} + 5\,\hat{\sigma},\;
+               m / R_{\rm ES}^{3}\bigr),
+  \label{eq:tau_det}
+\end{equation}
+where $R_{\rm ES} = 50\,$m (Section~\ref{sec:es}).  The floor ensures that,
+even at very low noise levels, the TRACK transition is never triggered beyond
+the ES convergence basin, preventing the drone from entering \textsc{Track}
+at a distance from which the ES cannot converge.
+At the nominal $\sigma = 10^{-6}$ the floor dominates
+($5\hat{\sigma} = 5{\times}10^{-6} < m/R_{\rm ES}^3 = 8{\times}10^{-6}$);
+above $\sigma^* \approx 1.6{\times}10^{-6}$ the $5\hat{\sigma}$ arm takes
+over and $\mathrm{SNR}_{\rm det}$ is clamped at~$5$.
+
+\paragraph{Stop threshold (TRACK/SUPPORT $\to$ STOP).}
+Unlike the detection threshold, the stop condition is geometry-based and
+noise-independent:
+\begin{equation}
+  \tau_{\rm stop} = \frac{m}{R_{\rm found}^{3}} = 10^{-3},
+  \qquad R_{\rm found} = 10\,\text{m}.
+  \label{eq:tau_stop}
+\end{equation}
+A drone stops when its (filtered) signal exceeds the level expected at
+$10\,$m in 3-D from the source.  At the nominal $\sigma = 10^{-6}$ this
+corresponds to $\mathrm{SNR}_{\rm stop} = \tau_{\rm stop}/\hat{\sigma} = 10^{3}$.
 
 \subsection{Mission State Machine}
 
-Each drone executes a four-state finite automaton (Fig.~\ref{fig:fsm}):
-\begin{itemize}
-  \item \textsc{Search}: boustrophedon lawnmower coverage of an assigned
-        workspace lane; the area is partitioned equally along the $x$-axis.
-  \item \textsc{Track}: the ES controller generates a continuously drifting
-        circular reference converging toward the ARTVA source; DCGD runs
-        concurrently.
-  \item \textsc{Stop}: strong-signal hovering; triggers partner selection and
-        orbit assignment.
-  \item \textsc{Support}: circular orbit (CW or CCW) around the Stop drone at
-        the estimated source distance, providing additional measurement diversity
-        for DCGD.
-\end{itemize}
-\textsc{Search} and \textsc{Support} transitions are arrival-gated: waypoint
-updates are issued only when the current target is within $\delta = 0.3\,$m of
-the estimated drone position.  During \textsc{Track} the ES reference is updated
-every simulation step without an arrival gate.
+Each drone executes a four-state finite automaton (Fig.~\ref{fig:fsm}).
+\textsc{Search}: interleaved boustrophedon coverage of the workspace.
+\textsc{Track}: ES drives a drifting circular reference toward the source;
+DCGD runs concurrently.
+\textsc{Stop}: strong-signal hovering; triggers partner selection and orbit
+assignment.
+\textsc{Support}: circular orbit (CW or CCW) around the Stop drone, providing
+spatial diversity for DCGD. In
+\textsc{Search} and \textsc{Support} state are, the reference points are updated on arrival ($\delta = 0.3\,$m);
+during \textsc{Track} the ES reference is updated every step.
+
+\paragraph{Lawnmower lane layout.}
+After noise calibration the detection range $r_{\rm det}=(m/\tau_{\rm det})^{1/3}$
+determines the lane spacing. The workspace of width $W$ is divided into
+\begin{align}
+  N_{\rm lanes} &= N_{\rm passes}\times N, \nonumber\\
+  N_{\rm passes} &= \max\!\Bigl(1,\,
+    \Bigl\lceil\tfrac{\lceil W/(2r_{\rm det})\rceil}{N}\Bigr\rceil\Bigr),
+  \label{eq:lanes}
+\end{align}
+equally spaced lanes ($\Delta x = W/N_{\rm lanes}$), using the minimum
+number of passes needed to guarantee $\Delta x \leq 2r_{\rm det}$, so that
+every workspace point lies within detection range of at least one lane centre.
+Drone $i$ is assigned lanes $i,\;i{+}N,\;i{+}2N,\ldots$ (stride-$N$
+interleaving), reversing the along-$y$ direction at each transition.
+Adjacent-lane assignment keeps neighbouring drones close together,
+maximising the probability that the communication graph remains connected
+throughout the search phase.
 
 \begin{figure}[t]
-  \centering
-  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.2cm}
-    \textit{[Mission state machine diagram]}
-  \vspace{1.2cm}}}
-  \caption{Mission state machine for each drone agent.  Arrows indicate
-           transitions with their respective trigger conditions.}
-  \label{fig:fsm}
+\centering
+\scalebox{0.8}{%
+\begin{tikzpicture}[
+  >=Stealth,
+  thick,
+  state/.style = {
+    draw, rounded corners=8pt,
+    minimum width = 3.0cm, minimum height = 1.6cm,
+    align=center, thick
+  },
+  arr/.style     = {->, thick},
+  dashArr/.style = {->, thick, dashed},
+]
+
+%─────────────────────────── STATES ────────────────────────────────────────
+\node[state, fill=green!15, draw=green!55!black]
+  (SEARCH) at (0,0)
+  {\bfseries\sffamily SEARCH\\[3pt]
+   \footnotesize\sffamily lawnmower pattern};
+
+\node[state, fill=yellow!25, draw=orange!65!black]
+  (TRACK) at (6,0)
+  {\bfseries\sffamily TRACK\\[1pt]
+   \footnotesize\sffamily extremum seeking\\ \footnotesize\sffamily DCGD source estimation};
+
+\node[state, fill=red!12, draw=red!60!black]
+  (STOP) at (6,-3.2)
+  {\bfseries\sffamily STOP\\[1pt]
+   \footnotesize\sffamily hovering \\  \footnotesize\sffamily DCGD source estimation};
+
+\node[state, fill=blue!12, draw=blue!60!black]
+  (SUPPORT) at (0,-3.2)
+  {\bfseries\sffamily SUPPORT\\[3pt]
+   \footnotesize\sffamily circular orbit (CW/CCW)\\
+   \footnotesize\sffamily DCGD source estimation};
+
+%─────────────────────────── TRANSITIONS ───────────────────────────────────
+\draw[arr] (-2.4, 0) -- (SEARCH.west)
+  node[midway, above, font=\scriptsize\sffamily] {start};
+
+\draw[arr] (SEARCH) -- (TRACK)
+  node[midway, above, font=\small\sffamily] {$S \geq S_{\mathrm{detect}}$};
+
+\draw[arr] (TRACK) -- (STOP)
+  node[midway, right, xshift=4pt, font=\small\sffamily] {$S \geq S_{\mathrm{stop}}$};
+
+\draw[dashArr, draw=blue!55!black] (TRACK) to[bend left=20]
+  node[midway, above, font=\small\sffamily, align=center, xshift=-15pt]
+  {Selected \\as partner}
+  (SUPPORT);
+
+\draw[dashArr, draw=blue!55!black] (SEARCH) to[bend right=20]
+  node[midway, left, font=\small\sffamily, align=center]
+  {Selected as partner}
+  (SUPPORT);
+
+\draw[arr] (SUPPORT) to[bend right=20]
+  node[midway, above, font=\small\sffamily, align=center, yshift=4pt]
+  {$S \geq S_{\mathrm{stop}}$}
+  (STOP);
+
+%─────────────────────────── LEGEND ────────────────────────────────────────
+\node[font=\footnotesize\sffamily, align=left, anchor=north west]
+  at (-3, -4.5) {
+  $S$ = filtered ARTVA signal \quad
+  $S_{\mathrm{detect}}$ = detection thr.\quad
+  $S_{\mathrm{stop}}$ = stop thr.\\[4pt]
+  \tikz\draw[dashed, ->, blue!55!black, thick] (0,0) -- (0.6,0);
+  \; inter-drone assignment
+};
+
+\end{tikzpicture}
+}% end scalebox
+\caption{Mission state machine for each drone agent. Arrows indicate
+         transitions with their respective trigger conditions. Dashed
+         arrow: inter-drone consensus assignment.}
+\label{fig:fsm}
 \end{figure}
 
 \subsection{Refinement Phase}
@@ -493,64 +607,6 @@ When $\geq 3$ drones reach \textsc{Stop}, DCGD executes an additional
 $K_{\rm refine} = 50$ iterations without drone movement.  This stationary
 refinement exploits the measurement batch accumulated near the source to
 sharpen the estimate before reporting.
-
-\subsection{Parameter Summary}
-
-Table~\ref{tab:params} collects all simulation and algorithm parameters.
-
-\begin{table}[t]
-\centering
-\caption{Simulation and algorithm parameters.}
-\label{tab:params}
-\begin{tabular}{lll}
-\toprule
-Parameter & Symbol / key & Value \\
-\midrule
-\multicolumn{3}{l}{\textit{MPC controller}} \\
-Horizon              & $N$         & 20 steps \\
-Sampling time        & $dt$        & 0.1\,s   \\
-Max.\ acceleration   & $a_{\max}$  & 6\,m/s$^2$ \\
-Max.\ velocity       & $v_{\max}$  & 3\,m/s   \\
-Pos.\ weight         & $w_p$       & 100      \\
-Input weight         & $w_a$       & 0.1      \\
-Terminal pos.\ wt.   & $w_{fp}$    & 1\,000   \\
-Terminal vel.\ wt.   & $w_{fv}$    & 10       \\
-\midrule
-\multicolumn{3}{l}{\textit{IMDCL filter}} \\
-Initial pos.\ std    & $\sqrt{P_0^{pp}}$ & 0.5\,m   \\
-Relative meas.\ std  & $\sigma_{\rm rel}$ & 0.3\,m  \\
-LiDAR meas.\ std     & $\sigma_{\rm LiDAR}$ & 0.05\,m \\
-Process noise        & $\sigma_{acc}$ & 0.05\,m/s$^2$ \\
-Comm.\ radius        & $R_c$          & 80\,m     \\
-\midrule
-\multicolumn{3}{l}{\textit{Extremum Seeking (Track)}} \\
-Max.\ amplitude      & $\alpha_{\max}$ & 20      \\
-Frequency            & $\omega$        & 0.45\,rad/s \\
-Feedback gain        & $\kappa$        & 0.05    \\
-Ramp time const.     & $\lambda$       & 15\,s   \\
-\midrule
-\multicolumn{3}{l}{\textit{DCGD source estimator}} \\
-Step size            & $\alpha$        & 0.3\,m  \\
-Consensus weight     & $\beta$         & 0.4     \\
-Finite-diff.\ step   & $h$             & 0.1\,m  \\
-Measurement batch    & $|\mathcal{B}_i|$ & 5     \\
-Refinement iters     & $K_{\rm refine}$ & 300    \\
-\midrule
-\multicolumn{3}{l}{\textit{Partner selection}} \\
-Partners             & $P$            & 2       \\
-Max.\ consensus rounds & $K_{\max}$   & 10      \\
-\midrule
-\multicolumn{3}{l}{\textit{Noise calibration}} \\
-Calibration samples  & $M$            & 20      \\
-Detection factor     & $c_{\rm det}$  & 50 or 100 \\
-Stop factor          & $c_{\rm stop}$ & 1\,000  \\
-\midrule
-\multicolumn{3}{l}{\textit{ARTVA model}} \\
-Dipole moment        & $m$            & 1.0     \\
-Nominal noise std    & $\sigma$       & $10^{-6}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 % ============================================================
 \section{Experimental Results}
@@ -572,9 +628,11 @@ norms for a three-drone team covering a $200\times200\,$m lawnmower pattern.
   \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
     \textit{[MPC trajectories and acceleration norm vs.\ time]}
   \vspace{1.5cm}}}
-  \caption{MPC trajectories (top) and control input magnitude (bottom) for three
-           drones in the \textsc{Search} phase.  Dashed lines indicate waypoint
-           targets; grey line marks $a_{\max} = 6\,$m/s$^2$.}
+  \caption{MPC trajectories (top) and per-component control inputs (bottom) for
+           three drones.  $\times$ markers indicate waypoint targets; dashed red
+           lines mark the per-component bound $\pm a_{\max} = \pm6\,$m/s$^2$.
+           The constraint is a box constraint on each axis independently
+           ($\|u\|_\infty \leq a_{\max}$), not on the Euclidean norm.}
   \label{fig:mpc_traj}
 \end{figure}
 

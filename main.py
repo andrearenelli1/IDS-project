@@ -37,7 +37,7 @@ from config import (
 from terrain import build_terrain
 from artva import ARTVASource
 from simulation import build_agents, simulate
-from visualization import plot_mission, animate_mission
+from visualization import plot_mission, plot_mpc_performance, animate_mission
 
 import matplotlib.pyplot as plt
 
@@ -170,6 +170,7 @@ def main() -> None:
 
     # — Plot risultati —
     plot_mission(terrain_obj, artva, agents, x_coords, y_coords, sub_dem, TRACK_STOP_THR=track_stop_thr, ARTVA_DETECT_THR=artva_detect_thr)
+    plot_mpc_performance(terrain_obj, agents)
 
     # — Animazione (opzionale) —
     anim = None

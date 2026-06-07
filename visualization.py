@@ -369,6 +369,127 @@ def plot_mission(
 
 
 # ============================================================================
+# MPC path-following performance (main.py)
+# ============================================================================
+
+def plot_mpc_performance(
+    terrain: Terrain,
+    agents:  Dict[int, DroneAgent],
+) -> plt.Figure:
+    """
+    Figura a 2 pannelli per la validazione MPC:
+      Top    — traiettorie 2D (piano XY) con waypoint target marcati, colorati per stato
+      Bottom — norma accelerazione ‖u(t)‖ nel tempo con soglia a_max
+    """
+    drone_ids = list(agents.keys())
+
+    fig = plt.figure(figsize=(10, 7))
+    fig.patch.set_facecolor("#ffffff")
+    gs     = fig.add_gridspec(2, 1, height_ratios=[1.6, 1.0], hspace=0.38)
+    ax_top = fig.add_subplot(gs[0])
+    ax_bot = fig.add_subplot(gs[1])
+
+    for ax in (ax_top, ax_bot):
+        ax.set_facecolor("#f8f8f8")
+        ax.grid(True, ls=":", alpha=0.5, color="#cccccc")
+        ax.tick_params(labelsize=8)
+
+    # ── Top: traiettorie XY ──────────────────────────────────────────────
+    for i in drone_ids:
+        ag        = agents[i]
+        c         = COLORS.get(i, "#aaaaaa")
+        traj      = np.array(ag.history)
+        state_seq = _reconstruct_state_sequence(ag)
+        n         = min(len(traj), len(state_seq))
+
+        s_idx = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
+        t_idx = [k for k in range(n) if state_seq[k] in (DroneState.TRACK, DroneState.SUPPORT)]
+        p_idx = [k for k in range(n) if state_seq[k] == DroneState.STOP]
+
+        if s_idx:
+            ax_top.plot(traj[s_idx, 0], traj[s_idx, 1],
+                        color=c, lw=1.5, alpha=0.85, ls="-", label=f"Drone {i}")
+        if t_idx:
+            ax_top.plot(traj[t_idx, 0], traj[t_idx, 1],
+                        color=c, lw=2.0, alpha=0.90, ls="--")
+        if p_idx:
+            ax_top.plot(traj[p_idx, 0], traj[p_idx, 1],
+                        color=c, lw=1.5, alpha=0.60, ls=":")
+
+        # waypoint targets (deduplicated)
+        if ag.wp_target_log:
+            wps = np.array([w[:2] for w in ag.wp_target_log])
+            seen, unique = set(), []
+            for w in wps:
+                key = (round(w[0], 1), round(w[1], 1))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(w)
+            unique = np.array(unique)
+            ax_top.scatter(unique[:, 0], unique[:, 1],
+                           color=c, s=45, alpha=0.55, zorder=5,
+                           marker="x", linewidths=1.3)
+
+        ax_top.plot(*traj[0,  :2], "o", color=c, ms=7, mec="white", mew=1.0, zorder=7)
+        ax_top.plot(*traj[-1, :2], "^", color=c, ms=8, mec="white", mew=0.8, zorder=7)
+
+    ax_top.set_xlabel("x [m]", fontsize=9)
+    ax_top.set_ylabel("y [m]", fontsize=9)
+    ax_top.set_title(
+        "MPC Trajectories — SEARCH (—)  TRACK (--)  STOP (:)  ×: waypoints",
+        fontweight="bold", fontsize=10,
+    )
+    handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
+               for i in drone_ids]
+    handles += [
+        plt.Line2D([0], [0], color="gray", lw=1.5, ls="-",  label="SEARCH"),
+        plt.Line2D([0], [0], color="gray", lw=2.0, ls="--", label="TRACK/SUPPORT"),
+        plt.Line2D([0], [0], color="gray", lw=1.5, ls=":",  label="STOP"),
+        plt.Line2D([0], [0], marker="x",  color="gray", ms=7, lw=0, label="Waypoint"),
+    ]
+    ax_top.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.80)
+
+    # ── Bottom: componenti accelerazione (vincolo è per-componente, norma-∞) ─
+    comp_labels = ["$a_x$", "$a_y$", "$a_z$"]
+    comp_ls     = ["-", "--", ":"]
+    for i in drone_ids:
+        ag = agents[i]
+        c  = COLORS.get(i, "#aaaaaa")
+        if not ag.input_log:
+            continue
+        inputs = np.array(ag.input_log)          # (T, 3)
+        time   = np.arange(len(inputs)) * DT_SIM
+        for j in range(3):
+            ax_bot.plot(time, inputs[:, j],
+                        color=c, lw=1.0, alpha=0.75, ls=comp_ls[j],
+                        label=f"D{i} {comp_labels[j]}" if i == drone_ids[0] else None)
+
+    ax_bot.axhline( A_MAX, color="red", lw=1.3, ls="--",
+                    label=fr"$\pm a_{{\rm max}} = \pm{A_MAX}\,$m/s²")
+    ax_bot.axhline(-A_MAX, color="red", lw=1.3, ls="--")
+    # legend entries for components (shared across drones)
+    for j in range(3):
+        ax_bot.plot([], [], color="gray", lw=1.0, ls=comp_ls[j], label=comp_labels[j])
+
+    ax_bot.set_xlabel("Time [s]", fontsize=9)
+    ax_bot.set_ylabel("Acceleration  [m/s²]", fontsize=9)
+    ax_bot.set_title(
+        r"Control Inputs — per-component box constraint $|a_j| \leq a_{\rm max}$",
+        fontweight="bold", fontsize=10,
+    )
+    ax_bot.legend(fontsize=7.5, loc="upper right", framealpha=0.80, ncol=2)
+
+    fig.suptitle(
+        fr"MPC Path-Following Performance  ·  {len(agents)} drones  ·  "
+        fr"$N_{{\rm mpc}}={N_MPC}$  ·  $dt={DT_SIM}$ s  ·  "
+        fr"$a_{{\rm max}}={A_MAX}$ m/s²  ·  $v_{{\rm max}}={V_MAX}$ m/s",
+        fontsize=10, fontweight="bold",
+    )
+    fig.tight_layout()
+    return fig
+
+
+# ============================================================================
 # Animazione missione (main.py)
 # ============================================================================
 
