@@ -871,16 +871,19 @@ def plot_final_positions(
             )
             if ag.source_est is not None:
                 src = ag.source_est[:2]
-                # stima DCGD in coordinate WS reali
-                ax.plot(*src, "D", color=c, ms=9, mec="black", mew=1.0,
-                        alpha=0.70, zorder=6, label=f"$\\hat{{\\theta}}_{{{i}}}$")
                 drift = ag.x_est[:2] - ag.x[:2]
-                src_drifted = src + drift
-                ax.plot(*src_drifted, "D", color=c, ms=9,
+                # actual landing point: drone executes displacement (src − p̂_i) from p_i
+                src_landing = src - drift
+                # empty diamond = DCGD estimate ĥeta_i
+                ax.plot(*src, "D", color=c, ms=9,
                         mfc="none", mec=c, mew=1.5, zorder=6,
-                        label=f"$\\hat{{\\theta}}_{{{i}}} + \\hat{{p}}_{{{i}}} - p_{{{i}}}$")
+                        label=f"$\\hat{{\\theta}}_{{{i}}}$")
+                # filled diamond = actual landing ĥeta_i − (p̂_i − p_i)
+                ax.plot(*src_landing, "D", color=c, ms=9, mec="black", mew=1.0,
+                        alpha=0.80, zorder=6,
+                        label=f"$\\hat{{\\theta}}_{{{i}}} - (\\hat{{p}}_{{{i}}} - p_{{{i}}})$")
                 ax.plot(
-                    [src[0], src_drifted[0]], [src[1], src_drifted[1]],
+                    [src[0], src_landing[0]], [src[1], src_landing[1]],
                     color=c, lw=0.7, ls="--", alpha=0.5, zorder=5,
                 )
 

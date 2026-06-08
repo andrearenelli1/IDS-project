@@ -133,9 +133,15 @@ CSV_FIELDS = [
     "found",
     "time_found_s",
     "n_drones_stopped",
+    "n_drones_tracked",
     "pos_variance_m2",
     "pos_std_m",
     "est_error_2d_m",
+    "est_error_3d_m",
+    "est_depth_m",
+    "est_error_depth_m",
+    "dcgd_err_final_mean_m",
+    "landing_err_mean_m",
     "note",
 ]
 
@@ -265,20 +271,37 @@ def run_one(
 
         n_stopped  = sum(1 for ag in agents.values() if ag.state == DroneState.STOP)
 
+        n_tracked  = sum(1 for ag in agents.values() if ag.detected)
+
         valid_ests = [ag.source_est for ag in agents.values() if ag.source_est is not None]
         if len(valid_ests) >= 2:
-            ests_xy = np.array([e[:2] for e in valid_ests])
-            var_xy  = np.var(ests_xy, axis=0)
-            pos_var = float(var_xy.sum())
-            pos_std = float(np.sqrt(pos_var))
+            ests_arr = np.array(valid_ests)          # (n, 3)
+            var_xy   = np.var(ests_arr[:, :2], axis=0)
+            pos_var  = float(var_xy.sum())
+            pos_std  = float(np.sqrt(pos_var))
         else:
             pos_var = pos_std = float("nan")
 
         if valid_ests:
-            est_mean  = np.mean([e[:2] for e in valid_ests], axis=0)
-            est_error = float(np.linalg.norm(est_mean - artva.position[:2]))
+            ests_arr    = np.array(valid_ests)       # (n, 3)
+            est_mean    = np.mean(ests_arr, axis=0)  # 3D centroid
+            est_error   = float(np.linalg.norm(est_mean[:2] - artva.position[:2]))
+            est_error_3d = float(np.linalg.norm(est_mean    - artva.position))
+            est_depth   = float(terrain_obj.z(est_mean[0], est_mean[1]) - est_mean[2])
+            est_depth_err = abs(est_depth - victim_depth)
+            # same metric as plot_dcgd_convergence: mean per-drone final XY error
+            dcgd_err_mean = float(np.mean([
+                np.linalg.norm(e[:2] - artva.position[:2]) for e in valid_ests
+            ]))
+            # landing error: source_est − (p̂_i − p_i) = where drone would actually land
+            landing_err_mean = float(np.mean([
+                np.linalg.norm(
+                    ag.source_est[:2] - (ag.x_est[:2] - ag.x[:2]) - artva.position[:2]
+                )
+                for ag in agents.values() if ag.source_est is not None
+            ]))
         else:
-            est_error = float("nan")
+            est_error = est_error_3d = est_depth = est_depth_err = dcgd_err_mean = landing_err_mean = float("nan")
 
         # Criterio found: ≥3 droni in STOP E stima entro FOUND_RADIUS dalla
         # vittima reale. Evita falsi positivi in cui i droni si fermano lontano
@@ -299,17 +322,23 @@ def run_one(
             note = f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti"
 
         return {
-            "victim_x_m":       round(victim_x, 1),
-            "victim_y_m":       round(victim_y, 1),
-            "victim_dist_m":    round(victim_dist, 1),
-            "victim_depth_m":   round(victim_depth, 2),
-            "found":            found,
-            "time_found_s":     time_s,
-            "n_drones_stopped": n_stopped,
-            "pos_variance_m2":  pos_var,
-            "pos_std_m":        pos_std,
-            "est_error_2d_m":   est_error,
-            "note":             note,
+            "victim_x_m":         round(victim_x, 1),
+            "victim_y_m":         round(victim_y, 1),
+            "victim_dist_m":      round(victim_dist, 1),
+            "victim_depth_m":     round(victim_depth, 2),
+            "found":              found,
+            "time_found_s":       time_s,
+            "n_drones_stopped":   n_stopped,
+            "n_drones_tracked":   n_tracked,
+            "pos_variance_m2":    pos_var,
+            "pos_std_m":          pos_std,
+            "est_error_2d_m":     est_error,
+            "est_error_3d_m":     est_error_3d,
+            "est_depth_m":        round(est_depth, 3) if not math.isnan(est_depth) else float("nan"),
+            "est_error_depth_m":     round(est_depth_err, 3) if not math.isnan(est_depth_err) else float("nan"),
+            "dcgd_err_final_mean_m": round(dcgd_err_mean, 3) if not math.isnan(dcgd_err_mean) else float("nan"),
+            "landing_err_mean_m":    round(landing_err_mean, 3) if not math.isnan(landing_err_mean) else float("nan"),
+            "note":                  note,
         }
 
     finally:
@@ -330,7 +359,7 @@ def _worker(job: tuple) -> tuple:
     """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
     import matplotlib.pyplot as _plt
     _plt.switch_backend("agg")
-    run_id, (area, n_drones, victim_idx, noise, acc_sim, rc, ws), seed, verbose = job
+    run_id, (area, n_drones, _, noise, acc_sim, rc, ws), seed, verbose = job
     try:
         metrics = run_one(
             area_size=area, n_drones=n_drones,
@@ -435,31 +464,35 @@ def _ws_label(ws) -> tuple:
 
 def preview_workspaces() -> None:
     """
-    Mostra il DEM TIF completo con tutti i workspace selezionati evidenziati
-    e una finestra 3-D per ciascun workspace.
-    Blocca finché tutte le finestre non vengono chiuse, poi la simulazione parte.
+    Single figure: full DEM with workspace rectangles + numbered markers.
+    Each marker is connected by a dotted line to a small 3-D inset showing
+    that workspace surface (no labels or axes).
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     from matplotlib.colors import LightSource
+    from matplotlib.patches import ConnectionPatch
     from terrain import (
         read_geotiff, extract_area, coords_extent,
         interpolate_surface, TIF_PATH,
     )
 
-    print("\nCaricamento DEM completo per preview workspace...")
+    print("\nLoading full DEM for workspace preview...")
     dem, transform = read_geotiff(TIF_PATH)
     rows, cols = dem.shape
     xmin_f, xmax_f, ymin_f, ymax_f = coords_extent(dem, transform)
 
-    # ── Figura 1: DEM completo con rettangoli workspace ──────────────────
     ls       = LightSource(azdeg=315, altdeg=45)
     hs       = ls.hillshade(np.nan_to_num(dem, nan=0.0), vert_exag=2)
     vmin_dem = np.nanpercentile(dem, 2)
     vmax_dem = np.nanpercentile(dem, 98)
 
-    fig_map, ax_map = plt.subplots(figsize=(11, 9))
-    ax_map.set_facecolor("#333333")
+    fig = plt.figure(figsize=(18, 11))
+    fig.patch.set_facecolor("white")
+
+    # ── Main DEM map — centred, flanked by insets ─────────────────────────
+    ax_map = fig.add_axes([0.22, 0.07, 0.55, 0.87])
+    ax_map.set_facecolor("#dddddd")
     im = ax_map.imshow(
         dem, cmap="terrain", vmin=vmin_dem, vmax=vmax_dem,
         extent=[xmin_f, xmax_f, ymin_f, ymax_f],
@@ -470,87 +503,128 @@ def preview_workspaces() -> None:
         extent=[xmin_f, xmax_f, ymin_f, ymax_f],
         origin="upper", interpolation="bilinear", zorder=3,
     )
-    fig_map.colorbar(im, ax=ax_map, fraction=0.03, pad=0.02).set_label(
-        "Quota [m s.l.m.]", fontsize=10)
-    ax_map.set_xlabel("E  [m UTM]", fontsize=10)
-    ax_map.set_ylabel("N  [m UTM]", fontsize=10)
+
+    # Small colorbar inset inside the map (bottom-left corner)
+    cbar_ax = ax_map.inset_axes([0.015, 0.03, 0.017, 0.33])
+    cb = fig.colorbar(im, cax=cbar_ax)
+    cb.set_label("m a.s.l.", fontsize=7, color="#222222", labelpad=3)
+    cbar_ax.tick_params(colors="#222222", labelsize=6)
+    cbar_ax.yaxis.set_ticks_position("left")
+    cbar_ax.yaxis.set_label_position("left")
+
+    ax_map.set_xlabel("E  [m UTM]", fontsize=9, color="#222222")
+    ax_map.set_ylabel("N  [m UTM]", fontsize=9, color="#222222")
     ax_map.set_title(
-        f"DEM TINItaly — {len(WORKSPACE_CENTERS)} workspace selezionati "
-        f"(area max {max(AREA_SIZES)} m)\n"
-        "Chiudi tutte le finestre per avviare la simulazione",
-        fontsize=11, fontweight="bold",
+        "workspace sampling from Trentino, Alps",
+        fontsize=13, fontweight="bold", color="#111111", pad=8,
     )
     ax_map.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
-    ax_map.tick_params(labelsize=8)
+    ax_map.tick_params(labelsize=8, colors="#222222")
+    for spine in ax_map.spines.values():
+        spine.set_edgecolor("#aaaaaa")
+    ax_map.xaxis.offsetText.set_color("#222222")
+    ax_map.yaxis.offsetText.set_color("#222222")
 
     _COLORS = ["#ff4444", "#44ff88", "#4488ff", "#ffdd00", "#ff66ff"]
     area_prev = max(AREA_SIZES)
 
-    workspace_data = []  # lista di (label, sub_dem, x_coords, y_coords, color)
+    # 3-D inset bounding boxes in figure fraction [left, bottom, width, height]
+    # Left column  (3 insets): WS 0 top, WS 3 mid, WS 4 bot
+    # Right column (2 insets): WS 1 top, WS 2 bot
+    inset_pos = [
+        [0.01, 0.67, 0.19, 0.28],   # WS 0: left-top
+        [0.79, 0.56, 0.19, 0.28],   # WS 1: right-top
+        [0.79, 0.21, 0.19, 0.28],   # WS 2: right-bottom
+        [0.01, 0.37, 0.19, 0.28],   # WS 3: left-middle
+        [0.01, 0.07, 0.19, 0.28],   # WS 4: left-bottom
+    ]
+    # Anchor = right-centre for left insets, left-centre for right insets
+    inset_anchors = [
+        (0.20, 0.81),   # WS 0: right-centre  (x=0.01+0.19, y=0.67+0.14)
+        (0.79, 0.70),   # WS 1: left-centre   (x=0.79,      y=0.56+0.14)
+        (0.79, 0.35),   # WS 2: left-centre   (x=0.79,      y=0.21+0.14)
+        (0.20, 0.51),   # WS 3: right-centre  (x=0.01+0.19, y=0.37+0.14)
+        (0.20, 0.21),   # WS 4: right-centre  (x=0.01+0.19, y=0.07+0.14)
+    ]
+
+    print(f"  RBF interpolation for {len(WORKSPACE_CENTERS)} workspaces "
+          f"({area_prev}×{area_prev} m)...")
+
     for i, ws in enumerate(WORKSPACE_CENTERS):
         color = _COLORS[i % len(_COLORS)]
         if ws is None:
-            cr, cc   = rows // 2, cols // 2
-            ws_label = "centro DEM"
+            cr, cc = rows // 2, cols // 2
         else:
-            cr       = int(np.clip(ws[0] * rows, 0, rows - 1))
-            cc       = int(np.clip(ws[1] * cols, 0, cols - 1))
-            ws_label = f"r={ws[0]:.2f} c={ws[1]:.2f}"
+            cr = int(np.clip(ws[0] * rows, 0, rows - 1))
+            cc = int(np.clip(ws[1] * cols, 0, cols - 1))
 
         sub_i, x_c, y_c, _ = extract_area(
             dem, transform, center_row=cr, center_col=cc, size_m=area_prev)
-        workspace_data.append((ws_label, sub_i, x_c, y_c, color))
 
         rx, ry = x_c.min(), y_c.min()
         rw, rh = x_c.max() - x_c.min(), y_c.max() - y_c.min()
+        cx_map = rx + rw / 2
+        cy_map = ry + rh / 2
+
+        # Workspace rectangle on the map
         ax_map.add_patch(mpatches.Rectangle(
             (rx, ry), rw, rh,
             linewidth=0, facecolor=color, alpha=0.18, zorder=5,
-            label=f"WS {i}: {ws_label}",
         ))
         ax_map.add_patch(mpatches.Rectangle(
             (rx, ry), rw, rh,
             linewidth=2.0, edgecolor=color, facecolor="none",
             linestyle="--", zorder=6,
         ))
-        ax_map.text(rx + rw / 2, ry + rh / 2, str(i),
-                    color="white", fontsize=12, fontweight="bold",
-                    ha="center", va="center", zorder=7)
+        # Numbered circle at workspace center
+        ax_map.text(
+            cx_map, cy_map, str(i),
+            color="white", fontsize=12, fontweight="bold",
+            ha="center", va="center", zorder=7,
+            bbox=dict(
+                boxstyle="circle,pad=0.3",
+                facecolor=color, alpha=0.85,
+                edgecolor="#333333", linewidth=1.5,
+            ),
+        )
 
-    ax_map.legend(loc="upper right", fontsize=8, framealpha=0.8)
-    fig_map.tight_layout()
-
-    # ── Figure 3-D: una per ogni workspace ───────────────────────────────
-    print(f"  Interpolazione RBF per {len(WORKSPACE_CENTERS)} workspace "
-          f"({area_prev}×{area_prev} m)...")
-    for i, (ws_label, sub_i, x_c, y_c, color) in enumerate(workspace_data):
-        print(f"    WS {i} [{ws_label}]...", end=" ", flush=True)
-        xi, yi, zi = interpolate_surface(sub_i, x_c, y_c, grid_n=60)
+        # Interpolate 3-D surface for inset
+        print(f"    WS {i}...", end=" ", flush=True)
+        xi, yi, zi = interpolate_surface(sub_i, x_c, y_c, grid_n=50)
         print("ok")
 
-        valid = sub_i[~np.isnan(sub_i)]
+        valid  = sub_i[~np.isnan(sub_i)]
         vmin_i = float(np.percentile(valid, 1))  if valid.size else 0.0
         vmax_i = float(np.percentile(valid, 99)) if valid.size else 1.0
+        norm_z = (zi - vmin_i) / max(vmax_i - vmin_i, 1e-6)
 
-        fig3d = plt.figure(figsize=(7, 5))
-        ax3d  = fig3d.add_subplot(111, projection="3d")
+        # Dotted connecting line from workspace number to inset anchor.
+        # Added to ax_map so it renders before the 3-D insets (appears behind them).
+        anchor = inset_anchors[i]
+        con = ConnectionPatch(
+            xyA=(cx_map, cy_map),
+            xyB=anchor,
+            coordsA="data",
+            coordsB="figure fraction",
+            axesA=ax_map,
+            color=color, lw=1.5, linestyle=":", alpha=0.9,
+            clip_on=False, zorder=8,
+        )
+        ax_map.add_artist(con)
+
+        # 3-D inset axes overlaid on the map
+        ip = inset_pos[i]
+        ax3d = fig.add_axes(ip, projection="3d")
+        ax3d.patch.set_facecolor("#f0f0f0")
+        ax3d.patch.set_alpha(0.95)
         ax3d.plot_surface(
             xi, yi, zi,
-            facecolors=plt.get_cmap("plasma")(
-                (zi - vmin_i) / max(vmax_i - vmin_i, 1e-6)),
-            rcount=60, ccount=60, linewidth=0, antialiased=True, alpha=0.95,
+            facecolors=plt.get_cmap("plasma")(norm_z),
+            rcount=50, ccount=50, linewidth=0, antialiased=True, alpha=0.95,
         )
-        ax3d.set_xlabel("E [m UTM]", fontsize=8, labelpad=3)
-        ax3d.set_ylabel("N [m UTM]", fontsize=8, labelpad=3)
-        ax3d.set_zlabel("z [m]", fontsize=8, labelpad=3)
-        ax3d.set_title(f"Vista 3-D — Workspace {i}  [{ws_label}]",
-                       fontweight="bold", fontsize=10)
-        ax3d.tick_params(labelsize=7)
-        ax3d.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
-        ax3d.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
-        fig3d.tight_layout()
+        ax3d.set_axis_off()
 
-    print("\nChiudi tutte le finestre per avviare la simulazione...")
+    print("\nClose the window to start the simulation...")
     plt.show()
 
 
@@ -602,7 +676,7 @@ def main() -> None:
         print("\n[dry-run] Prime 10 combinazioni:")
         for i, (area, nd, vidx, noise, acc_sim, rc, ws) in enumerate(grid[:10], 1):
             ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
-            print(f"  {i:3d}: area={area}m  n={nd}  victim_idx={vidx}  "
+            print(f"  {i:3d}: area={area}m  n={nd}  victim_rep={vidx}  "
                   f"noise={noise:.0e}  acc_sim={acc_sim:.2f}  rc={rc}m  ws={ws_str}")
         if total > 10:
             print(f"  … ({total - 10} altre)")
@@ -649,23 +723,29 @@ def main() -> None:
 
         def _record(run_id: int, metrics, tb) -> None:
             nonlocal found_n, timeout_n, error_n
-            area, n_drones, _vidx, noise, acc_sim, rc, ws = grid[run_id - 1]
+            area, n_drones, _, noise, acc_sim, rc, ws = grid[run_id - 1]
             ws_r, ws_c = _ws_label(ws)
 
             if tb is not None:
                 error_n += 1
                 metrics = {
-                    "victim_x_m":       float("nan"),
-                    "victim_y_m":       float("nan"),
-                    "victim_dist_m":    float("nan"),
-                    "victim_depth_m":   float("nan"),
-                    "found":            False,
-                    "time_found_s":     float("nan"),
-                    "n_drones_stopped": 0,
-                    "pos_variance_m2":  float("nan"),
-                    "pos_std_m":        float("nan"),
-                    "est_error_2d_m":   float("nan"),
-                    "note":             f"ERRORE: {tb.splitlines()[-1]}",
+                    "victim_x_m":         float("nan"),
+                    "victim_y_m":         float("nan"),
+                    "victim_dist_m":      float("nan"),
+                    "victim_depth_m":     float("nan"),
+                    "found":              False,
+                    "time_found_s":       float("nan"),
+                    "n_drones_stopped":   0,
+                    "n_drones_tracked":   0,
+                    "pos_variance_m2":    float("nan"),
+                    "pos_std_m":          float("nan"),
+                    "est_error_2d_m":     float("nan"),
+                    "est_error_3d_m":     float("nan"),
+                    "est_depth_m":        float("nan"),
+                    "est_error_depth_m":     float("nan"),
+                    "dcgd_err_final_mean_m": float("nan"),
+                    "landing_err_mean_m":    float("nan"),
+                    "note":                  f"ERRORE: {tb.splitlines()[-1]}",
                 }
             elif metrics["found"]:
                 found_n += 1
