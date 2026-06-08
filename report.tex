@@ -35,8 +35,8 @@
 % ============================================================
 \begin{abstract}
 In avalanche rescue, survival probability drops sharply within the first 15 minutes of burial, making rapid victim localization critical. Deploying a coordinated drone fleet can drastically reduce search time compared to manual ARTVA sweeps, but requires solving path planning, source localization, and distributed coordination under strict real-time constraints.
-This report presents a fully distributed multi-drone system for ARTVA source localization with no central coordinator: each agent maintains only local state and communicates within a limited radio range. Each drone operates as a Finite State Machine cycling through \texttt{SEARCH}, \texttt{TRACK}, \texttt{STOP}, and \texttt{SUPPORT} states, with motion governed throughout by a Model Predictive Controller. In GPS-denied conditions, state estimation relies on IMCDL (Interim Master Decentralized Cooperative Localization), combining inter-drone UWB ranging and LiDAR altitude to limit odometric drift.
-Signal intensity thresholds drive state transitions: drones explore freely in \texttt{SEARCH}, converge toward the source via an Extremum Seeking controller in \texttt{TRACK}, then halt and recruit two support drones for triangulation via min-consensus. Source estimation uses Distributed Cooperative Gradient Descent with ATC diffusion.
+This report presents a fully distributed multi-drone system for ARTVA source localization with no central coordinator: each agent maintains only local state and communicates within a limited radio range. Each drone operates as a Finite State Machine cycling through \texttt{SEARCH}, \texttt{TRACK}, \texttt{STOP}, and \texttt{SUPPORT} states, with motion governed throughout by a Model Predictive Controller. In GPS-denied conditions, state estimation relies on IMDCL (Interim Master Decentralized Cooperative Localization), combining inter-drone UWB ranging and LiDAR altitude to limit odometric drift.
+Signal intensity thresholds drive state transitions: drones explore freely in \texttt{SEARCH}, converge toward the source via an Extremum Seeking controller in \texttt{TRACK}, then halt and recruit two support drones for triangulation via min-consensus. Source estimation uses Distributed Cooperative Gradient Descent with ATC diffusion. Once three drones are in \texttt{STOP}, they autonomously arrange into an equilateral triangle around the estimated source and sharpen the full 3-D estimate through in-loop DCGD refinement from the stationary formation.
 A parametric sweep of [XXXX] experiments across five alpine terrain patches, three fleet sizes ($N \in \{3,4,5\}$), three noise levels, and four communication radii achieves an overall mission success rate of [XX.X]\,\% with a median search time of [XX]\,s.
 \end{abstract}
 
@@ -90,8 +90,11 @@ integrating MPC, IMDCL, ES, and DCGD without any central coordinator;
 \textsc{Track}, \textsc{Stop}, \textsc{Support}—with automatic noise calibration
 and threshold scaling via average consensus; (iii)~a min-consensus partner
 selection protocol that identifies the $P=2$ nearest reachable drones for
-triangulation support in at most $K_{\max} = 10$ communication rounds; and
-(iv)~a systematic parametric sweep of [XXXX] experiments demonstrating [XX.X]\,\%
+triangulation support in at most $K_{\max} = 10$ communication rounds;
+(iv)~a distributed refinement phase in which drones self-organise into a
+$120°$ equilateral formation around the estimated source and execute in-loop DCGD
+refinement to sharpen the full 3-D estimate—all without any central supervisor; and
+(v)~a systematic parametric sweep of [XXXX] experiments demonstrating [XX.X]\,\%
 overall mission success and isolating the impact of fleet size, noise, communication
 radius, and burial depth.
 
@@ -370,7 +373,7 @@ For that purpose, the same drones cooperatively minimise:
     \sum_{(\mathbf{p},\tilde{s}) \in \mathcal{B}_i}
     \bigl(\tilde{s} - S(\mathbf{p}, \bm{\theta})\bigr)^2,
 \end{equation}
-where $\mathcal{B}_i$ is a sliding batch of $|\mathcal{B}_i| = 5$ measurements
+where $\mathcal{B}_i$ is a sliding batch of $|\mathcal{B}_i| = 10$ measurements
 and $\mathcal{T}$ is the set of active Track drones.  Each DCGD iteration
 consists of two steps.
 
@@ -405,19 +408,42 @@ enough to propagate consensus across the network within the communication
 radius $R_c$.  This implements the ATC diffusion
 strategy~\cite{chen2012diffusion}.
 
-\paragraph{Spatial diversity and support orbits.}
+\paragraph{Spatial diversity and support formation.}
 The accuracy of the cooperative source estimate depends critically on the
-\emph{spatial diversity} of the measurement set: if all Track drones
+\emph{spatial diversity} of the measurement set: if all drones
 converge to nearly the same position, their observations become highly
 correlated and DCGD effectively reduces to a single-agent estimator,
 leaving the nonlinear ARTVA field poorly identified.
-To counteract this, the two Support drones recruited via min-consensus are
-assigned circular orbits of opposite handedness around the Stop drone, one
-clockwise, one counter-clockwise, at the estimated source distance.
-This anti-phase orbit assignment guarantees that, at every instant, the three
-active drones span a wide angular sector around the source, maximising the
-geometric diversity of the measurement footprint and thereby accelerating
-DCGD convergence toward an accurate triangulation.
+To guarantee diversity, as soon as the first drone reaches \textsc{Stop}, all
+three drones---the Stop drone and its two recruited Support partners---are
+simultaneously assigned fixed waypoints at $120°$ mutual spacing on a circle
+of radius $r_c = 5\,$m around the current source estimate $\hat{\bm{\theta}}$,
+using an optimal assignment that minimises total displacement (exhaustive search
+over $3! = 6$ permutations).
+If a Support drone reaches its assigned waypoint without yet satisfying
+$S \geq \tau_{\rm stop}$, it iteratively moves to the midpoint between its
+current position and $\hat{\bm{\theta}}$, halving the remaining distance at
+each arrival; this guarantees eventual entry into the stop region regardless
+of the initial formation radius.
+The equilateral three-point formation maximises the angular span of the
+measurement footprint, providing the geometric diversity needed for accurate
+DCGD triangulation.
+
+\paragraph{ES-guided DCGD warm-start.}
+After one full ES excitation cycle ($T = 2\pi/\omega \approx 14\,$s), the cycle
+mean of the reference trajectory
+\begin{equation}
+  \bm{\theta}_i^{\rm init} = \frac{1}{T}\int_0^T \mathbf{r}_i(t)\,\mathrm{d}t
+  \label{eq:es_warmstart}
+\end{equation}
+converges to the source position as the dither centres over the
+source~\cite{azzollini2021es}.  Each drone independently uses this mean to
+reinitialise its local DCGD estimate $\bm{\theta}_i$, warm-starting the solver
+inside the basin of attraction of the true source.
+The procedure is fully distributed: a drone skips reinitialisation if its estimate
+has already moved more than $\delta_{\rm skip} = 3\,$m from the detection position,
+indicating that consensus from neighbouring drones has already provided a superior
+warm-start.
 
 
 
@@ -479,16 +505,19 @@ above $\sigma^* \approx 1.6{\times}10^{-6}$ the $5\hat{\sigma}$ arm takes
 over and $\mathrm{SNR}_{\rm det}$ is clamped at~$5$.
 
 \paragraph{Stop threshold (TRACK/SUPPORT $\to$ STOP).}
-Unlike the detection threshold, the stop condition is geometry-based and
-noise-independent:
+Unlike the detection threshold, the stop condition is purely geometric:
 \begin{equation}
   \tau_{\rm stop} = \frac{m}{R_{\rm found}^{3}} = 10^{-3},
   \qquad R_{\rm found} = 10\,\text{m}.
   \label{eq:tau_stop}
 \end{equation}
 A drone stops when its (filtered) signal exceeds the level expected at
-$10\,$m in 3-D from the source.  At the nominal $\sigma = 10^{-6}$ this
-corresponds to $\mathrm{SNR}_{\rm stop} = \tau_{\rm stop}/\hat{\sigma} = 10^{3}$.
+$10\,$m from the source in 3-D.  No noise-exceedance term is needed here:
+by the time a drone enters \textsc{Track}, it has already crossed
+$\tau_{\rm det}$, which acts as the upstream noise gate; the stop
+condition needs only to encode proximity.
+At the nominal $\sigma = 10^{-6}$ this gives
+$\mathrm{SNR}_{\rm stop} = \tau_{\rm stop}/\hat{\sigma} = 10^{3}$.
 
 \subsection{Mission State Machine}
 
@@ -496,30 +525,24 @@ Each drone executes a four-state finite automaton (Fig.~\ref{fig:fsm}).
 \textsc{Search}: interleaved boustrophedon coverage of the workspace.
 \textsc{Track}: ES drives a drifting circular reference toward the source;
 DCGD runs concurrently.
-\textsc{Stop}: strong-signal hovering; triggers partner selection and orbit
-assignment.
-\textsc{Support}: circular orbit (CW or CCW) around the Stop drone, providing
-spatial diversity for DCGD. In
-\textsc{Search} and \textsc{Support} state are, the reference points are updated on arrival ($\delta = 0.3\,$m);
-during \textsc{Track} the ES reference is updated every step.
+\textsc{Stop}: strong-signal condition; triggers min-consensus partner selection
+and immediate $120$° formation assignment for all three drones around
+$\hat{\bm{\theta}}$ (see Section~\ref{sec:solution}).
+\textsc{Support}: flies to an assigned $120$° waypoint; if $S < \tau_{\rm stop}$
+on arrival, iteratively halves the distance to $\hat{\bm{\theta}}$ until the
+stop threshold is met.
+In \textsc{Search} and \textsc{Support}, reference points are updated on arrival
+($\delta = 0.3\,$m); during \textsc{Track} the ES reference is updated every step.
+When $\geq 3$ drones reach \textsc{Stop}, the formation assignment is recomputed
+around the latest $\hat{\bm{\theta}}$ and the fleet enters the \emph{refinement
+phase} (Section~\ref{sec:refinement}).
 
 \paragraph{Lawnmower lane layout.}
-After noise calibration the detection range $r_{\rm det}=(m/\tau_{\rm det})^{1/3}$
-determines the lane spacing. The workspace of width $W$ is divided into
-\begin{align}
-  N_{\rm lanes} &= N_{\rm passes}\times N, \nonumber\\
-  N_{\rm passes} &= \max\!\Bigl(1,\,
-    \Bigl\lceil\tfrac{\lceil W/(2r_{\rm det})\rceil}{N}\Bigr\rceil\Bigr),
-  \label{eq:lanes}
-\end{align}
-equally spaced lanes ($\Delta x = W/N_{\rm lanes}$), using the minimum
-number of passes needed to guarantee $\Delta x \leq 2r_{\rm det}$, so that
-every workspace point lies within detection range of at least one lane centre.
-Drone $i$ is assigned lanes $i,\;i{+}N,\;i{+}2N,\ldots$ (stride-$N$
-interleaving), reversing the along-$y$ direction at each transition.
-Adjacent-lane assignment keeps neighbouring drones close together,
-maximising the probability that the communication graph remains connected
-throughout the search phase.
+Lane spacing is set to $\Delta x \leq 2r_{\rm det}$, guaranteeing that every
+workspace point falls within detection range of at least one lane centre.
+Lanes are assigned with stride $N$ (drone $i$ covers lanes
+$i,\,i{+}N,\,i{+}2N,\ldots$), so that active drones always sweep adjacent
+lanes, maximising communication graph connectivity throughout the search phase.
 
 \begin{figure}[t]
 \centering
@@ -555,7 +578,7 @@ throughout the search phase.
 \node[state, fill=blue!12, draw=blue!60!black]
   (SUPPORT) at (0,-3.2)
   {\bfseries\sffamily SUPPORT\\[3pt]
-   \footnotesize\sffamily circular orbit (CW/CCW)\\
+   \footnotesize\sffamily $120°$ target + halving\\
    \footnotesize\sffamily DCGD source estimation};
 
 %─────────────────────────── TRANSITIONS ───────────────────────────────────
@@ -602,11 +625,19 @@ throughout the search phase.
 \end{figure}
 
 \subsection{Refinement Phase}
+\label{sec:refinement}
 
-When $\geq 3$ drones reach \textsc{Stop}, DCGD executes an additional
-$K_{\rm refine} = 50$ iterations without drone movement.  This stationary
-refinement exploits the measurement batch accumulated near the source to
-sharpen the estimate before reporting.
+After the converge formation is reached, two sequential stages run entirely
+inside the main simulation loop at $dt = 0.1\,$s per step, matching realistic
+communication timing.
+
+\paragraph{DCGD refinement.}
+Once the formation is reached, DCGD runs for $K_{\rm refine} = 50$
+additional stationary steps, each executing one Adapt-Combine iteration
+on the accumulated measurement batch.
+The stationary equilateral formation provides sufficient geometric diversity
+to drive the planimetric error below $1$\,m and the depth error below
+$0.2$\,m (Section~\ref{sec:dcgd_results}).
 
 % ============================================================
 \section{Experimental Results}
@@ -634,17 +665,20 @@ at every step and waypoints remain close.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.8\columnwidth]{trajectories_top_view.png}
-  \caption{Top-down view of drone trajectories (solid: true, dashed: IMDCL
-           estimate).  The red star marks the victim position.}
-  \label{fig:mpc_traj}
-\end{figure}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.8\columnwidth]{trajectories_3d_view.png}
-  \caption{3D view of the mission trajectories over the terrain surface.}
-  \label{fig:mpc_traj3d}
+  \begin{minipage}[t]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\linewidth]{trajectories_top_view.png}
+    \caption{Top-down view of drone trajectories (solid: true, dashed:
+             estimated).  The red star marks the victim position.}
+    \label{fig:mpc_traj}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[t]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\linewidth]{trajectories_3d_view.png}
+    \caption{3D view of the mission trajectories over the terrain surface.}
+    \label{fig:mpc_traj3d}
+  \end{minipage}
 \end{figure}
 
 \begin{figure}[t]
@@ -689,46 +723,67 @@ reaching $13$\,m by the end of the mission.
 \end{figure}
 
 \subsubsection{DCGD Source Estimation}
-Fig.~\ref{fig:dcgd_conv} reports the DCGD source estimation error
-during the \textsc{Track} phase of the representative run ($N=4$).
-The estimate error decreases as the three active drones accumulate
-measurements around the source; the ATC Combine step accelerates
-convergence relative to isolated local gradient descent, confirming
-the benefit of the diffusion architecture.
+\label{sec:dcgd_results}
+Figs.~\ref{fig:dcgd_conv}--\ref{fig:final_pos} report DCGD convergence
+and the final formation for the representative run.
+The planimetric error (Fig.~\ref{fig:dcgd_conv}) is computed as
+$\|\hat{\bm{\theta}}_i + \hat{p}_i - p_i - \bm{\theta}^*\|_{xy}$,
+i.e.\ the source estimate expressed in each drone's biased local frame.
+This is the operationally relevant quantity: when drone~$i$ is commanded
+to land on $\hat{\bm{\theta}}_i$, it navigates relative to its own
+believed position $\hat{p}_i$, so the actual touchdown point is
+$\hat{\bm{\theta}}_i + \hat{p}_i - p_i$ in world coordinates.
+This error drops from $\sim\!30$\,m to below $1$\,m within $\sim\!25$\,s of
+\textsc{Track} entry, as the three active drones accumulate spatially
+diverse measurements around the source.
+The depth error (Fig.~\ref{fig:dcgd_depth}) follows a similar trend,
+reaching sub-metre accuracy before the stationary refinement phase
+(dashed line) and converging to below $0.2$\,m after it.
+
+Fig.~\ref{fig:final_pos} shows the final positions at mission end.
+The unfilled diamonds ($\hat{\bm{\theta}}_i + \hat{p}_i - p_i$) represent
+the actual world-coordinate point where drone~$i$ would touch down if
+commanded to land on its source estimate: since the drone believes it is
+at $\hat{p}_i$, it would fly to $\hat{\bm{\theta}}_i$ in its own frame,
+arriving at $\hat{\bm{\theta}}_i + \hat{p}_i - p_i$ in reality.
+The filled diamonds ($\hat{\bm{\theta}}_i$) show the same estimate as
+plotted on the drone's internal map, i.e.\ where it \emph{thinks} the
+source is.  Both sets of markers cluster tightly around the true victim
+position (red star), confirming that DCGD has converged to the correct location.
 
 \begin{figure}[t]
   \centering
-  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
-    \textit{[DCGD source estimation error vs.\ iteration]}
-  \vspace{1.5cm}}}
-  \caption{Source estimation error $\|\bm{\theta}_i - \bm{\theta}^*\|$
-           during the \textsc{Track} phase ($N=4$).
-           Dashed: local gradient descent only; solid: DCGD with ATC Combine.}
+  \includegraphics[width=0.85\columnwidth]{dcgd_convergence.png}
+  \caption{DCGD planimetric source estimation error for the three active
+           drones during the \textsc{Track} and refinement phases.
+           The dashed vertical line marks the start of stationary
+           refinement.}
   \label{fig:dcgd_conv}
 \end{figure}
 
-\subsubsection{Partner Selection}
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\columnwidth]{dcgd_depth_error.png}
+  \caption{DCGD burial depth estimation error. The stationary refinement
+           phase (dashed line) drives the error below $0.2$\,m.}
+  \label{fig:dcgd_depth}
+\end{figure}
 
-Table~\ref{tab:consensus} summarises min-consensus partner selection results for
-three representative graph topologies.  In all cases the algorithm converges in at
-most 4 rounds (well within $K_{\max} = 10$) and selects the geometrically correct
-partners.
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\columnwidth]{final_positions.png}
+  \caption{Final positions at mission end ($N=3$ active drones).
+           Solid triangles ($p_i$): true drone positions;
+           faded triangles ($\hat{p}_i$): IMDCL estimates.
+           Filled diamonds ($\hat{\bm{\theta}}_i$): DCGD source estimates
+           in world coordinates.
+           Unfilled diamonds ($\hat{\bm{\theta}}_i + \hat{p}_i - p_i$):
+           estimates in each drone's biased local frame.
+           Red star: true victim position $\bm{\theta}^*$.}
+  \label{fig:final_pos}
+\end{figure}
 
-\begin{table}[t]
-\centering
-\caption{Min-consensus partner selection: rounds to convergence and selected
-         partners for $N = 6$, $P = 2$.}
-\label{tab:consensus}
-\begin{tabular}{cccc}
-\toprule
-Scenario & $|\mathcal{C}(h)|$ & Rounds & Partners \\
-\midrule
-Dense graph   & 6 & 2 & $\{2, 3\}$ \\
-Sparse graph  & 5 & 4 & $\{3, 5\}$ \\
-Split network & 3 & 2 & $\{2, 3\}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+
 
 \subsection{Parametric Sweep}
 \label{sec:sweep}
@@ -858,7 +913,7 @@ distribution of search times for successful runs.
 Communication radius critically governs graph connectivity and partner selection
 reliability.  At $R_c = 25\,$m the network is frequently fragmented during the
 lawnmower phase, preventing the min-consensus algorithm from reaching the $P = 2$
-required partners and leaving Track drones without support orbits.  At
+required partners and leaving the Stop drone without a complete $120°$ formation.  At
 $R_c = 120\,$m success reaches [XX.X]\,\%.  Fig.~\ref{fig:comm_radius} shows the
 monotonic improvement with $R_c$ for all fleet sizes.
 
@@ -910,7 +965,8 @@ Fig.~\ref{fig:cdf} shows the empirical CDF of search time for each fleet size.
 
 This paper presented a complete distributed multi-drone system for ARTVA victim
 localisation, integrating MPC path-following, IMDCL cooperative localisation, ES
-source tracking, DCGD source estimation, and min-consensus partner selection.
+source tracking, DCGD source estimation, min-consensus partner selection, and
+and distributed in-loop DCGD refinement from a stationary equilateral formation.
 All components operate with only local state and within a limited communication
 radius, requiring no central coordinator.  Raw measurements never leave the drone:
 only compact event messages are exchanged.
@@ -924,15 +980,14 @@ critically governs connectivity and partner selection reliability.  ARTVA noise
 has the strongest negative impact, as it shrinks the ES convergence window.
 
 Key limitations are: (i)~the 2-D localisation error ($\sim[XX]\,$m median) driven
-by burial-depth ambiguity and the ES spiral stop condition; (ii)~sensitivity of
-ES convergence to SNR at the detection boundary; and (iii)~the single buried
-source assumption.
+by the ES spiral stop condition and IMDCL odometric drift; (ii)~sensitivity of ES
+convergence to SNR at the detection boundary; and (iii)~the single buried source
+assumption.
 
 Future directions include multi-source extension via spatial clustering of
-measurement batches, tighter 3-D localisation by fusing DCGD with bearing
-information from multiple orbit drones, replacement of finite-difference gradients
-with analytic Jacobians of \eqref{eq:artva}, and experimental validation on
-physical drone platforms over real snowpack.
+measurement batches, replacement of finite-difference gradients with analytic
+Jacobians of \eqref{eq:artva}, and experimental validation on physical drone
+platforms over real snowpack.
 
 % ============================================================
 \begin{thebibliography}{9}

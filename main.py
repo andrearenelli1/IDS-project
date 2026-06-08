@@ -38,9 +38,10 @@ from config import (
 from terrain import build_terrain
 from artva import ARTVASource
 from simulation import build_agents, simulate
-from visualization import (plot_mission, plot_mpc_trajectories, plot_mpc_trajectories_3d,
+from visualization import (plot_mpc_trajectories, plot_mpc_trajectories_3d,
                            plot_mpc_inputs, plot_mpc_altitude, plot_imdcl_error,
-                           plot_dcgd_convergence, plot_dcgd_relative_error, animate_mission)
+                           plot_artva_signal, plot_dcgd_convergence, plot_dcgd_depth_error,
+                           plot_final_positions, animate_mission)
 
 import matplotlib.pyplot as plt
 
@@ -121,7 +122,7 @@ def main() -> None:
 
     # — Costruzione ambiente —
     print("\nLettura e interpolazione DEM...")
-    terrain_obj, x_coords, y_coords, sub_dem, transform = build_terrain(center_frac)
+    terrain_obj, _x_coords, _y_coords, _sub_dem, _transform = build_terrain(center_frac)
     print(f"  Workspace: x=[{terrain_obj.x_min:.0f}, {terrain_obj.x_max:.0f}]  "
           f"y=[{terrain_obj.y_min:.0f}, {terrain_obj.y_max:.0f}] m  "
           f"(UTM origine: E≈{terrain_obj.utm_origin[0]:.0f}, N≈{terrain_obj.utm_origin[1]:.0f})")
@@ -175,14 +176,15 @@ def main() -> None:
 
     # — Plot risultati —
     figs = {
-        "mission":               plot_mission(terrain_obj, artva, agents, x_coords, y_coords, sub_dem, TRACK_STOP_THR=track_stop_thr, ARTVA_DETECT_THR=artva_detect_thr),
         "trajectories_top_view": plot_mpc_trajectories(terrain_obj, agents, artva),
         "trajectories_3d_view":  plot_mpc_trajectories_3d(terrain_obj, agents, artva),
         "mpc_ci_vp":             plot_mpc_inputs(agents),
         "altitude_agl":          plot_mpc_altitude(terrain_obj, agents),
         "imdcl_error":           plot_imdcl_error(agents),
+        "artva_signal":          plot_artva_signal(agents, artva_detect_thr, track_stop_thr),
         "dcgd_convergence":      plot_dcgd_convergence(agents, artva),
-        "dcgd_relative_error":   plot_dcgd_relative_error(agents, artva),
+        "dcgd_depth_error":      plot_dcgd_depth_error(agents, artva, terrain_obj),
+        "final_positions":       plot_final_positions(terrain_obj, artva, agents),
     }
 
     if args.save_figs:

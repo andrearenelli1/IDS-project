@@ -40,7 +40,6 @@ from config import (
     AGL_HEIGHT, DT_SIM, N_MPC, DT_MPC, A_MAX, V_MAX,
     ARTVA_DETECT_THR, TRACK_STOP_THR, ARTVA_MOMENT,
     IMDCL_R_MEAS_STD,
-    TRACK_STEP_M,
     COLORS, BG_DARK,
 )
 
@@ -63,6 +62,16 @@ _LATEX_RC: dict = {
     "legend.fontsize": 12,
     "xtick.labelsize": 12,
     "ytick.labelsize": 12,
+}
+
+_LATEX_RC_2X: dict = {
+    **_LATEX_RC,
+    "font.size":       22,
+    "axes.labelsize":  22,
+    "axes.titlesize":  26,
+    "legend.fontsize": 20,
+    "xtick.labelsize": 20,
+    "ytick.labelsize": 20,
 }
 
 
@@ -376,8 +385,7 @@ def plot_mission(
     fig.suptitle(
         f"Missione valanga · {len(agents)} droni · "
         f"AGL={AGL_HEIGHT} m · N_MPC={N_MPC} · dt={DT_SIM} s · "
-        f"IMDCL (Rc={_cfg.IMDCL_COMM_RADIUS:.0f} m, σ={IMDCL_R_MEAS_STD} m) · "
-        f"TRACK step={TRACK_STEP_M} m",
+        f"IMDCL (Rc={_cfg.IMDCL_COMM_RADIUS:.0f} m, σ={IMDCL_R_MEAS_STD} m)",
         fontsize=11, fontweight="bold",
     )
     fig.tight_layout()
@@ -400,7 +408,7 @@ def plot_mpc_trajectories(
 ) -> plt.Figure:
     """Traiettorie 2D (piano XY) viste dall'alto: reale (piena) ed IMDCL stimata (tratteggiata)."""
     drone_ids = list(agents.keys())
-    with plt.rc_context(_LATEX_RC):
+    with plt.rc_context(_LATEX_RC_2X):
         fig, ax = plt.subplots(figsize=(7, 6))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
@@ -440,21 +448,23 @@ def plot_mpc_trajectories(
         ax.plot(*artva.position[:2], "*", color="crimson", ms=14,
                 mec="black", mew=0.5, zorder=9)
 
-        ax.set_xlim(terrain.x_min, terrain.x_max)
-        ax.set_ylim(terrain.y_min, terrain.y_max)
-        ax.set_xlabel(r"$x$ [m]")
-        ax.set_ylabel(r"$y$ [m]")
-        ax.set_title(r"MPC Trajectories (top view)", fontweight="bold")
+        cx = (terrain.x_min + terrain.x_max) / 2.0
+        cy = (terrain.y_min + terrain.y_max) / 2.0
+        ax.set_xlim(cx - 100, cx + 100)
+        ax.set_ylim(cy - 100, cy + 100)
+        ax.set_xlabel(r"$x$ [m]", fontsize=17)
+        ax.set_ylabel(r"$y$ [m]", fontsize=17)
+        ax.set_title(r"Trajectories - Top view", fontweight="bold")
         ax.set_aspect("equal", adjustable="box")
 
         handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
                    for i in drone_ids]
         handles += [
             plt.Line2D([0], [0], color="gray", lw=1.5, ls="-",  label="True trajectory"),
-            plt.Line2D([0], [0], color="gray", lw=1.0, ls="--", label="IMDCL estimate"),
+            plt.Line2D([0], [0], color="gray", lw=1.0, ls="--", label="Estimated trajectory"),
             plt.Line2D([0], [0], marker="*",   color="crimson", ms=10, lw=0, label="Victim"),
         ]
-        ax.legend(handles=handles, loc="best", framealpha=0.85)
+        ax.legend(handles=handles, loc="best", framealpha=0.85, fontsize=10)
         fig.tight_layout()
     return fig
 
@@ -473,12 +483,12 @@ def plot_mpc_trajectories_3d(
     X3, Y3 = np.meshgrid(xs_3d, ys_3d)
     Z3 = terrain.z(X3.ravel(), Y3.ravel()).reshape(X3.shape)
 
-    with plt.rc_context(_LATEX_RC):
+    with plt.rc_context(_LATEX_RC_2X):
         fig = plt.figure(figsize=(7, 6))
         fig.patch.set_facecolor("#ffffff")
         ax = fig.add_subplot(111, projection="3d")
         ax.set_facecolor("#f8f8f8")
-        ax.tick_params(axis="both", labelsize=12)
+        ax.tick_params(axis="both", labelsize=20)
 
         ax.plot_surface(X3, Y3, Z3,
                         cmap="copper", alpha=0.75,
@@ -511,21 +521,12 @@ def plot_mpc_trajectories_3d(
                    zorder=9, edgecolors="black", linewidths=0.4, label="Victim")
 
         ax.view_init(elev=25, azim=225)
-        ax.set_xlabel(r"$x$ [m]", labelpad=6)
-        ax.set_ylabel(r"$y$ [m]", labelpad=6)
-        ax.set_zlabel(r"$z$ [m]", labelpad=6)
+        ax.set_xlabel(r"$x$ [m]", labelpad=6, fontsize=17)
+        ax.set_ylabel(r"$y$ [m]", labelpad=6, fontsize=17)
+        ax.set_zlabel(r"$z$ [m]", labelpad=6, fontsize=17)
         ax.set_xlim(terrain.x_min, terrain.x_max)
         ax.set_ylim(terrain.y_min, terrain.y_max)
-        ax.set_title(r"Trajectories - 3D view", fontweight="bold", fontsize=18)
-
-        handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
-                   for i in drone_ids]
-        handles += [
-            plt.Line2D([0], [0], color="gray", lw=1.6, ls="-",  label="True trajectory"),
-            plt.Line2D([0], [0], color="gray", lw=1.0, ls="--", label="IMDCL estimate"),
-            plt.Line2D([0], [0], marker="*", color="crimson", ms=10, lw=0, label="Victim"),
-        ]
-        ax.legend(handles=handles, loc="upper left", framealpha=0.85)
+        ax.set_title(r"Trajectories - 3D view", fontweight="bold")
         fig.tight_layout()
     return fig
 
@@ -651,29 +652,65 @@ def plot_imdcl_error(
     return fig
 
 
-def plot_dcgd_relative_error(
-    agents: Dict[int, DroneAgent],
-    artva:  ARTVASource,
+def plot_artva_signal(
+    agents:           Dict[int, DroneAgent],
+    artva_detect_thr: float = ARTVA_DETECT_THR,
+    track_stop_thr:   float = TRACK_STOP_THR,
+) -> plt.Figure:
+    """Segnale ARTVA filtrato nel tempo per ogni drone, con soglie DETECT e STOP."""
+    drone_ids = list(agents.keys())
+
+    with plt.rc_context(_LATEX_RC):
+        fig, ax = plt.subplots(figsize=(8, 4))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax)
+
+        for i in drone_ids:
+            ag  = agents[i]
+            sig = np.array([s for _, s in ag.signal_log])
+            t   = np.arange(len(sig)) * DT_SIM
+            ax.plot(t, sig, color=COLORS.get(i, "#aaaaaa"),
+                    lw=1.4, alpha=0.90, label=f"Drone {i}")
+
+        ax.axhline(artva_detect_thr, color="#2a9d8f", lw=1.2, ls="--",
+                   label=r"Detect threshold")
+        ax.axhline(track_stop_thr,   color="#e63946", lw=1.2, ls="--",
+                   label=r"Stop threshold")
+
+        ax.set_yscale("log")
+        ax.set_xlabel(r"Time [s]", fontsize=15)
+        ax.set_ylabel(r"ARTVA signal (filtered) [a.u.]", fontsize=15)
+        ax.set_title(r"ARTVA Signal over Time", fontweight="bold", fontsize=18)
+        ax.legend(loc="upper left", framealpha=0.85)
+        fig.tight_layout()
+    return fig
+
+
+def plot_dcgd_depth_error(
+    agents:  Dict[int, DroneAgent],
+    artva:   ARTVASource,
+    terrain: "Terrain",
 ) -> plt.Figure:
     """
-    Errore di stima DCGD nel riferimento del drone.
+    Errore di stima della profondità di sepoltura nel tempo.
 
-    Per ogni step loggato: errore = ‖(θ̂_i − x̂_i) − (θ* − x_i)‖
-      θ̂_i = source_est (stima DCGD)
-      x̂_i = posizione stimata IMDCL
-      x_i  = posizione reale
-      θ*   = posizione vera della sorgente
-    Questo rimuove il drift assoluto IMDCL dalla valutazione del DCGD.
+    Durante TRACK/SUPPORT/STOP: source_est[2] è inizializzato a z_terrain
+    (superficie) — l'errore parte quindi pari alla profondità reale e rimane
+    alto fino al depth_refine finale.
+    Un punto finale mostra il valore post-refine.
     """
-    drone_ids = list(agents.keys())
-    true_src  = artva.position[:3]
+    drone_ids  = list(agents.keys())
+    true_depth = (
+        terrain.z(artva.position[0], artva.position[1]) - artva.position[2]
+    )
 
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(7, 4))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
-        any_data = False
+        any_data      = False
+        t_refine_start = None
         for i in drone_ids:
             ag  = agents[i]
             log = ag.source_est_log
@@ -682,33 +719,31 @@ def plot_dcgd_relative_error(
             any_data = True
             c = COLORS.get(i, "#aaaaaa")
 
-            traj = np.array(ag.history)
-            est  = np.array(ag.est_history)
-
-            times = []
-            errs  = []
+            times, errs = [], []
             for (step, src_est) in log:
-                if step >= len(traj) or step >= len(est):
-                    continue
-                x_true = traj[step, :3]
-                x_est  = est[step,  :3]
-                v_estimated = src_est  - x_est   # vettore stimato drone→sorgente
-                v_true      = true_src - x_true  # vettore vero  drone→sorgente
-                errs.append(np.linalg.norm(v_estimated - v_true))
+                est_depth = terrain.z(src_est[0], src_est[1]) - src_est[2]
+                errs.append(abs(est_depth - true_depth))
                 times.append(step * DT_SIM)
-
             ax.plot(times, errs, color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
+
+            if ag.dcgd_refine_step is not None:
+                t_r = ag.dcgd_refine_step * DT_SIM
+                if t_refine_start is None or t_r < t_refine_start:
+                    t_refine_start = t_r
+
+        if t_refine_start is not None:
+            ax.axvline(t_refine_start, color="#888888", lw=1.8, ls="--",
+                       label="stationary refinement")
 
         if not any_data:
             ax.text(0.5, 0.5, "No DCGD data (TRACK phase not reached)",
                     ha="center", va="center", transform=ax.transAxes)
 
         ax.set_xlabel(r"Time [s]", fontsize=15)
-        ax.set_ylabel(r"Relative source error [m]", fontsize=15)
-        ax.set_title(r"DCGD Source Estimation Error (drone-centric frame)",
-                     fontweight="bold", fontsize=18)
+        ax.set_ylabel(r"Depth estimation error [m]", fontsize=15)
+        ax.set_title(r"Burial Depth Estimation Error", fontweight="bold", fontsize=18)
         ax.set_ylim(bottom=0)
-        ax.legend(loc="upper right", framealpha=0.85)
+        ax.legend(loc="upper center", framealpha=0.85)
         fig.tight_layout()
     return fig
 
@@ -717,37 +752,149 @@ def plot_dcgd_convergence(
     agents: Dict[int, DroneAgent],
     artva:  ARTVASource,
 ) -> plt.Figure:
-    """Errore stima sorgente DCGD nel tempo (fase TRACK/SUPPORT/STOP)."""
+    """Errore planimetrico (xy) stima sorgente DCGD nel tempo.
+    Il raffinamento DCGD è integrato nel loop: il log copre l'intera evoluzione."""
     drone_ids = list(agents.keys())
-    true_pos  = artva.position[:3]
+    true_xy   = artva.position[:2]
 
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(7, 4))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
-        any_data = False
+        any_data       = False
+        t_refine_start = None
         for i in drone_ids:
             ag  = agents[i]
             log = ag.source_est_log
             if not log:
                 continue
             any_data = True
+            c     = COLORS.get(i, "#aaaaaa")
             steps = np.array([e[0] for e in log]) * DT_SIM
-            errs  = np.array([np.linalg.norm(e[1] - true_pos) for e in log])
-            ax.plot(steps, errs, color=COLORS.get(i, "#aaaaaa"),
-                    lw=1.4, alpha=0.90, label=f"Drone {i}")
+            errs  = np.array([np.linalg.norm(e[1][:2] - true_xy) for e in log])
+            ax.plot(steps, errs, color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
+
+            if ag.dcgd_refine_step is not None:
+                t_r = ag.dcgd_refine_step * DT_SIM
+                if t_refine_start is None or t_r < t_refine_start:
+                    t_refine_start = t_r
+
+        if t_refine_start is not None:
+            ax.axvline(t_refine_start, color="#888888", lw=1.8, ls="--",
+                       label="stationary refinement")
 
         if not any_data:
             ax.text(0.5, 0.5, "No DCGD data (TRACK phase not reached)",
                     ha="center", va="center", transform=ax.transAxes)
 
         ax.set_xlabel(r"Time [s]", fontsize=15)
-        ax.set_ylabel(r"Source estimation error [m]", fontsize=15)
-        ax.set_title(r"DCGD Source Estimation Convergence",
+        ax.set_ylabel(r"Planimetric error [m]", fontsize=15)
+        ax.set_title(r"DCGD Source Estimation Convergence (xy)",
                      fontweight="bold", fontsize=18)
         ax.set_ylim(bottom=0)
-        ax.legend(loc="upper right", framealpha=0.85)
+        ax.legend(loc="upper center", framealpha=0.85)
+        fig.tight_layout()
+    return fig
+
+
+# ============================================================================
+# Plot posizioni finali in coordinate UTM assolute
+# ============================================================================
+
+def plot_final_positions(
+    terrain: Terrain,
+    artva:   ARTVASource,
+    agents:  Dict[int, DroneAgent],
+) -> plt.Figure:
+    """
+    Mappa 2D in coordinate workspace (locali):
+      - posizione reale finale di ogni drone coinvolto nella triangolazione
+      - posizione stimata IMDCL finale (con drift)
+      - sorgente reale e stima DCGD
+    Extent calcolato sui soli punti mostrati + margine.
+    """
+    # — Solo i droni coinvolti nella triangolazione (STOP o SUPPORT) —
+    triangulation_ids = [
+        i for i, ag in agents.items()
+        if ag.state in (DroneState.STOP, DroneState.SUPPORT)
+    ]
+    if not triangulation_ids:
+        triangulation_ids = list(agents.keys())
+
+    finals_real = {i: agents[i].history[-1][:2]    for i in triangulation_ids}
+    finals_est  = {i: agents[i].est_history[-1][:2] for i in triangulation_ids}
+
+    victim_xy = artva.position[:2]
+
+    # Stima DCGD: media delle source_est dei droni di triangolazione
+    dcgd_ests = [
+        agents[i].source_est[:2] for i in triangulation_ids
+        if agents[i].source_est is not None
+    ]
+    dcgd_xy = np.mean(dcgd_ests, axis=0) if dcgd_ests else victim_xy.copy()
+
+    # — Bounds stretti (include anche le stime driftate) —
+    drifted_pts = [
+        agents[i].source_est[:2] + (agents[i].x_est[:2] - agents[i].x[:2])
+        for i in triangulation_ids if agents[i].source_est is not None
+    ]
+    all_pts = np.vstack(
+        list(finals_real.values()) + list(finals_est.values())
+        + [victim_xy, dcgd_xy] + (drifted_pts if drifted_pts else [dcgd_xy])
+    )
+    span   = max(all_pts[:, 0].max() - all_pts[:, 0].min(),
+                 all_pts[:, 1].max() - all_pts[:, 1].min())
+    margin = max(8.0, span * 0.30)
+    xlim   = (all_pts[:, 0].min() - margin, all_pts[:, 0].max() + margin)
+    ylim   = (all_pts[:, 1].min() - margin, all_pts[:, 1].max() + margin)
+
+    with plt.rc_context(_LATEX_RC):
+        fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax)
+
+        for i in triangulation_ids:
+            c  = COLORS.get(i, "#aaaaaa")
+            ag = agents[i]
+            # posizione reale drone
+            ax.plot(*finals_real[i], "^", color=c, ms=11, mec="white", mew=0.9,
+                    zorder=7, label=f"$p_{{{i}}}$")
+            # posizione stimata drone
+            ax.plot(*finals_est[i], "^", color=c, ms=11, mec="black", mew=1.0,
+                    alpha=0.55, zorder=6, label=f"$\\hat{{p}}_{{{i}}}$")
+            # segmento drift IMDCL
+            ax.plot(
+                [finals_real[i][0], finals_est[i][0]],
+                [finals_real[i][1], finals_est[i][1]],
+                color=c, lw=0.8, ls=":", alpha=0.6, zorder=5,
+            )
+            if ag.source_est is not None:
+                src = ag.source_est[:2]
+                # stima DCGD in coordinate WS reali
+                ax.plot(*src, "D", color=c, ms=9, mec="black", mew=1.0,
+                        alpha=0.70, zorder=6, label=f"$\\hat{{\\theta}}_{{{i}}}$")
+                drift = ag.x_est[:2] - ag.x[:2]
+                src_drifted = src + drift
+                ax.plot(*src_drifted, "D", color=c, ms=9,
+                        mfc="none", mec=c, mew=1.5, zorder=6,
+                        label=f"$\\hat{{\\theta}}_{{{i}}} + \\hat{{p}}_{{{i}}} - p_{{{i}}}$")
+                ax.plot(
+                    [src[0], src_drifted[0]], [src[1], src_drifted[1]],
+                    color=c, lw=0.7, ls="--", alpha=0.5, zorder=5,
+                )
+
+        # Sorgente reale
+        ax.plot(*victim_xy, "*", color="crimson", ms=16,
+                mec="black", mew=0.6, zorder=9, label=r"$\theta$")
+
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.set_xlabel(r"$x$ [m]")
+        ax.set_ylabel(r"$y$ [m]")
+        ax.set_title(r"Final positions", fontweight="bold")
+        ax.set_aspect("equal", adjustable="box")
+        ax.legend(loc="best", framealpha=0.85, fontsize=9)
         fig.tight_layout()
     return fig
 
