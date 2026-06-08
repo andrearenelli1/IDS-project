@@ -33,10 +33,11 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from artva import ARTVASource
 from terrain import Terrain
 from drone_agent import DroneAgent, DroneState
+import config as _cfg
 from config import (
     AGL_HEIGHT, DT_SIM, N_MPC, DT_MPC, A_MAX, V_MAX,
     ARTVA_DETECT_THR, TRACK_STOP_THR, ARTVA_MOMENT,
-    IMDCL_COMM_RADIUS, IMDCL_R_MEAS_STD,
+    IMDCL_R_MEAS_STD,
     TRACK_STEP_M,
     COLORS, BG_DARK,
 )
@@ -48,6 +49,19 @@ _BG_COLOR   = BG_DARK
 _GRID_COLOR = "#1e2730"
 _TEXT_COLOR = "#c9d1d9"
 _TRAIL_LEN  = 50
+
+# RC params per i plot MPC — Computer Modern via LaTeX
+_LATEX_RC: dict = {
+    "text.usetex":     True,
+    "font.family":     "serif",
+    "font.serif":      ["Computer Modern Roman"],
+    "font.size":       13,
+    "axes.labelsize":  13,
+    "axes.titlesize":  15,
+    "legend.fontsize": 12,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+}
 
 
 # ============================================================================
@@ -360,7 +374,7 @@ def plot_mission(
     fig.suptitle(
         f"Missione valanga · {len(agents)} droni · "
         f"AGL={AGL_HEIGHT} m · N_MPC={N_MPC} · dt={DT_SIM} s · "
-        f"IMDCL (Rc={IMDCL_COMM_RADIUS:.0f} m, σ={IMDCL_R_MEAS_STD} m) · "
+        f"IMDCL (Rc={_cfg.IMDCL_COMM_RADIUS:.0f} m, σ={IMDCL_R_MEAS_STD} m) · "
         f"TRACK step={TRACK_STEP_M} m",
         fontsize=11, fontweight="bold",
     )
@@ -369,123 +383,269 @@ def plot_mission(
 
 
 # ============================================================================
-# MPC path-following performance (main.py)
+# MPC path-following performance — 3 figure separate (main.py)
 # ============================================================================
 
-def plot_mpc_performance(
+def _mpc_style(ax: plt.Axes) -> None:
+    ax.set_facecolor("#f8f8f8")
+    ax.grid(True, ls=":", alpha=0.5, color="#cccccc")
+
+
+def plot_mpc_trajectories(
+    terrain: Terrain,
+    agents:  Dict[int, DroneAgent],
+    artva:   ARTVASource,
+) -> plt.Figure:
+    """Traiettorie 2D (piano XY) viste dall'alto: reale (piena) ed IMDCL stimata (tratteggiata)."""
+    drone_ids = list(agents.keys())
+    with plt.rc_context(_LATEX_RC):
+        fig, ax = plt.subplots(figsize=(7, 6))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax)
+
+        for i in drone_ids:
+            ag        = agents[i]
+            c         = COLORS.get(i, "#aaaaaa")
+            traj      = np.array(ag.history)       # (T,6) reale
+            est       = np.array(ag.est_history)   # (T,6) stimata IMDCL
+            state_seq = _reconstruct_state_sequence(ag)
+            n         = min(len(traj), len(state_seq))
+            n_est     = min(len(est),  n)
+
+            s_idx = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
+            t_idx = [k for k in range(n) if state_seq[k] in (DroneState.TRACK, DroneState.SUPPORT)]
+            p_idx = [k for k in range(n) if state_seq[k] == DroneState.STOP]
+
+            # ── traiettoria reale ──
+            if s_idx:
+                ax.plot(traj[s_idx, 0], traj[s_idx, 1],
+                        color=c, lw=1.5, alpha=0.85, ls="-")
+            if t_idx:
+                ax.plot(traj[t_idx, 0], traj[t_idx, 1],
+                        color=c, lw=2.0, alpha=0.90, ls="-")
+            if p_idx:
+                ax.plot(traj[p_idx, 0], traj[p_idx, 1],
+                        color=c, lw=1.5, alpha=0.60, ls="-")
+
+            # ── traiettoria stimata IMDCL ──
+            if n_est > 0:
+                ax.plot(est[:n_est, 0], est[:n_est, 1],
+                        color=c, lw=1.0, alpha=0.55, ls="--")
+
+            ax.plot(*traj[0,  :2], "o", color=c, ms=7, mec="white", mew=1.0, zorder=7)
+            ax.plot(*traj[-1, :2], "^", color=c, ms=8, mec="white", mew=0.8, zorder=7)
+
+        ax.plot(*artva.position[:2], "*", color="crimson", ms=14,
+                mec="black", mew=0.5, zorder=9)
+
+        ax.set_xlim(terrain.x_min, terrain.x_max)
+        ax.set_ylim(terrain.y_min, terrain.y_max)
+        ax.set_xlabel(r"$x$ [m]")
+        ax.set_ylabel(r"$y$ [m]")
+        ax.set_title(r"MPC Trajectories (top view)", fontweight="bold")
+        ax.set_aspect("equal", adjustable="box")
+
+        handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
+                   for i in drone_ids]
+        handles += [
+            plt.Line2D([0], [0], color="gray", lw=1.5, ls="-",  label="True trajectory"),
+            plt.Line2D([0], [0], color="gray", lw=1.0, ls="--", label="IMDCL estimate"),
+            plt.Line2D([0], [0], marker="*",   color="crimson", ms=10, lw=0, label="Victim"),
+        ]
+        ax.legend(handles=handles, loc="best", framealpha=0.85)
+        fig.tight_layout()
+    return fig
+
+
+def plot_mpc_trajectories_3d(
+    terrain: Terrain,
+    agents:  Dict[int, DroneAgent],
+    artva:   ARTVASource,
+    res:     int = 60,
+) -> plt.Figure:
+    """Vista 3D con superficie del terreno, traiettorie reali e stimate IMDCL."""
+    drone_ids = list(agents.keys())
+
+    xs_3d = np.linspace(terrain.x_min, terrain.x_max, res)
+    ys_3d = np.linspace(terrain.y_min, terrain.y_max, res)
+    X3, Y3 = np.meshgrid(xs_3d, ys_3d)
+    Z3 = terrain.z(X3.ravel(), Y3.ravel()).reshape(X3.shape)
+
+    with plt.rc_context(_LATEX_RC):
+        fig = plt.figure(figsize=(7, 6))
+        fig.patch.set_facecolor("#ffffff")
+        ax = fig.add_subplot(111, projection="3d")
+        ax.set_facecolor("#f8f8f8")
+        ax.tick_params(axis="both", labelsize=12)
+
+        ax.plot_surface(X3, Y3, Z3,
+                        cmap="copper", alpha=0.75,
+                        rcount=res, ccount=res, linewidth=0,
+                        antialiased=True)
+
+        for i in drone_ids:
+            ag    = agents[i]
+            c     = COLORS.get(i, "#aaaaaa")
+            traj  = np.array(ag.history)
+            est   = np.array(ag.est_history)
+            n_est = min(len(est), len(traj))
+
+            ax.plot(traj[:, 0], traj[:, 1], traj[:, 2],
+                    color="black", lw=3.5, alpha=1.0, ls="-", zorder=5)
+            ax.plot(traj[:, 0], traj[:, 1], traj[:, 2],
+                    color=c, lw=1.8, alpha=1.0, ls="-", zorder=6, label=f"Drone {i}")
+            if n_est > 0:
+                ax.plot(est[:n_est, 0], est[:n_est, 1], est[:n_est, 2],
+                        color="black", lw=2.5, alpha=1.0, ls="--", zorder=5)
+                ax.plot(est[:n_est, 0], est[:n_est, 1], est[:n_est, 2],
+                        color=c, lw=1.0, alpha=1.0, ls="--", zorder=6)
+
+            ax.scatter(*traj[0,  :3], color=c, s=35, zorder=6,
+                       edgecolors="white", linewidths=0.5)
+            ax.scatter(*traj[-1, :3], marker="^", color=c, s=55, zorder=6,
+                       edgecolors="white", linewidths=0.5)
+
+        ax.scatter(*artva.position, marker="*", color="crimson", s=220,
+                   zorder=9, edgecolors="black", linewidths=0.4, label="Victim")
+
+        ax.view_init(elev=25, azim=225)
+        ax.set_xlabel(r"$x$ [m]", labelpad=6)
+        ax.set_ylabel(r"$y$ [m]", labelpad=6)
+        ax.set_zlabel(r"$z$ [m]", labelpad=6)
+        ax.set_xlim(terrain.x_min, terrain.x_max)
+        ax.set_ylim(terrain.y_min, terrain.y_max)
+        ax.set_title(r"Trajectories - 3D view", fontweight="bold", fontsize=18)
+
+        handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
+                   for i in drone_ids]
+        handles += [
+            plt.Line2D([0], [0], color="gray", lw=1.6, ls="-",  label="True trajectory"),
+            plt.Line2D([0], [0], color="gray", lw=1.0, ls="--", label="IMDCL estimate"),
+            plt.Line2D([0], [0], marker="*", color="crimson", ms=10, lw=0, label="Victim"),
+        ]
+        ax.legend(handles=handles, loc="upper left", framealpha=0.85)
+        fig.tight_layout()
+    return fig
+
+
+def plot_mpc_inputs(
+    agents: Dict[int, DroneAgent],
+) -> plt.Figure:
+    """Accelerazioni (top) e velocità (bottom) nel tempo con rispettivi limiti."""
+    drone_ids = list(agents.keys())
+    comp_ls   = ["-", "--", ":"]
+    comp_col  = ["#e63946", "#2a9d8f", "#f4a261"]
+
+    with plt.rc_context(_LATEX_RC):
+        fig, (ax_a, ax_v) = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+        fig.patch.set_facecolor("#ffffff")
+        for ax in (ax_a, ax_v):
+            _mpc_style(ax)
+
+        for i in drone_ids:
+            ag = agents[i]
+            if not ag.input_log:
+                continue
+            inputs = np.array(ag.input_log)
+            traj   = np.array(ag.history)
+            T      = min(len(inputs), len(traj))
+            time   = np.arange(T) * DT_SIM
+
+            for j, lbl in enumerate([r"$a_x$", r"$a_y$", r"$a_z$"]):
+                ax_a.plot(time, inputs[:T, j], color=comp_col[j],
+                          lw=0.9, alpha=0.70, ls=comp_ls[j],
+                          label=lbl if i == drone_ids[0] else None)
+
+            for j, lbl in enumerate([r"$v_x$", r"$v_y$", r"$v_z$"]):
+                ax_v.plot(time, traj[:T, 3 + j], color=comp_col[j],
+                          lw=0.9, alpha=0.70, ls=comp_ls[j],
+                          label=lbl if i == drone_ids[0] else None)
+
+        ax_a.axhline( A_MAX, color="red", lw=1.2, ls="--",
+                      label=rf"$\pm a_{{\rm max}} = \pm{A_MAX}$~m/s$^2$")
+        ax_a.axhline(-A_MAX, color="red", lw=1.2, ls="--")
+        ax_v.axhline( V_MAX, color="red", lw=1.2, ls="--",
+                      label=r"$\pm v_{\rm max}$")
+        ax_v.axhline(-V_MAX, color="red", lw=1.2, ls="--")
+
+        drone_handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
+                         for i in drone_ids]
+        _leg_fs = 9
+        ax_a.set_ylabel(r"Acceleration [m/s$^2$]", fontsize=15)
+        ax_a.set_title(r"MPC Control Inputs and Velocity Profiles", fontweight="bold", fontsize=18)
+        ax_a.legend(loc="upper right", framealpha=0.80, fontsize=_leg_fs)
+        ax_a.add_artist(ax_a.legend(handles=drone_handles, loc="upper left",
+                                    framealpha=0.80, fontsize=_leg_fs))
+
+        ax_v.set_xlabel(r"Time [s]", fontsize=15)
+        ax_v.set_ylabel(r"Velocity [m/s]", fontsize=15)
+        ax_v.legend(loc="upper right", framealpha=0.80, fontsize=_leg_fs)
+
+        fig.tight_layout()
+    return fig
+
+
+def plot_mpc_altitude(
     terrain: Terrain,
     agents:  Dict[int, DroneAgent],
 ) -> plt.Figure:
-    """
-    Figura a 2 pannelli per la validazione MPC:
-      Top    — traiettorie 2D (piano XY) con waypoint target marcati, colorati per stato
-      Bottom — norma accelerazione ‖u(t)‖ nel tempo con soglia a_max
-    """
+    """Altitudine sopra il terreno (AGL) nel tempo per ogni drone."""
+    drone_ids = list(agents.keys())
+    with plt.rc_context(_LATEX_RC):
+        fig, ax = plt.subplots(figsize=(7, 4))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax)
+
+        for i in drone_ids:
+            ag   = agents[i]
+            c    = COLORS.get(i, "#aaaaaa")
+            traj = np.array(ag.history)
+            time = np.arange(len(traj)) * DT_SIM
+            z_ground = np.array([terrain.z(traj[k, 0], traj[k, 1])
+                                  for k in range(len(traj))])
+            ax.plot(time, traj[:, 2] - z_ground,
+                    color=c, lw=1.3, alpha=0.85, label=f"Drone {i}")
+
+        ax.axhline(AGL_HEIGHT, color="green", lw=1.3, ls="--",
+                   label=rf"AGL target ({AGL_HEIGHT}~m)")
+        ax.axhline(0, color="saddlebrown", lw=1.0, ls=":", alpha=0.7, label="Ground")
+        ax.set_xlabel(r"Time [s]", fontsize=15)
+        ax.set_ylabel(r"Height above ground [m]", fontsize=15)
+        ax.set_title(r"Altitude above ground level", fontweight="bold", fontsize=18)
+        ax.set_ylim(bottom=-0.3)
+        ax.legend(loc="upper right", framealpha=0.80)
+        fig.tight_layout()
+    return fig
+
+
+def plot_imdcl_error(
+    agents: Dict[int, DroneAgent],
+) -> plt.Figure:
+    """Errore di stima IMDCL: norma 3D (top) e per-asse (bottom) nel tempo."""
     drone_ids = list(agents.keys())
 
-    fig = plt.figure(figsize=(10, 7))
-    fig.patch.set_facecolor("#ffffff")
-    gs     = fig.add_gridspec(2, 1, height_ratios=[1.6, 1.0], hspace=0.38)
-    ax_top = fig.add_subplot(gs[0])
-    ax_bot = fig.add_subplot(gs[1])
+    with plt.rc_context(_LATEX_RC):
+        fig, ax_n = plt.subplots(figsize=(7, 4))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax_n)
 
-    for ax in (ax_top, ax_bot):
-        ax.set_facecolor("#f8f8f8")
-        ax.grid(True, ls=":", alpha=0.5, color="#cccccc")
-        ax.tick_params(labelsize=8)
+        for i in drone_ids:
+            ag   = agents[i]
+            c    = COLORS.get(i, "#aaaaaa")
+            traj = np.array(ag.history)
+            est  = np.array(ag.est_history)
+            n    = min(len(traj), len(est))
+            time = np.arange(n) * DT_SIM
+            ax_n.plot(time, np.linalg.norm(traj[:n, :3] - est[:n, :3], axis=1),
+                      color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
 
-    # ── Top: traiettorie XY ──────────────────────────────────────────────
-    for i in drone_ids:
-        ag        = agents[i]
-        c         = COLORS.get(i, "#aaaaaa")
-        traj      = np.array(ag.history)
-        state_seq = _reconstruct_state_sequence(ag)
-        n         = min(len(traj), len(state_seq))
+        ax_n.set_xlabel(r"Time [s]", fontsize=15)
+        ax_n.set_ylabel(r"Position error [m]", fontsize=15)
+        ax_n.set_title(r"IMDCL Estimation Error", fontweight="bold", fontsize=18)
+        ax_n.set_ylim(bottom=0)
+        ax_n.legend(loc="upper left", framealpha=0.85)
 
-        s_idx = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
-        t_idx = [k for k in range(n) if state_seq[k] in (DroneState.TRACK, DroneState.SUPPORT)]
-        p_idx = [k for k in range(n) if state_seq[k] == DroneState.STOP]
-
-        if s_idx:
-            ax_top.plot(traj[s_idx, 0], traj[s_idx, 1],
-                        color=c, lw=1.5, alpha=0.85, ls="-", label=f"Drone {i}")
-        if t_idx:
-            ax_top.plot(traj[t_idx, 0], traj[t_idx, 1],
-                        color=c, lw=2.0, alpha=0.90, ls="--")
-        if p_idx:
-            ax_top.plot(traj[p_idx, 0], traj[p_idx, 1],
-                        color=c, lw=1.5, alpha=0.60, ls=":")
-
-        # waypoint targets (deduplicated)
-        if ag.wp_target_log:
-            wps = np.array([w[:2] for w in ag.wp_target_log])
-            seen, unique = set(), []
-            for w in wps:
-                key = (round(w[0], 1), round(w[1], 1))
-                if key not in seen:
-                    seen.add(key)
-                    unique.append(w)
-            unique = np.array(unique)
-            ax_top.scatter(unique[:, 0], unique[:, 1],
-                           color=c, s=45, alpha=0.55, zorder=5,
-                           marker="x", linewidths=1.3)
-
-        ax_top.plot(*traj[0,  :2], "o", color=c, ms=7, mec="white", mew=1.0, zorder=7)
-        ax_top.plot(*traj[-1, :2], "^", color=c, ms=8, mec="white", mew=0.8, zorder=7)
-
-    ax_top.set_xlabel("x [m]", fontsize=9)
-    ax_top.set_ylabel("y [m]", fontsize=9)
-    ax_top.set_title(
-        "MPC Trajectories — SEARCH (—)  TRACK (--)  STOP (:)  ×: waypoints",
-        fontweight="bold", fontsize=10,
-    )
-    handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}")
-               for i in drone_ids]
-    handles += [
-        plt.Line2D([0], [0], color="gray", lw=1.5, ls="-",  label="SEARCH"),
-        plt.Line2D([0], [0], color="gray", lw=2.0, ls="--", label="TRACK/SUPPORT"),
-        plt.Line2D([0], [0], color="gray", lw=1.5, ls=":",  label="STOP"),
-        plt.Line2D([0], [0], marker="x",  color="gray", ms=7, lw=0, label="Waypoint"),
-    ]
-    ax_top.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.80)
-
-    # ── Bottom: componenti accelerazione (vincolo è per-componente, norma-∞) ─
-    comp_labels = ["$a_x$", "$a_y$", "$a_z$"]
-    comp_ls     = ["-", "--", ":"]
-    for i in drone_ids:
-        ag = agents[i]
-        c  = COLORS.get(i, "#aaaaaa")
-        if not ag.input_log:
-            continue
-        inputs = np.array(ag.input_log)          # (T, 3)
-        time   = np.arange(len(inputs)) * DT_SIM
-        for j in range(3):
-            ax_bot.plot(time, inputs[:, j],
-                        color=c, lw=1.0, alpha=0.75, ls=comp_ls[j],
-                        label=f"D{i} {comp_labels[j]}" if i == drone_ids[0] else None)
-
-    ax_bot.axhline( A_MAX, color="red", lw=1.3, ls="--",
-                    label=fr"$\pm a_{{\rm max}} = \pm{A_MAX}\,$m/s²")
-    ax_bot.axhline(-A_MAX, color="red", lw=1.3, ls="--")
-    # legend entries for components (shared across drones)
-    for j in range(3):
-        ax_bot.plot([], [], color="gray", lw=1.0, ls=comp_ls[j], label=comp_labels[j])
-
-    ax_bot.set_xlabel("Time [s]", fontsize=9)
-    ax_bot.set_ylabel("Acceleration  [m/s²]", fontsize=9)
-    ax_bot.set_title(
-        r"Control Inputs — per-component box constraint $|a_j| \leq a_{\rm max}$",
-        fontweight="bold", fontsize=10,
-    )
-    ax_bot.legend(fontsize=7.5, loc="upper right", framealpha=0.80, ncol=2)
-
-    fig.suptitle(
-        fr"MPC Path-Following Performance  ·  {len(agents)} drones  ·  "
-        fr"$N_{{\rm mpc}}={N_MPC}$  ·  $dt={DT_SIM}$ s  ·  "
-        fr"$a_{{\rm max}}={A_MAX}$ m/s²  ·  $v_{{\rm max}}={V_MAX}$ m/s",
-        fontsize=10, fontweight="bold",
-    )
-    fig.tight_layout()
+        fig.tight_layout()
     return fig
 
 
@@ -600,7 +760,7 @@ def animate_mission(
     _sp_t  = np.linspace(0, 2 * np.pi, N_SP, endpoint=False)
     _sp_c  = np.cos(_sp_t)
     _sp_s  = np.sin(_sp_t)
-    R_comm = IMDCL_COMM_RADIUS
+    R_comm = _cfg.IMDCL_COMM_RADIUS
     sph_xy, sph_xz, sph_yz = {}, {}, {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
@@ -861,7 +1021,7 @@ def animate_mission(
                 hover_rings[h_id].set_data([hp[0]], [hp[1]])
                 hover_rings[h_id].set_alpha(a_ring)
 
-                label = f"MIN-CONSENSUS  round {r_idx + 1}/{n_r}  (Rc={IMDCL_COMM_RADIUS:.0f} m)"
+                label = f"MIN-CONSENSUS  round {r_idx + 1}/{n_r}  (Rc={_cfg.IMDCL_COMM_RADIUS:.0f} m)"
             else:
                 # Linger phase: only show partner rings (no links, no label round)
                 label = f"CONSENSO — partner selezionati"

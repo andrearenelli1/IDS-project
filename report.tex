@@ -523,7 +523,7 @@ throughout the search phase.
 
 \begin{figure}[t]
 \centering
-\scalebox{0.8}{%
+\scalebox{0.6}{%
 \begin{tikzpicture}[
   >=Stealth,
   thick,
@@ -612,28 +612,53 @@ sharpen the estimate before reporting.
 \section{Experimental Results}
 \label{sec:results}
 
-\subsection{Individual Algorithm Validation}
+\subsection{Individual Algorithm Performance}
+We first illustrate system behaviour on a single representative run
+($N=4$, $200\times200$\,m workspace, $\sigma_{\rm noise}=10^{-5}$,
+$R_c=50$\,m, $\sigma_{\rm acc}=0.05$\,m/s$^2$); the full parametric
+sweep follows in Section~\ref{sec:sweep}.
 
-\subsubsection{MPC Path-Following Performance}
-
-The warm-start strategy keeps the average IPOPT solve time below $5\,$ms per step,
-using only three interior-point iterations after the initial full solve.
-Steady-state waypoint tracking error remains below $0.15\,$m across all runs,
-well within the arrival threshold $\delta = 0.3\,$m.
-Fig.~\ref{fig:mpc_traj} shows representative 3-D trajectories and control-input
-norms for a three-drone team covering a $200\times200\,$m lawnmower pattern.
+\subsubsection{MPC Performance}
+Figs.~\ref{fig:mpc_traj}--\ref{fig:mpc_agl} summarise MPC path-following
+over more than 2000 simulation steps.  The top-down view (Fig.~\ref{fig:mpc_traj})
+confirms uniform lawnmower coverage before the ARTVA detection and
+the subsequent \textsc{Track}/\textsc{Support} transitions; the 3-D view
+(Fig.~\ref{fig:mpc_traj3d}) shows altitude tracking over the terrain surface.
+Control inputs and velocities (Fig.~\ref{fig:mpc_uv}) respect the box
+constraints $|a_j|\le 6$\,m/s$^2$ and $|v_j|\le 3$\,m/s throughout.
+AGL altitude (Fig.~\ref{fig:mpc_agl}) remains within 0.2\,m of the
+$1.5$\,m target even over steep terrain.
 
 \begin{figure}[t]
   \centering
-  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
-    \textit{[MPC trajectories and acceleration norm vs.\ time]}
-  \vspace{1.5cm}}}
-  \caption{MPC trajectories (top) and per-component control inputs (bottom) for
-           three drones.  $\times$ markers indicate waypoint targets; dashed red
-           lines mark the per-component bound $\pm a_{\max} = \pm6\,$m/s$^2$.
-           The constraint is a box constraint on each axis independently
-           ($\|u\|_\infty \leq a_{\max}$), not on the Euclidean norm.}
+  \includegraphics[width=0.8\columnwidth]{trajectories_top_view.png}
+  \caption{Top-down view of drone trajectories (solid: true, dashed: IMDCL
+           estimate).  The red star marks the victim position.}
   \label{fig:mpc_traj}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\columnwidth]{trajectories_3d_view.png}
+  \caption{3D view of the mission trajectories over the terrain surface.}
+  \label{fig:mpc_traj3d}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\columnwidth]{mpc_ci_vp.png}
+  \caption{MPC control inputs (top: per-component accelerations; bottom:
+           velocities) over the full mission.  Red dashed lines mark the
+           box-constraint bounds $\pm a_{\rm max}$ and $\pm v_{\rm max}$.}
+  \label{fig:mpc_uv}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\columnwidth]{altitude_agl.png}
+  \caption{Altitude above ground level (AGL) for each drone throughout the
+           mission.  The green dashed line marks the target AGL of 1.5\,m.}
+  \label{fig:mpc_agl}
 \end{figure}
 
 \subsubsection{Cooperative Localisation}

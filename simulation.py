@@ -772,7 +772,7 @@ def simulate(
     workspace_w  = terrain.x_max - terrain.x_min
     n_agents     = len(agents)
     n_cov_lanes  = max(1, int(np.ceil(workspace_w / (2.0 * r_detect))))
-    n_passes     = max(1, int(np.ceil(n_cov_lanes / n_agents)))
+    n_passes     = max(2, int(np.ceil(n_cov_lanes / n_agents)))
     n_lanes_tot  = n_passes * n_agents
     lane_spacing = workspace_w / n_lanes_tot
     all_lane_xs  = np.arange(

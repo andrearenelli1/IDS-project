@@ -22,6 +22,7 @@ Utilizzo
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import numpy as np
 
 import config
@@ -37,7 +38,9 @@ from config import (
 from terrain import build_terrain
 from artva import ARTVASource
 from simulation import build_agents, simulate
-from visualization import plot_mission, plot_mpc_performance, animate_mission
+from visualization import (plot_mission, plot_mpc_trajectories, plot_mpc_trajectories_3d,
+                           plot_mpc_inputs, plot_mpc_altitude, plot_imdcl_error,
+                           animate_mission)
 
 import matplotlib.pyplot as plt
 
@@ -54,7 +57,7 @@ def main() -> None:
                         help="Numero di droni")
     parser.add_argument("--agl",          type=float, default=AGL_HEIGHT,
                         help="Altezza sopra terreno [m]")
-    parser.add_argument("--steps",        type=int,   default=N_SIM,
+    parser.add_argument("--steps", "--step", type=int,   default=N_SIM,
                         help="Passi simulazione")
     parser.add_argument("--animate",      action="store_true",
                         help="Mostra animazione 3-D")
@@ -81,6 +84,8 @@ def main() -> None:
                         help="Profondità sepoltura [m] (override config)")
     parser.add_argument("--ws",           type=str,   default=None,
                         help="Workspace center: 'center' oppure 'r,c' (es: 0.60,0.45)")
+    parser.add_argument("--save-figs",    action="store_true",
+                        help="Salva le figure PNG in ./figures/")
     args = parser.parse_args()
 
     # — Patch parametri sui moduli (prima di qualsiasi import lazy) —
@@ -169,8 +174,23 @@ def main() -> None:
     )
 
     # — Plot risultati —
-    plot_mission(terrain_obj, artva, agents, x_coords, y_coords, sub_dem, TRACK_STOP_THR=track_stop_thr, ARTVA_DETECT_THR=artva_detect_thr)
-    plot_mpc_performance(terrain_obj, agents)
+    figs = {
+        "mission":               plot_mission(terrain_obj, artva, agents, x_coords, y_coords, sub_dem, TRACK_STOP_THR=track_stop_thr, ARTVA_DETECT_THR=artva_detect_thr),
+        "trajectories_top_view": plot_mpc_trajectories(terrain_obj, agents, artva),
+        "trajectories_3d_view":  plot_mpc_trajectories_3d(terrain_obj, agents, artva),
+        "mpc_ci_vp":             plot_mpc_inputs(agents),
+        "altitude_agl":          plot_mpc_altitude(terrain_obj, agents),
+        "imdcl_error":           plot_imdcl_error(agents),
+    }
+
+    if args.save_figs:
+        fig_dir = Path(__file__).parent / "figures"
+        fig_dir.mkdir(exist_ok=True)
+        for name, fig in figs.items():
+            out = fig_dir / f"{name}.png"
+            fig.savefig(out, dpi=150, bbox_inches="tight")
+            print(f"  Saved: {out}")
+        print(f"Figure salvate in: {fig_dir}")
 
     # — Animazione (opzionale) —
     anim = None
