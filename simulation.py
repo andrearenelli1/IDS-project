@@ -953,6 +953,12 @@ def simulate(
 
         # ── 6. DCGD ──────────────────────────────────────────────────────
         _dcgd_step(agents, drone_ids)
+        for i in drone_ids:
+            ag_i = agents[i]
+            if ag_i.source_est is not None and ag_i.state in (
+                DroneState.TRACK, DroneState.SUPPORT, DroneState.STOP
+            ):
+                ag_i.source_est_log.append((step, ag_i.source_est.copy()))
 
         # ── 7. Avanza waypoint (arrival-gated) ───────────────────────────
         # I droni in TRACK sono guidati dall'ES (aggiornato al passo 2c)

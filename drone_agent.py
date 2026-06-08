@@ -191,7 +191,8 @@ class DroneAgent:
     detected:     bool       = False
 
     # DCGD
-    source_est:   Optional[np.ndarray] = None
+    source_est:     Optional[np.ndarray] = None
+    source_est_log: list                 = field(default_factory=list)  # (step, est_xyz) durante TRACK/SUPPORT/STOP
 
     # TRACK
     track_dir:          Optional[np.ndarray] = None

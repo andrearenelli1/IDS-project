@@ -40,7 +40,7 @@ from artva import ARTVASource
 from simulation import build_agents, simulate
 from visualization import (plot_mission, plot_mpc_trajectories, plot_mpc_trajectories_3d,
                            plot_mpc_inputs, plot_mpc_altitude, plot_imdcl_error,
-                           animate_mission)
+                           plot_dcgd_convergence, plot_dcgd_relative_error, animate_mission)
 
 import matplotlib.pyplot as plt
 
@@ -181,6 +181,8 @@ def main() -> None:
         "mpc_ci_vp":             plot_mpc_inputs(agents),
         "altitude_agl":          plot_mpc_altitude(terrain_obj, agents),
         "imdcl_error":           plot_imdcl_error(agents),
+        "dcgd_convergence":      plot_dcgd_convergence(agents, artva),
+        "dcgd_relative_error":   plot_dcgd_relative_error(agents, artva),
     }
 
     if args.save_figs:

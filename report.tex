@@ -626,8 +626,11 @@ the subsequent \textsc{Track}/\textsc{Support} transitions; the 3-D view
 (Fig.~\ref{fig:mpc_traj3d}) shows altitude tracking over the terrain surface.
 Control inputs and velocities (Fig.~\ref{fig:mpc_uv}) respect the box
 constraints $|a_j|\le 6$\,m/s$^2$ and $|v_j|\le 3$\,m/s throughout.
-AGL altitude (Fig.~\ref{fig:mpc_agl}) remains within 0.2\,m of the
-$1.5$\,m target even over steep terrain.
+AGL altitude (Fig.~\ref{fig:mpc_agl}) stays below 3\,m throughout;
+deviations from the $1.5$\,m target are largest during \textsc{Search},
+when the MPC prioritises reaching distant waypoints, and reduce
+significantly during \textsc{Track}, where the ES reference is updated
+at every step and waypoints remain close.
 
 \begin{figure}[t]
   \centering
@@ -662,41 +665,45 @@ $1.5$\,m target even over steep terrain.
 \end{figure}
 
 \subsubsection{Cooperative Localisation}
-
-Fig.~\ref{fig:imdcl_error} shows position estimation error for a representative
-drone over a 500-step GPS-denied simulation with $N = 5$.
-The IMDCL filter combines UWB relative measurements ($\sigma_{\rm rel} = 0.3\,$m)
-and LiDAR altitude corrections ($\sigma_{\rm LiDAR} = 0.05\,$m) to maintain
-bounded RMS error below $0.5\,$m.
-Cross-covariance correction prevents the information double-counting that would
-otherwise inflate filter confidence in a naïve distributed EKF.
-
+Fig.~\ref{fig:imdcl_error} shows the position estimation error for all
+$N=4$ drones over the representative run (GPS-denied, 200\,s).
+The odometric drift is caused by the process noise $\sigma_{\rm acc}=0.05$\,m/s$^2$
+on the acceleration input: in the absence of corrections, the position error
+grows unboundedly, and higher $\sigma_{\rm acc}$ values accelerate this divergence.
+Drones~1--3, which remain within mutual communication range throughout
+the \textsc{Track} and \textsc{Support} phases, continuously correct their
+estimates via UWB ranging and LiDAR updates, keeping the error below $4.5$\,m.
+Drone~0, which never detects a sufficient ARTVA signal and returns to its
+initial waypoint, loses contact with the fleet at $t \approx 150$\,s;
+without inter-drone ranging corrections its drift grows unchecked,
+reaching $13$\,m by the end of the mission.
 \begin{figure}[t]
   \centering
-  \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
-    \textit{[IMDCL position error vs.\ time]}
-  \vspace{1.5cm}}}
-  \caption{Position estimation error (IMDCL) for one drone over 500 steps.
-           Shaded band: $\pm 1\sigma$ across 20 Monte Carlo runs.}
+  \includegraphics[width=0.85\columnwidth]{imdcl_error.png}
+  \caption{IMDCL position estimation error for all four drones over the
+           representative run. Drones~1--3 remain within communication
+           range and bound their drift below $4.5$\,m; Drone~0 loses
+           contact at $t\approx150$\,s and diverges due to uncorrected
+           odometric drift.}
   \label{fig:imdcl_error}
 \end{figure}
 
 \subsubsection{DCGD Source Estimation}
-
-Fig.~\ref{fig:dcgd_conv} reports DCGD convergence during the Track phase.
-The source estimate error decreases monotonically, reaching sub-metre accuracy
-within 150 iterations for $N_{\mathcal{T}} = 3$ Track drones.  The ATC Combine
-step consistently accelerates convergence relative to isolated local gradient
-descent, confirming the benefit of the diffusion architecture.
+Fig.~\ref{fig:dcgd_conv} reports the DCGD source estimation error
+during the \textsc{Track} phase of the representative run ($N=4$).
+The estimate error decreases as the three active drones accumulate
+measurements around the source; the ATC Combine step accelerates
+convergence relative to isolated local gradient descent, confirming
+the benefit of the diffusion architecture.
 
 \begin{figure}[t]
   \centering
   \framebox{\parbox{0.9\linewidth}{\centering\vspace{1.5cm}
     \textit{[DCGD source estimation error vs.\ iteration]}
   \vspace{1.5cm}}}
-  \caption{Source estimation error $\|\bm{\theta}_i - \bm{\theta}^*\|$ for three
-           Track drones.  Dashed: local gradient descent only; solid: DCGD with
-           ATC Combine.}
+  \caption{Source estimation error $\|\bm{\theta}_i - \bm{\theta}^*\|$
+           during the \textsc{Track} phase ($N=4$).
+           Dashed: local gradient descent only; solid: DCGD with ATC Combine.}
   \label{fig:dcgd_conv}
 \end{figure}
 

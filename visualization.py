@@ -29,6 +29,8 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import LightSource
 from mpl_toolkits.mplot3d import Axes3D          # noqa: F401
 from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
+from matplotlib.widgets import Slider
+from matplotlib.patches import FancyArrowPatch
 
 from artva import ARTVASource
 from terrain import Terrain
@@ -649,6 +651,107 @@ def plot_imdcl_error(
     return fig
 
 
+def plot_dcgd_relative_error(
+    agents: Dict[int, DroneAgent],
+    artva:  ARTVASource,
+) -> plt.Figure:
+    """
+    Errore di stima DCGD nel riferimento del drone.
+
+    Per ogni step loggato: errore = ‖(θ̂_i − x̂_i) − (θ* − x_i)‖
+      θ̂_i = source_est (stima DCGD)
+      x̂_i = posizione stimata IMDCL
+      x_i  = posizione reale
+      θ*   = posizione vera della sorgente
+    Questo rimuove il drift assoluto IMDCL dalla valutazione del DCGD.
+    """
+    drone_ids = list(agents.keys())
+    true_src  = artva.position[:3]
+
+    with plt.rc_context(_LATEX_RC):
+        fig, ax = plt.subplots(figsize=(7, 4))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax)
+
+        any_data = False
+        for i in drone_ids:
+            ag  = agents[i]
+            log = ag.source_est_log
+            if not log:
+                continue
+            any_data = True
+            c = COLORS.get(i, "#aaaaaa")
+
+            traj = np.array(ag.history)
+            est  = np.array(ag.est_history)
+
+            times = []
+            errs  = []
+            for (step, src_est) in log:
+                if step >= len(traj) or step >= len(est):
+                    continue
+                x_true = traj[step, :3]
+                x_est  = est[step,  :3]
+                v_estimated = src_est  - x_est   # vettore stimato drone→sorgente
+                v_true      = true_src - x_true  # vettore vero  drone→sorgente
+                errs.append(np.linalg.norm(v_estimated - v_true))
+                times.append(step * DT_SIM)
+
+            ax.plot(times, errs, color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
+
+        if not any_data:
+            ax.text(0.5, 0.5, "No DCGD data (TRACK phase not reached)",
+                    ha="center", va="center", transform=ax.transAxes)
+
+        ax.set_xlabel(r"Time [s]", fontsize=15)
+        ax.set_ylabel(r"Relative source error [m]", fontsize=15)
+        ax.set_title(r"DCGD Source Estimation Error (drone-centric frame)",
+                     fontweight="bold", fontsize=18)
+        ax.set_ylim(bottom=0)
+        ax.legend(loc="upper right", framealpha=0.85)
+        fig.tight_layout()
+    return fig
+
+
+def plot_dcgd_convergence(
+    agents: Dict[int, DroneAgent],
+    artva:  ARTVASource,
+) -> plt.Figure:
+    """Errore stima sorgente DCGD nel tempo (fase TRACK/SUPPORT/STOP)."""
+    drone_ids = list(agents.keys())
+    true_pos  = artva.position[:3]
+
+    with plt.rc_context(_LATEX_RC):
+        fig, ax = plt.subplots(figsize=(7, 4))
+        fig.patch.set_facecolor("#ffffff")
+        _mpc_style(ax)
+
+        any_data = False
+        for i in drone_ids:
+            ag  = agents[i]
+            log = ag.source_est_log
+            if not log:
+                continue
+            any_data = True
+            steps = np.array([e[0] for e in log]) * DT_SIM
+            errs  = np.array([np.linalg.norm(e[1] - true_pos) for e in log])
+            ax.plot(steps, errs, color=COLORS.get(i, "#aaaaaa"),
+                    lw=1.4, alpha=0.90, label=f"Drone {i}")
+
+        if not any_data:
+            ax.text(0.5, 0.5, "No DCGD data (TRACK phase not reached)",
+                    ha="center", va="center", transform=ax.transAxes)
+
+        ax.set_xlabel(r"Time [s]", fontsize=15)
+        ax.set_ylabel(r"Source estimation error [m]", fontsize=15)
+        ax.set_title(r"DCGD Source Estimation Convergence",
+                     fontweight="bold", fontsize=18)
+        ax.set_ylim(bottom=0)
+        ax.legend(loc="upper right", framealpha=0.85)
+        fig.tight_layout()
+    return fig
+
+
 # ============================================================================
 # Animazione missione (main.py)
 # ============================================================================
@@ -745,7 +848,7 @@ def animate_mission(
         dots_e[i],   = ax.plot([], [], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.0, zorder=7)
 
     # — Artists dinamici: 2-D trail, dot reale, dot stimato, cerchio, dot waypoint —
-    trails2, dots2, dots2_e, circles2, wp_dots2 = {}, {}, {}, {}, {}
+    trails2, dots2, dots2_e, circles2, wp_dots2, src_dots2 = {}, {}, {}, {}, {}, {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
         trails2[i],  = ax2.plot([], [], color=c, lw=1.2, alpha=0.65, zorder=3)
@@ -754,6 +857,40 @@ def animate_mission(
         circles2[i], = ax2.plot([], [], color=c, lw=1.0, alpha=0.7, ls="--", zorder=4)
         wp_dots2[i], = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.6,
                                 alpha=0.35, zorder=4)  # waypoint corrente
+        src_dots2[i], = ax2.plot([], [], "D", color=c, ms=9,
+                                 mec="white", mew=1.2, alpha=0.0, zorder=8)  # stima sorgente
+
+    # — Frecce direzione ES (visibili solo in TRACK) ───────────────────────
+    es_arrows2: Dict[int, FancyArrowPatch] = {}
+    es_ref_dots2 = {}
+    for i in drone_ids:
+        c = COLORS.get(i, "#aaaaaa")
+        arrow = FancyArrowPatch(
+            (0, 0), (1, 1),
+            arrowstyle="-|>",
+            color=c, lw=1.8,
+            mutation_scale=14,
+            alpha=0.0, zorder=9,
+        )
+        ax2.add_patch(arrow)
+        es_arrows2[i] = arrow
+        es_ref_dots2[i], = ax2.plot([], [], "+", color=c, ms=8,
+                                     mew=1.8, alpha=0.0, zorder=9)
+
+    # — Pre-computa source_est per step (forward-fill) ────────────────────
+    _src_at: Dict[int, list] = {}
+    for i in drone_ids:
+        arr: list = [None] * T
+        for (step, src) in agents[i].source_est_log:
+            if step < T:
+                arr[step] = src
+        last = None
+        for t in range(T):
+            if arr[t] is not None:
+                last = arr[t]
+            else:
+                arr[t] = last
+        _src_at[i] = arr
 
     # — Sfera di comunicazione 3-D: 3 cerchi ortogonali per drone ────────
     N_SP   = 60
@@ -773,7 +910,7 @@ def animate_mission(
 
     fig.suptitle(
         "Ricerca valanga multi-agente — MPC + IMDCL + FSM 4 stati\n"
-        "reale (—)  ·  stima IMDCL (--)  ·  cerchi: distanza stimata ARTVA",
+        "reale (—)  ·  IMDCL (--)  ·  cerchi: dist. ARTVA  ·  ◆: sorgente DCGD  ·  →+: direzione ES (solo TRACK)",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
@@ -878,7 +1015,8 @@ def animate_mission(
         + list(sph_xy.values()) + list(sph_xz.values()) + list(sph_yz.values())
         + list(trails2.values()) + list(dots2.values())
         + list(dots2_e.values()) + list(circles2.values())
-        + list(wp_dots2.values())
+        + list(wp_dots2.values()) + list(src_dots2.values())
+        + list(es_ref_dots2.values())
         + _csn_artists + [info]
     )
 
@@ -899,8 +1037,12 @@ def animate_mission(
                         sph_xy[i], sph_xz[i], sph_yz[i]):
                 obj.set_data([], [])
                 obj.set_3d_properties([])
-            for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i], wp_dots2[i]):
+            for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i],
+                        wp_dots2[i], src_dots2[i], es_ref_dots2[i]):
                 obj.set_data([], [])
+            src_dots2[i].set_alpha(0.0)
+            es_arrows2[i].set_alpha(0.0)
+            es_ref_dots2[i].set_alpha(0.0)
         info.set_text("")
         _reset_consensus_artists()
         return all_artists
@@ -958,6 +1100,40 @@ def animate_mission(
                 wp_dots2[i].set_data([wp[0]], [wp[1]])
             else:
                 wp_dots2[i].set_data([], [])
+
+            # Stima sorgente DCGD nel riferimento del drone reale
+            # display = x_true + (source_est - x_est)
+            src = _src_at[i][ti]
+            if src is not None:
+                disp = traj[ti, :2] + (src[:2] - est[ti_e, :2])
+                src_dots2[i].set_data([disp[0]], [disp[1]])
+                src_dots2[i].set_alpha(0.9)
+            else:
+                src_dots2[i].set_data([], [])
+                src_dots2[i].set_alpha(0.0)
+
+            # Direzione ES: freccia dal drone reale verso il riferimento ES
+            # (wp_target_log durante TRACK = es_ref clamped)
+            wp_log = ag.wp_target_log
+            in_track = (ag.state_log and ti < len(ag.state_log)
+                        and ag.state_log[ti] == DroneState.TRACK)
+            if in_track and wp_log:
+                es_ref   = wp_log[min(ti, len(wp_log) - 1)][:2]
+                drone_xy = traj[ti, :2]
+                direction = es_ref - drone_xy
+                norm = np.linalg.norm(direction)
+                if norm > 0.1:
+                    es_tip = drone_xy + direction / norm * max(norm, 25.0)
+                else:
+                    es_tip = es_ref
+                es_arrows2[i].set_positions(tuple(drone_xy), tuple(es_tip))
+                es_arrows2[i].set_alpha(0.85)
+                es_ref_dots2[i].set_data([es_ref[0]], [es_ref[1]])
+                es_ref_dots2[i].set_alpha(0.85)
+            else:
+                es_arrows2[i].set_alpha(0.0)
+                es_ref_dots2[i].set_data([], [])
+                es_ref_dots2[i].set_alpha(0.0)
 
             # Testo stato — usa lo state_log reale se disponibile
             if ag.state_log and ti < len(ag.state_log):
@@ -1040,6 +1216,42 @@ def animate_mission(
 
         info.set_text("\n".join(lines))
         return all_artists
+
+    # ── Slider temporale ─────────────────────────────────────────────────
+    fig.subplots_adjust(bottom=0.09)
+    ax_sl = fig.add_axes([0.10, 0.025, 0.80, 0.025], facecolor="#1e2730")
+    t_max = (T - 1) * dt
+    slider = Slider(ax_sl, "t [s]", 0.0, t_max,
+                    valinit=0.0, color="#3a7fc1")
+    slider.label.set_color(_TEXT_COLOR)
+    slider.valtext.set_color(_TEXT_COLOR)
+    slider.label.set_fontsize(8)
+    slider.valtext.set_fontsize(8)
+
+    # _cur_f è il frame corrente — lo gestiamo noi, FuncAnimation passa f ma lo ignoriamo
+    _sl_lock = [False]
+    _cur_f   = [0]
+
+    def _on_slider(val):
+        if _sl_lock[0]:
+            return
+        f = int(val / (step_skip * dt))
+        _cur_f[0] = max(0, min(f, len(frame_idx) - 1))
+        update(_cur_f[0])
+        fig.canvas.draw_idle()
+
+    slider.on_changed(_on_slider)
+
+    _base_update = update
+
+    def update(f):                          # noqa: F811  — ignora f di FuncAnimation
+        fi     = _cur_f[0]
+        result = _base_update(fi)
+        _cur_f[0] = (fi + 1) % len(frame_idx)
+        _sl_lock[0] = True
+        slider.set_val(frame_idx[fi] * dt)
+        _sl_lock[0] = False
+        return result
 
     anim = FuncAnimation(fig, update, frames=len(frame_idx),
                          init_func=init, blit=False,
