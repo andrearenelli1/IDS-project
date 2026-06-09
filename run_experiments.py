@@ -224,8 +224,8 @@ def run_one(
     config.SIGMA_ACC_SIM      = acc_sim
 
     _pos_rng     = np.random.default_rng()
-    vrel_x       = float(_pos_rng.uniform(0.02, 0.98))
-    vrel_y       = float(_pos_rng.uniform(0.02, 0.98))
+    vrel_x       = float(_pos_rng.uniform(0.00, 1.00))
+    vrel_y       = float(_pos_rng.uniform(0.00, 1.00))
     victim_depth = float(_pos_rng.uniform(1.0, 5.0))
 
     sink = sys.stdout if verbose else io.StringIO()
