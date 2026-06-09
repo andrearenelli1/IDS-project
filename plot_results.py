@@ -67,9 +67,11 @@ def load(path: str) -> list[dict]:
                 "found":     r["found"].strip() == "True",
                 "time":      _flt(r["time_found_s"]),
                 "dist":      _flt(r.get("victim_dist_m", "nan")),
-                "err2d":     _flt(r["est_error_2d_m"]),
-                "pos_std":   _flt(r["pos_std_m"]),
-                "note":      r["note"].strip(),
+                "err2d":       _flt(r["est_error_2d_m"]),
+                "pos_std":     _flt(r["pos_std_m"]),
+                "landing_err": _flt(r.get("landing_err_mean_m", "nan")),
+                "depth_err":   _flt(r.get("est_error_depth_m",  "nan")),
+                "note":        r["note"].strip(),
             })
     return rows
 
@@ -611,6 +613,81 @@ def fig_victim_map(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 11 — Errore XY di landing e errore stima profondità
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_localization_errors(rows: list[dict]) -> plt.Figure:
+    found = [r for r in rows if r["found"]]
+
+    noise_sorted = sorted(NOISE_STDS)
+    noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(7.16, 5.5), constrained_layout=True)
+    fig.suptitle(
+        r"Localization accuracy: XY landing error and depth estimation error",
+        fontsize=10, fontweight="bold",
+    )
+
+    bp_kw = dict(patch_artist=True, notch=False, widths=0.55,
+                 medianprops=dict(color="black", lw=1.5),
+                 flierprops=dict(marker=".", markersize=3, alpha=0.3))
+
+    # ── Riga 0: errore XY di landing per livello di rumore ────────────────
+    for col, area in enumerate(AREAS):
+        ax    = axes[0, col]
+        valid = [r for r in found
+                 if not math.isnan(r["landing_err"]) and r["area"] == area]
+        data  = [[r["landing_err"] for r in valid if r["noise"] == noise]
+                 for noise in noise_sorted]
+
+        bp = ax.boxplot(data, positions=range(len(noise_sorted)), **bp_kw)
+        for patch, color in zip(bp["boxes"], noise_colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.75)
+
+        ax.set_xticks(range(len(noise_sorted)))
+        ax.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted])
+        ax.set_xlabel(r"ARTVA noise $\sigma$")
+        ax.set_ylabel(r"XY landing error [m]")
+        ax.set_title(rf"Landing error --- ${area}\times{area}$\,m",
+                     fontsize=9, fontweight="bold")
+
+        for pos, d in enumerate(data):
+            if d:
+                med = median(d)
+                ax.text(pos + 0.32, med, rf" {med:.2f}\,m",
+                        va="center", fontsize=7, color="#333333")
+
+    # ── Riga 1: errore stima profondità per bin di profondità ─────────────
+    for col, area in enumerate(AREAS):
+        ax    = axes[1, col]
+        valid = [r for r in found
+                 if not math.isnan(r["depth_err"]) and r["area"] == area]
+        data  = [[r["depth_err"] for r in valid if r["depth_bin"] == bin_]
+                 for bin_ in DEPTH_BIN_LABELS]
+
+        bp = ax.boxplot(data, positions=range(len(DEPTH_BIN_LABELS)), **bp_kw)
+        for patch, color in zip(bp["boxes"], DEPTH_BIN_COLORS):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.75)
+
+        ax.set_xticks(range(len(DEPTH_BIN_LABELS)))
+        ax.set_xticklabels(DEPTH_BIN_LABELS)
+        ax.set_xlabel(r"Victim depth [m]")
+        ax.set_ylabel(r"Depth estimation error [m]")
+        ax.set_title(rf"Depth error --- ${area}\times{area}$\,m",
+                     fontsize=9, fontweight="bold")
+
+        for pos, d in enumerate(data):
+            if d:
+                med = median(d)
+                ax.text(pos + 0.32, med, rf" {med:.2f}\,m",
+                        va="center", fontsize=7, color="#333333")
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -643,6 +720,7 @@ def main() -> None:
     fig_time_histograms(rows)
     fig_acc_sim(rows)
     fig_victim_map(rows)
+    fig_localization_errors(rows)
     plt.show()
 
 
