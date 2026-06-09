@@ -836,7 +836,7 @@ def plot_final_positions(
 
     # — Bounds stretti (include anche le stime driftate) —
     drifted_pts = [
-        agents[i].source_est[:2] + (agents[i].x_est[:2] - agents[i].x[:2])
+        agents[i].source_est[:2] - (agents[i].x_est[:2] - agents[i].x[:2])
         for i in triangulation_ids if agents[i].source_est is not None
     ]
     all_pts = np.vstack(
