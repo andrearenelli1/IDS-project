@@ -6,28 +6,21 @@ Loop principale di simulazione multi-agente.
 Funzioni pubbliche
 ------------------
   build_agents          — costruisce N DroneAgent con MPC + IMDCL + warm-start
-  triangulate_victim    — stima posizione vittima dalla media delle source_est DCGD
+  triangulate_victim    — stima posizione vittima dalla media delle source_est
   simulate              — loop temporale multi-agente
 
 FSM a 4 stati
 -------------
   SEARCH  → lawnmower arrival-gated
-  TRACK   → esplorazione 3 candidati (avanti, ±60°); arrival-gated; → STOP a soglia
-  STOP    → hovering; seleziona 2 droni SUPPORT per triangolazione
-  SUPPORT → percorre cerchio attorno al drone STOP; → STOP a soglia
+  TRACK   → ES (Extremum Seeking) verso la sorgente; → STOP a soglia
+  STOP    → hovering; trigger disambiguazione DICT
+  SUPPORT → naviga verso la posizione target (depth circle o candidato 2-drone)
 
-Waypoint feed
--------------
-Tutti gli stati sono arrival-gated: _on_wp_reached() viene chiamato solo quando
-il drone raggiunge il waypoint corrente (distanza < STOP_THRESH). Eccezione:
-transizioni di stato, che resettano i waypoint immediatamente.
-
-Algoritmo stima sorgente: DCGD (Distributed Consensus Gradient Descent).
+Algoritmo stima sorgente: DICT (Distributed Iterative Consensus Triangulation).
 """
 
 from __future__ import annotations
 
-from itertools import permutations as _iterperms
 from time import perf_counter
 from typing import Dict, List
 
@@ -55,141 +48,33 @@ from config import (
     IMDCL_COMM_RADIUS, IMDCL_R_MEAS_STD,
     IMDCL_R_LIDAR_STD, IMDCL_H_LIDAR,
     N_SIGNAL_SAMPLES,
-    DIST_EST_ALPHA, DIST_EST_BETA, DIST_EST_H, DIST_EST_REFINE, DIST_EST_BATCH,
-    TRIANGULATE_N_PARTNERS,
-    SUPPORT_SEARCH_TIMEOUT,
-    ARTVA_MOMENT,
-    CONSENSUS_K_MAX,
     N_NOISE_CALIB_SAMPLES, NOISE_CONSENSUS_ITERS,
     ES_DETECT_MAX_R, FOUND_RADIUS,
     ES_ALPHA_MAX, ES_OMEGA, ES_KAPPA, ES_LAMBDA, ES_EPS,
-    CONVERGE_RADIUS, ES_DCGD_SKIP_THR,
+    ARTVA_MOMENT,
+    DICT_BETA, DICT_XY_ITERS, DICT_DEPTH_ITERS, CONVERGE_RADIUS,
+    DCGD_ITERS, DCGD_STEP_XY,
 )
 
 
 # ============================================================================
-# Helper ARTVA model (senza rumore) — usato da DCGD
+# Circle intersections helper
 # ============================================================================
 
-def _artva_model(pos: np.ndarray, theta: np.ndarray, moment: float) -> float:
-    delta  = np.asarray(pos, dtype=float) - np.asarray(theta, dtype=float)
-    r      = max(np.linalg.norm(delta), 1e-2)
-    cos_th = delta[2] / r
-    return moment * np.sqrt(1.0 + 3.0 * cos_th**2) / r**3
-
-
-def _grad_S(pos: np.ndarray, theta: np.ndarray, moment: float) -> np.ndarray:
-    grad = np.zeros(3)
-    for k in range(3):
-        dp = np.zeros(3); dp[k] = DIST_EST_H
-        grad[k] = (
-            _artva_model(pos, theta + dp, moment)
-            - _artva_model(pos, theta - dp, moment)
-        ) / (2.0 * DIST_EST_H)
-    return grad
-
-
-# ============================================================================
-# DCGD
-# ============================================================================
-
-def _dcgd_step(agents: Dict[int, DroneAgent], drone_ids: list) -> None:
-    """Un passo DCGD (Adapt + Combine) per droni TRACK/SUPPORT/STOP con source_est."""
-    active_ids = [
-        i for i in drone_ids
-        if agents[i].state in (DroneState.TRACK, DroneState.SUPPORT, DroneState.STOP)
-        and agents[i].source_est is not None
-    ]
-    if not active_ids:
-        return
-
-    snap = {i: agents[i].source_est.copy() for i in active_ids}
-
-    # Adapt: gradient descent locale
-    for i in active_ids:
-        ag      = agents[i]
-        theta_i = snap[i].copy()
-
-        batch  = ag.signal_log[-DIST_EST_BATCH:]
-        grad_J = np.zeros(3)
-        for pos, s_meas in batch:
-            s_pred  = _artva_model(pos, theta_i, ARTVA_MOMENT)
-            grad_s  = _grad_S(pos, theta_i, ARTVA_MOMENT)
-            grad_J += -2.0 * (s_meas - s_pred) * grad_s
-        if batch:
-            grad_J /= len(batch)
-        norm_g = np.linalg.norm(grad_J)
-        if norm_g > 1e-12:
-            theta_i -= DIST_EST_ALPHA * grad_J / norm_g
-        ag.source_est = theta_i
-
-    # Combine: average consensus pesato sui valori post-adapt
-    adapted  = {i: agents[i].source_est.copy() for i in active_ids}
-    combined = _average_consensus(agents, active_ids, adapted, iters=1, beta=DIST_EST_BETA)
-    for i in active_ids:
-        agents[i].source_est = combined[i]
-
-
-# ============================================================================
-# Stima distribuita della profondità di sepoltura
-# ============================================================================
-
-
-
-# ============================================================================
-# Extremum Seeking — TRACK mode  [Azzollini et al. 2021]
-# ============================================================================
-
-def _es_condition_signal(sig: float) -> float:
-    """
-    Condiziona il segnale ARTVA secondo eq. 5 del paper:
-        yt = 1 / ∛S
-    La mappa risultante è continua, limitata, con minimo globale in 0
-    corrispondente al massimo del segnale grezzo (= posizione sorgente).
-    """
-    return 1.0 / np.cbrt(max(sig, ES_EPS))
-
-
-def _es_update(
-    ag:      "DroneAgent",
-    yt:      float,
-    dt:      float,
-    terrain: Terrain,
-    agl:     float,
-) -> None:
-    """
-    Un passo dell'algoritmo ES a bounded update rate (Proposition 1,
-    Azzollini et al. 2021, eq. 11-13), discretizzato con Euler in avanti.
-
-    Aggiorna ag.es_alpha, ag.es_time, ag.es_x_ref, ag.es_y_ref
-    e scrive ag.waypoints[0] con il nuovo riferimento per l'MPC.
-
-    La velocità istantanea del riferimento è √(α·ω) ≤ √(α_max·ω) = V_MAX.
-    Il centro del cerchio converge verso il minimo di yt (= sorgente ARTVA)
-    seguendo la dinamica media di discesa del gradiente (eq. 12).
-    """
-    # α-filter ramp: α̇ = (α_max − α) / λ  →  α → α_max esponenzialmente
-    ag.es_alpha += dt * (ES_ALPHA_MAX - ag.es_alpha) / ES_LAMBDA
-
-    # Velocità istantanea del riferimento (costante in modulo)
-    speed = np.sqrt(ag.es_alpha * ES_OMEGA)
-
-    # Fase: ωt + κ·yt  (il termine κ·yt sposta il centro verso il minimo)
-    phase = ES_OMEGA * ag.es_time + ES_KAPPA * yt
-
-    # Euler forward integration of eq. 11
-    ag.es_x_ref += dt * speed * np.cos(phase)
-    ag.es_y_ref += dt * speed * np.sin(phase)
-    ag.es_time  += dt
-
-    # Il riferimento è clampato ai bordi del workspace (non modifica l'integrazione
-    # interna per non interrompere la dinamica del cerchio)
-    x = float(np.clip(ag.es_x_ref, terrain.x_min, terrain.x_max))
-    y = float(np.clip(ag.es_y_ref, terrain.y_min, terrain.y_max))
-    z = terrain.agl_z(x, y, agl)
-
-    ag.waypoints = [np.array([x, y, z])]
-    ag.wp_idx    = 0
+def _circle_intersections_2d(
+    c1: np.ndarray, r1: float,
+    c2: np.ndarray, r2: float,
+) -> tuple | None:
+    """Restituisce i 2 punti di intersezione di due cerchi XY, o None se non si intersecano."""
+    d = np.linalg.norm(c2 - c1)
+    if d < 1e-9 or d > r1 + r2 + 1e-6 or d < abs(r1 - r2) - 1e-6:
+        return None
+    a    = (r1**2 - r2**2 + d**2) / (2.0 * d)
+    h    = np.sqrt(max(0.0, r1**2 - a**2))
+    dir_ = (c2 - c1) / d
+    perp = np.array([-dir_[1], dir_[0]])
+    mid  = c1 + a * dir_
+    return mid + h * perp, mid - h * perp
 
 
 # ============================================================================
@@ -231,371 +116,397 @@ def _average_consensus(
 
 
 # ============================================================================
-# Consensus distribuito — selezione partner per drone in STOP
+# Extremum Seeking — TRACK mode  [Azzollini et al. 2021]
 # ============================================================================
 
-def _reachable_from(
-    drone_ids:   list,
-    agents:      Dict[int, DroneAgent],
-    start_id:    int,
-    comm_radius: float,
-) -> list:
-    """BFS: restituisce i drone_ids raggiungibili da start_id nel grafo di comunicazione."""
-    pos       = {did: agents[did].x[:3] for did in drone_ids}
-    reachable = {start_id}
-    frontier  = {start_id}
-    while frontier:
-        new_frontier: set = set()
-        for fid in frontier:
-            for did in drone_ids:
-                if did not in reachable and np.linalg.norm(pos[fid] - pos[did]) <= comm_radius:
-                    reachable.add(did)
-                    new_frontier.add(did)
-        frontier = new_frontier
-    return [did for did in drone_ids if did in reachable]
+def _es_condition_signal(sig: float) -> float:
+    """yt = 1 / ∛S — convesso con minimo in sorgente."""
+    return 1.0 / np.cbrt(max(sig, ES_EPS))
 
 
-def _consensus_select_partners(
-    agents:      Dict[int, DroneAgent],
-    drone_ids:   list,
-    stop_id:     int,
-    comm_radius: float = IMDCL_COMM_RADIUS,
-    k_max:       int   = CONSENSUS_K_MAX,
-) -> tuple:
-    """
-    Selezione distribuita dei TRIANGULATE_N_PARTNERS più vicini al drone STOP
-    tramite min-consensus su grafo limitato a comm_radius.
-
-    Solo i droni nella componente connessa di stop_id partecipano: la richiesta
-    non può propagarsi a cluster isolati, quindi non devono contribuire al consensus.
-    """
-    drone_ids = _reachable_from(drone_ids, agents, stop_id, comm_radius)
-    if len(drone_ids) > 1:
-        isolated = len(list(agents.keys())) - len(drone_ids)
-        if isolated:
-            print(f"    [consensus] componente connessa: {drone_ids} ({isolated} droni isolati esclusi)")
-
-    n      = len(drone_ids)
-    id2idx = {did: k for k, did in enumerate(drone_ids)}
-    h_idx  = id2idx[stop_id]
-
-    stop_pos        = agents[stop_id].x_est[:3].copy()
-    pos             = np.array([agents[did].x_est[:3] for did in drone_ids])
-    pairwise        = np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
-    in_range        = pairwise <= comm_radius
-    np.fill_diagonal(in_range, False)
-    dist_from_stop  = np.linalg.norm(pos - stop_pos, axis=-1)
-
-    all_links = [
-        (drone_ids[i], drone_ids[j])
-        for i in range(n) for j in range(i + 1, n)
-        if in_range[i, j]
-    ]
-
-    D              = np.full((n, n), np.inf)
-    D[h_idx, h_idx] = 0.0
-    knows_target   = np.zeros(n, dtype=bool)
-    knows_target[h_idx] = True
-    rounds_log: list = []
-
-    for _ in range(k_max):
-        D_new     = D.copy()
-        knows_new = knows_target.copy()
-        newly_informed: list = []
-
-        for i in range(n):
-            for j in range(n):
-                if not in_range[i, j]:
-                    continue
-                if knows_target[j] and not knows_new[i]:
-                    knows_new[i] = True
-                    D_new[i, i]  = dist_from_stop[i]
-                    newly_informed.append(drone_ids[i])
-                D_new[i] = np.minimum(D_new[i], D[j])
-
-        rounds_log.append({'links': all_links, 'newly_informed': newly_informed})
-        converged    = (len(newly_informed) == 0 and np.array_equal(D_new, D))
-        D            = D_new
-        knows_target = knows_new
-        if converged:
-            break
-
-    D_agreed   = np.min(D, axis=0)
-    candidates = sorted(
-        [(drone_ids[k], D_agreed[k]) for k in range(n) if k != h_idx and D_agreed[k] < np.inf],
-        key=lambda x: x[1],
-    )
-    partners = [did for did, _ in candidates[:TRIANGULATE_N_PARTNERS]]
-    return partners, rounds_log
-
-
-# ============================================================================
-# Waypoint dispatch — arrival-gated per stato
-# ============================================================================
-
-def _on_wp_reached(
-    ag:      DroneAgent,
-    sig:     float,
+def _es_update(
+    ag:      "DroneAgent",
+    yt:      float,
+    dt:      float,
     terrain: Terrain,
     agl:     float,
 ) -> None:
-    """
-    Chiamato quando il drone raggiunge il waypoint corrente.
-    Calcola il prossimo waypoint in base allo stato FSM.
-    """
-    if ag.state == DroneState.SEARCH:
-        if not ag.advance_waypoint():
-            next_idx = ag.current_lane_idx + ag.n_drones_total
-            if next_idx >= len(ag.lane_xs):
-                next_idx = ag.id % len(ag.lane_xs)  # wrap: ricomincia dalla corsia iniziale
-            ag.current_lane_idx = next_idx
-            ag.lane_go_up = not ag.lane_go_up
-            ag.waypoints = single_lane_waypoints(
-                ag.lane_xs[next_idx], ag.lane_go_up,
-                terrain.y_min, terrain.y_max, terrain, agl,
-            )
-            ag.wp_idx = 0
-
-    elif ag.state == DroneState.STOP:
-        pass  # hovering
-
-    elif ag.state == DroneState.SUPPORT:
-        if not ag.advance_waypoint():
-            if ag.source_est is not None:
-                mid_xy = (ag.x_est[:2] + ag.source_est[:2]) / 2.0
-                ag.waypoints = [np.array([mid_xy[0], mid_xy[1], terrain.agl_z(mid_xy[0], mid_xy[1], agl)])]
-                ag.wp_idx    = 0
-
-
-
-# ============================================================================
-# Transizioni di stato
-# ============================================================================
-
-def _transition_search_to_track(
-    ag:            DroneAgent,
-    drone_id:      int,
-    sig:           float,
-    step:          int,
-    t:             float,
-    terrain:       Terrain,
-    agl:           float,
-    lawnmower_orig: dict,
-    cx_ws:         float,
-    cy_ws:         float,
-) -> None:
-    """SEARCH → TRACK: avvia l'Extremum Seeking dalla posizione corrente."""
-    ag.state    = DroneState.TRACK
-    ag.detected = True
-    ag.init_es(terrain, agl)
-    ag.es_x_hist.clear()
-    ag.es_y_hist.clear()
-
-    # source_est inizializzata alla posizione del drone al rilevamento.
-    # Verrà aggiornata ogni ciclo ES con la media del ciclo (step 2d).
-    px, py = float(ag.x_est[0]), float(ag.x_est[1])
-    ag.source_est = np.array([px, py, terrain.z(px, py)])
-    print(
-        f"\n  ★ Drone {drone_id} TRACK-ES (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
-        f"\n    pos reale={ag.x[:3].round(2)}  stimata={ag.x_est[:3].round(2)}"
-        f"\n    ES ref init=({ag.es_x_ref:.1f}, {ag.es_y_ref:.1f})"
-    )
-
-
-def _transition_to_stop(
-    ag:              DroneAgent,
-    drone_id:        int,
-    sig:             float,
-    step:            int,
-    t:               float,
-    agents:          Dict[int, DroneAgent],
-    drone_ids:       list,
-    terrain:         Terrain,
-    agl:             float,
-    consensus_done:  bool,
-    consensus_events: list,
-) -> bool:
-    """
-    TRACK/SUPPORT → STOP quando segnale ≥ TRACK_STOP_THR.
-    Se il drone era TRACK e il consenso non è ancora avvenuto, seleziona
-    i partner SUPPORT e genera le loro circonferenze.
-    Restituisce il nuovo valore di consensus_done.
-    """
-    ag.state = DroneState.STOP
-    hover_wp = ag.x_est[:3].copy()
-    ag.waypoints = [hover_wp]
+    """Un passo ES (Azzollini et al. 2021, eq. 11-13), Euler in avanti."""
+    ag.es_alpha += dt * (ES_ALPHA_MAX - ag.es_alpha) / ES_LAMBDA
+    speed = np.sqrt(ag.es_alpha * ES_OMEGA)
+    phase = ES_OMEGA * ag.es_time + ES_KAPPA * yt
+    ag.es_x_ref += dt * speed * np.cos(phase)
+    ag.es_y_ref += dt * speed * np.sin(phase)
+    ag.es_time  += dt
+    x = float(np.clip(ag.es_x_ref, terrain.x_min, terrain.x_max))
+    y = float(np.clip(ag.es_y_ref, terrain.y_min, terrain.y_max))
+    z = terrain.agl_z(x, y, agl)
+    ag.waypoints = [np.array([x, y, z])]
     ag.wp_idx    = 0
-    print(
-        f"\n  ⬛ Drone {drone_id} STOP (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
-        f"  pos={ag.x[:3].round(1)}"
-    )
 
-    # Consenso e assegnazione SUPPORT solo al primo drone TRACK che si ferma
-    if not consensus_done:
-        consensus_done = True
-        partners, rounds_log = _consensus_select_partners(agents, drone_ids, drone_id)
-        consensus_events.append({
-            'step': step, 'stop_id': drone_id,
-            'rounds': rounds_log, 'partners': partners,
-        })
-        # 3 posizioni a 120° attorno alla stima della sorgente (identico a converge_triggered)
-        center = ag.source_est[:3].copy() if ag.source_est is not None else ag.x_est[:3].copy()
-        all_ids = [drone_id] + list(partners)
-        n_assign = len(all_ids)
-        targets = [
-            np.array([
-                center[0] + CONVERGE_RADIUS * np.cos(k * 2.0 * np.pi / 3.0),
-                center[1] + CONVERGE_RADIUS * np.sin(k * 2.0 * np.pi / 3.0),
-                terrain.agl_z(
-                    center[0] + CONVERGE_RADIUS * np.cos(k * 2.0 * np.pi / 3.0),
-                    center[1] + CONVERGE_RADIUS * np.sin(k * 2.0 * np.pi / 3.0),
-                    agl,
-                ),
-            ])
-            for k in range(3)
-        ]
-        best_perm, best_cost = None, float('inf')
-        for perm in _iterperms(range(3)):
-            cost = sum(
-                np.linalg.norm(agents[all_ids[k]].x_est[:2] - targets[perm[k]][:2])
-                for k in range(n_assign)
+
+# ============================================================================
+# DICT — Distributed Iterative Consensus Triangulation
+# ============================================================================
+
+def _dict_step(
+    agents:   Dict[int, DroneAgent],
+    dict_ids: list,
+    terrain:  Terrain,
+) -> None:
+    """
+    Un passo DICT Adapt+Combine per i due droni in TRACK.
+
+    Adapt: ogni drone calcola i due punti di intersezione tra le proprie
+    due circonferenze usando la propria stima di posizione e raggio.
+    Combine: [c1,c2]_i^{k+1} = (1-β)*half_i + β*half_j
+    I candidati sono ordinati per x per garantire abbinamento coerente.
+    """
+    d0, d1 = dict_ids
+    if not agents[d0].signal_log or not agents[d1].signal_log:
+        return
+
+    s0 = agents[d0].signal_log[-1][1]
+    s1 = agents[d1].signal_log[-1][1]
+    if s0 < 1e-12 or s1 < 1e-12:
+        return
+
+    p0 = agents[d0].x_est[:2].copy()
+    p1 = agents[d1].x_est[:2].copy()
+    r0 = (ARTVA_MOMENT / s0) ** (1.0 / 3.0)
+    r1 = (ARTVA_MOMENT / s1) ** (1.0 / 3.0)
+
+    def _intersect_sorted(pa, ra, pb, rb):
+        result = _circle_intersections_2d(pa, ra, pb, rb)
+        if result is None:
+            w = ra / (ra + rb)
+            m = pa + w * (pb - pa)
+            return [m.copy(), m.copy()]
+        return sorted([result[0].copy(), result[1].copy()], key=lambda c: (c[0], c[1]))
+
+    # Adapt
+    half_d0 = _intersect_sorted(p0, r0, p1, r1)
+    half_d1 = _intersect_sorted(p1, r1, p0, r0)
+
+    # Combine
+    beta = DICT_BETA
+    new_d0 = [(1 - beta) * half_d0[k] + beta * half_d1[k] for k in range(2)]
+    new_d1 = [(1 - beta) * half_d1[k] + beta * half_d0[k] for k in range(2)]
+
+    def _to_3d(pts, terr):
+        return [np.array([c[0], c[1], terr.z(float(c[0]), float(c[1]))]) for c in pts]
+
+    agents[d0].source_cands = _to_3d(new_d0, terrain)
+    agents[d1].source_cands = _to_3d(new_d1, terrain)
+
+
+def _dict_step_3drone(
+    agents:     Dict[int, DroneAgent],
+    active_ids: list,
+    terrain:    Terrain,
+) -> None:
+    """
+    Un passo DICT Adapt+Combine a N≥2 droni sulla stima XY (fase post-disambiguazione).
+
+    Adapt : per ogni coppia (i,j) calcola l'intersezione dei cerchi e seleziona
+            il punto più vicino alla source_est corrente (già disambiguata).
+    Combine: source_est_i = (1−β)·media_locale_coppie_i + β·media_globale
+    """
+    ids = [
+        i for i in active_ids
+        if agents[i].signal_log and agents[i].source_est is not None
+    ]
+    if len(ids) < 2:
+        return
+
+    positions = {i: agents[i].x_est[:2].copy() for i in ids}
+    radii: dict = {}
+    for i in ids:
+        s = agents[i].signal_log[-1][1]
+        if s < 1e-12:
+            return
+        radii[i] = (ARTVA_MOMENT / s) ** (1.0 / 3.0)
+
+    ref = np.mean([agents[i].source_est[:2] for i in ids], axis=0)
+
+    # Adapt: una stima per ogni coppia
+    pair_ests: dict = {}
+    for k in range(len(ids)):
+        for l in range(k + 1, len(ids)):
+            ia, ib = ids[k], ids[l]
+            result = _circle_intersections_2d(
+                positions[ia], radii[ia], positions[ib], radii[ib]
             )
-            if cost < best_cost:
-                best_cost, best_perm = cost, perm
+            if result is None:
+                w  = radii[ia] / (radii[ia] + radii[ib])
+                pt = positions[ia] + w * (positions[ib] - positions[ia])
+            else:
+                c0, c1 = result
+                pt = c0 if np.linalg.norm(c0 - ref) <= np.linalg.norm(c1 - ref) else c1
+            pair_ests[(ia, ib)] = pt
 
-        ag.waypoints = [targets[best_perm[0]]]
+    global_mean = np.mean(list(pair_ests.values()), axis=0)
+
+    # Combine
+    beta = DICT_BETA
+    for i in ids:
+        my_pts    = [pt for (a, b), pt in pair_ests.items() if a == i or b == i]
+        local_avg = np.mean(my_pts, axis=0)
+        new_xy    = (1.0 - beta) * local_avg + beta * global_mean
+        agents[i].source_est = np.array([
+            new_xy[0], new_xy[1],
+            terrain.z(float(new_xy[0]), float(new_xy[1]))
+        ])
+
+
+def _dict_disambiguate_3drone(
+    agents:   Dict[int, DroneAgent],
+    dict_ids: list,
+    third_id: int,
+) -> tuple:
+    """
+    Seleziona c1 o c2 in base al residuo sul cerchio del terzo drone.
+    Restituisce (punto_2D_scelto, indice_scelto) — indice 0 o 1 in source_cands[d0].
+    """
+    d0 = dict_ids[0]
+    cands = agents[d0].source_cands
+    if len(cands) < 2:
+        pt = np.asarray(cands[0][:2]) if cands else agents[d0].x_est[:2].copy()
+        return pt, 0
+
+    c1_2d = np.asarray(cands[0][:2], dtype=float)
+    c2_2d = np.asarray(cands[1][:2], dtype=float)
+
+    s3 = agents[third_id].signal_log[-1][1] if agents[third_id].signal_log else 0.0
+    if s3 > 1e-12:
+        p3 = agents[third_id].x_est[:2].copy()
+        r3 = (ARTVA_MOMENT / s3) ** (1.0 / 3.0)
+        res1 = abs(np.linalg.norm(c1_2d - p3) - r3)
+        res2 = abs(np.linalg.norm(c2_2d - p3) - r3)
+        return (c1_2d, 0) if res1 <= res2 else (c2_2d, 1)
+
+    # Fallback: candidato più vicino a d0
+    d0_pos = agents[d0].x_est[:2]
+    if np.linalg.norm(c1_2d - d0_pos) <= np.linalg.norm(c2_2d - d0_pos):
+        return c1_2d, 0
+    return c2_2d, 1
+
+
+def _dict_setup_depth_circle(
+    agents:     Dict[int, DroneAgent],
+    active_ids: list,
+    source_est: np.ndarray,
+    terrain:    Terrain,
+    agl:        float,
+) -> None:
+    """
+    Invia i 3 droni non-SEARCH a posizioni equidistanziate a 120° sulla
+    circonferenza di raggio CONVERGE_RADIUS attorno a source_est.
+    Tutti transitano in SUPPORT.
+    """
+    cx, cy = float(source_est[0]), float(source_est[1])
+    for k, drone_id in enumerate(active_ids):
+        angle = np.radians(k * 120.0)
+        x = cx + CONVERGE_RADIUS * np.cos(angle)
+        y = cy + CONVERGE_RADIUS * np.sin(angle)
+        wp = np.array([x, y, terrain.agl_z(x, y, agl)])
+        ag = agents[drone_id]
+        ag.state     = DroneState.SUPPORT
+        ag.waypoints = [wp]
         ag.wp_idx    = 0
+        print(f"    → Drone {drone_id} SUPPORT depth-circle (120°·{k}) → ({x:.1f}, {y:.1f})")
 
-        for k, partner_id in enumerate(partners):
-            partner = agents[partner_id]
-            t = targets[best_perm[k + 1]]
-            partner.state          = DroneState.SUPPORT
-            partner.support_center = ag.x_est[:3].copy()
-            partner.waypoints      = [t]
-            partner.wp_idx         = 0
-            if partner.source_est is None and ag.source_est is not None:
-                partner.source_est = ag.source_est.copy()
-            print(
-                f"    → Drone {partner_id} SUPPORT "
-                f"target=({t[0]:.1f}, {t[1]:.1f}) a 120° attorno a ({center[0]:.1f}, {center[1]:.1f})"
-            )
 
-        n_missing = TRIANGULATE_N_PARTNERS - len(partners)
-        if n_missing > 0:
-            print(
-                f"    ⚠ Consenso: solo {len(partners)}/{TRIANGULATE_N_PARTNERS} partner "
-                f"(Rc={IMDCL_COMM_RADIUS} m) — ricerca aperta per {SUPPORT_SEARCH_TIMEOUT} step"
-            )
-            ag.support_pending  = True
-            ag.support_deadline = step + SUPPORT_SEARCH_TIMEOUT
-            ag.support_n_needed = n_missing
-    else:
-        print(f"    (consenso già eseguito — nessuna nuova selezione partner)")
+def _dict_setup_2drone_disam(
+    agents:   Dict[int, DroneAgent],
+    dict_ids: list,
+    terrain:  Terrain,
+    agl:      float,
+) -> None:
+    """
+    Disambiguazione 2 droni: d0 → c1, d1 → c2.
+    Entrambi transitano in SUPPORT verso il proprio candidato.
+    """
+    d0, d1 = dict_ids
+    cands = agents[d0].source_cands
+    if len(cands) < 2:
+        return
 
-    return consensus_done
+    c1_2d = np.asarray(cands[0][:2], dtype=float)
+    c2_2d = np.asarray(cands[1][:2], dtype=float)
+
+    # Assegna a d0 il candidato più vicino alla sua posizione corrente
+    d0_pos = agents[d0].x_est[:2]
+    if np.linalg.norm(c1_2d - d0_pos) > np.linalg.norm(c2_2d - d0_pos):
+        c1_2d, c2_2d = c2_2d, c1_2d
+
+    for drone_id, cand_2d in [(d0, c1_2d), (d1, c2_2d)]:
+        ag = agents[drone_id]
+        wp = np.array([cand_2d[0], cand_2d[1], terrain.agl_z(cand_2d[0], cand_2d[1], agl)])
+        ag.state     = DroneState.SUPPORT
+        ag.waypoints = [wp]
+        ag.wp_idx    = 0
+        ag.source_est = np.array([cand_2d[0], cand_2d[1], terrain.z(float(cand_2d[0]), float(cand_2d[1]))])
+        print(f"    → Drone {drone_id} SUPPORT disambig-2drone → ({cand_2d[0]:.1f}, {cand_2d[1]:.1f})")
+
+
+def _dict_depth_step(
+    agents:     Dict[int, DroneAgent],
+    active_ids: list,
+    agl:        float,
+) -> None:
+    """
+    Un passo DICT Adapt+Combine sulla stima di profondità.
+
+    Adapt: h_depth_i^{k+1/2} = sqrt(r_i² - Δxy²) - z_agl
+    Combine: h_depth_i^{k+1} = (1-β)*half_i + β*mean(half_j, j≠i)
+    """
+    halfs: dict = {}
+    for i in active_ids:
+        ag = agents[i]
+        if not ag.signal_log or ag.source_est is None:
+            continue
+        s_i = ag.signal_log[-1][1]
+        if s_i < 1e-12:
+            continue
+        r_i      = (ARTVA_MOMENT / s_i) ** (1.0 / 3.0)
+        delta_xy = float(np.linalg.norm(ag.x_est[:2] - ag.source_est[:2]))
+        under    = max(0.0, r_i**2 - delta_xy**2)
+        halfs[i] = np.sqrt(under) - agl
+
+    if len(halfs) < 2:
+        for i in halfs:
+            agents[i].depth_est = halfs[i]
+        return
+
+    beta = DICT_BETA
+    ids  = list(halfs.keys())
+    combined: dict = {}
+    for i in ids:
+        others        = [halfs[j] for j in ids if j != i]
+        avg_others    = float(np.mean(others))
+        combined[i]   = (1 - beta) * halfs[i] + beta * avg_others
+
+    for i in ids:
+        agents[i].depth_est = combined[i]
 
 
 # ============================================================================
-# Retry ricerca partner SUPPORT
+# DCGD — helpers orbit update
 # ============================================================================
 
-def _retry_support_search(
+def _update_orbit_center(
+    agents:     Dict[int, DroneAgent],
+    active_ids: list,
+    center:     np.ndarray,
+    terrain:    Terrain,
+    agl:        float,
+) -> None:
+    """
+    Aggiorna i waypoint dei droni SUPPORT sulla circonferenza a 120°
+    attorno a 'center', mantenendo l'assegnazione angolare k*120°.
+    Non cambia lo stato FSM né stampa nulla.
+    """
+    cx, cy = float(center[0]), float(center[1])
+    for k, drone_id in enumerate(active_ids):
+        angle = np.radians(k * 120.0)
+        x  = cx + CONVERGE_RADIUS * np.cos(angle)
+        y  = cy + CONVERGE_RADIUS * np.sin(angle)
+        wp = np.array([x, y, terrain.agl_z(x, y, agl)])
+        agents[drone_id].waypoints = [wp]
+        agents[drone_id].wp_idx    = 0
+
+
+# ============================================================================
+# DCGD — Distributed Consensus Gradient Descent (XY, fase SUPPORT)
+# ============================================================================
+
+def _artva_xy(xy: np.ndarray, p_drone: np.ndarray, z_v: float) -> float:
+    """Modello ARTVA valutato in xy = [x_v, y_v], con vittima a quota z_v."""
+    pv  = np.array([xy[0], xy[1], z_v])
+    dv  = p_drone - pv
+    r   = max(np.linalg.norm(dv), 1e-3)
+    ct  = dv[2] / r
+    return ARTVA_MOMENT * np.sqrt(1.0 + 3.0 * ct**2) / r**3
+
+
+def _dcgd_step(
     agents:    Dict[int, DroneAgent],
-    drone_ids: list,
+    active_ids: list,
     terrain:   Terrain,
     agl:       float,
-    step:      int,
-) -> None:
+    step_size: float = DCGD_STEP_XY,
+    beta:      float = DICT_BETA,
+) -> np.ndarray:
     """
-    Chiamata ogni step per ogni drone STOP con ricerca partner aperta.
-    Ritenta l'assegnazione SUPPORT oppure chiude per timeout.
+    Un passo DCGD Adapt+Combine sulla stima XY della sorgente.
+
+    Adapt : ogni drone calcola il gradiente numerico di (S_model - S_meas)²
+            rispetto a (x_v, y_v), normalizza e fa un passo di ampiezza step_size.
+    Combine: average consensus pesato con i vicini (stesso schema di _dict_step_3drone).
+
+    Restituisce lo spostamento medio assoluto per drone (utile per log).
     """
-    for drone_id in drone_ids:
-        ag = agents[drone_id]
-        if ag.state != DroneState.STOP or not ag.support_pending:
+    ids = [
+        i for i in active_ids
+        if agents[i].signal_log and agents[i].source_est is not None
+    ]
+    if len(ids) < 2:
+        return np.zeros(2)
+
+    eps = 0.05   # [m] passo differenza finita
+
+    # ── Adapt ────────────────────────────────────────────────────────────────
+    half_xy: Dict[int, np.ndarray] = {}
+    for i in ids:
+        ag     = agents[i]
+        s_meas = ag.signal_log[-1][1]
+        if s_meas < 1e-12:
+            half_xy[i] = ag.source_est[:2].copy()
             continue
 
-        if step >= ag.support_deadline:
-            ag.support_pending = False
-            refine_ids = [
-                j for j in drone_ids
-                if agents[j].state in (DroneState.STOP, DroneState.SUPPORT)
-                and agents[j].source_est is not None
-            ]
-            n_avail = len(refine_ids)
-            print(
-                f"\n  ⏱ Drone {drone_id}: timeout supporto al passo {step} — "
-                f"{ag.support_n_needed} partner non trovati. "
-                f"Raffinamento DCGD con {n_avail} droni disponibili..."
-            )
-            if n_avail >= 2:
-                for _ in range(DIST_EST_REFINE):
-                    _dcgd_step(agents, refine_ids)
-            continue
+        p_d = ag.x_est[:3].copy()
+        xy0 = ag.source_est[:2].copy()
+        # z_v: approssimazione con superficie del terreno (depth ignota qui)
+        z_v = float(terrain.z(float(xy0[0]), float(xy0[1])))
 
-        # Cerca droni non STOP e non già in SUPPORT nel raggio di comunicazione
-        candidates = sorted(
-            [
-                j for j in drone_ids
-                if j != drone_id
-                and agents[j].state not in (DroneState.STOP, DroneState.SUPPORT)
-                and np.linalg.norm(agents[drone_id].x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS
-            ],
-            key=lambda j: np.linalg.norm(agents[drone_id].x[:3] - agents[j].x[:3]),
-        )
-        if not candidates:
-            continue
+        s0   = _artva_xy(xy0, p_d, z_v)
+        grad = np.zeros(2)
+        for k in range(2):
+            xp = xy0.copy(); xp[k] += eps
+            xm = xy0.copy(); xm[k] -= eps
+            ds      = (_artva_xy(xp, p_d, z_v) - _artva_xy(xm, p_d, z_v)) / (2.0 * eps)
+            grad[k] = 2.0 * (s0 - s_meas) * ds   # ∂L/∂x_v = 2·(ŝ - s)·∂ŝ/∂x_v
 
-        to_assign = candidates[:ag.support_n_needed]
+        g_norm = np.linalg.norm(grad)
+        if g_norm > 1e-15:
+            half_xy[i] = xy0 - step_size * (grad / g_norm)
+        else:
+            half_xy[i] = xy0.copy()
 
-        # Ricalcola 3 posizioni a 120° e riassegna ottimalmente stop + tutti i support
-        center = ag.source_est[:3].copy() if ag.source_est is not None else ag.x_est[:3].copy()
-        targets = [
-            np.array([
-                center[0] + CONVERGE_RADIUS * np.cos(k * 2.0 * np.pi / 3.0),
-                center[1] + CONVERGE_RADIUS * np.sin(k * 2.0 * np.pi / 3.0),
-                terrain.agl_z(
-                    center[0] + CONVERGE_RADIUS * np.cos(k * 2.0 * np.pi / 3.0),
-                    center[1] + CONVERGE_RADIUS * np.sin(k * 2.0 * np.pi / 3.0),
-                    agl,
-                ),
-            ])
-            for k in range(3)
+    # ── Combine ───────────────────────────────────────────────────────────────
+    combined: Dict[int, np.ndarray] = {}
+    for i in ids:
+        nbrs = [
+            j for j in ids if j != i
+            and np.linalg.norm(agents[i].x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS
         ]
-        existing_support = [j for j in drone_ids if j != drone_id and agents[j].state == DroneState.SUPPORT]
-        all_assign_ids = ([drone_id] + existing_support + list(to_assign))[:3]
-        n_assign = len(all_assign_ids)
+        if nbrs:
+            nbr_avg     = np.mean([half_xy[j] for j in nbrs], axis=0)
+            combined[i] = (1.0 - beta) * half_xy[i] + beta * nbr_avg
+        else:
+            combined[i] = half_xy[i].copy()
 
-        best_perm, best_cost = None, float('inf')
-        for perm in _iterperms(range(3)):
-            cost = sum(
-                np.linalg.norm(agents[all_assign_ids[k]].x_est[:2] - targets[perm[k]][:2])
-                for k in range(n_assign)
-            )
-            if cost < best_cost:
-                best_cost, best_perm = cost, perm
+    # ── Aggiorna source_est ───────────────────────────────────────────────────
+    shifts = []
+    for i in ids:
+        old_xy = agents[i].source_est[:2].copy()
+        new_xy = combined[i]
+        new_z  = terrain.z(float(new_xy[0]), float(new_xy[1]))
+        agents[i].source_est = np.array([new_xy[0], new_xy[1], new_z])
+        shifts.append(np.abs(new_xy - old_xy))
 
-        ag.waypoints = [targets[best_perm[0]]]
-        ag.wp_idx    = 0
-
-        for k, sup_id in enumerate(all_assign_ids[1:]):
-            partner = agents[sup_id]
-            t = targets[best_perm[k + 1]]
-            partner.state          = DroneState.SUPPORT
-            partner.support_center = ag.x_est[:3].copy()
-            partner.waypoints      = [t]
-            partner.wp_idx         = 0
-            if partner.source_est is None and ag.source_est is not None:
-                partner.source_est = ag.source_est.copy()
-            if sup_id in to_assign:
-                print(
-                    f"    → Drone {sup_id} SUPPORT (retry, passo {step}) "
-                    f"target=({t[0]:.1f}, {t[1]:.1f}) a 120° attorno a ({center[0]:.1f}, {center[1]:.1f})"
-                )
-
-        ag.support_n_needed -= len(to_assign)
-        if ag.support_n_needed <= 0:
-            ag.support_pending = False
+    return np.mean(shifts, axis=0) if shifts else np.zeros(2)
 
 
 # ============================================================================
@@ -609,18 +520,17 @@ def _calibrate_noise(
     consensus_iters: int = NOISE_CONSENSUS_ITERS,
 ) -> tuple[float, float]:
     """
-    Ogni drone stima σ_noise da misure ripetute alla propria posizione iniziale
-    (std delle misure è indipendente dal segnale medio → stima robusta).
-    Poi average-consensus distribuito converge a una σ̂ comune.
+    Ogni drone stima σ_noise da misure ripetute alla propria posizione iniziale.
+    Average-consensus distribuito converge a σ̂ comune.
     """
     drone_ids = list(agents.keys())
-    
-    mu_local: Dict[int, float] = {}
+
+    mu_local:    Dict[int, float] = {}
     sigma_local: Dict[int, float] = {}
     for i in drone_ids:
         pos     = agents[i].x[:3]
         samples = [artva.signal(pos, noisy=True) for _ in range(n_samples)]
-        mu_local[i] = np.mean(samples)
+        mu_local[i]    = float(np.mean(samples))
         sigma_local[i] = float(np.std(samples))
 
     print("  [Calibrazione] σ_noise locale per drone:")
@@ -628,11 +538,86 @@ def _calibrate_noise(
         print(f"    Drone {i}: σ̂={sigma_local[i]:.2e}")
 
     sigma_agreed = _average_consensus(agents, drone_ids, sigma_local, iters=consensus_iters)
-    mu_agreed = _average_consensus(agents, drone_ids, mu_local, iters=consensus_iters)
-    mu_agreed = float(np.mean([mu_agreed[i] for i in drone_ids]))
+    mu_agreed    = _average_consensus(agents, drone_ids, mu_local,    iters=consensus_iters)
+    mu_agreed    = float(np.mean([mu_agreed[i]    for i in drone_ids]))
     sigma_agreed = float(np.mean([sigma_agreed[i] for i in drone_ids]))
     print(f"  [Calibrazione] σ̂ consensus = {sigma_agreed:.2e}")
     return mu_agreed, sigma_agreed
+
+
+# ============================================================================
+# Waypoint dispatch — arrival-gated per stato
+# ============================================================================
+
+def _on_wp_reached(
+    ag:      DroneAgent,
+    sig:     float,
+    terrain: Terrain,
+    agl:     float,
+) -> None:
+    """Chiamato quando il drone raggiunge il waypoint corrente."""
+    if ag.state == DroneState.SEARCH:
+        if not ag.advance_waypoint():
+            next_idx = ag.current_lane_idx + ag.n_drones_total
+            if next_idx >= len(ag.lane_xs):
+                next_idx = ag.id % len(ag.lane_xs)
+            ag.current_lane_idx = next_idx
+            ag.lane_go_up = not ag.lane_go_up
+            ag.waypoints = single_lane_waypoints(
+                ag.lane_xs[next_idx], ag.lane_go_up,
+                terrain.y_min, terrain.y_max, terrain, agl,
+            )
+            ag.wp_idx = 0
+
+    elif ag.state in (DroneState.STOP, DroneState.SUPPORT):
+        pass  # hovering al target
+
+
+# ============================================================================
+# Transizioni di stato
+# ============================================================================
+
+def _transition_search_to_track(
+    ag:      DroneAgent,
+    drone_id: int,
+    sig:     float,
+    step:    int,
+    t:       float,
+    terrain: Terrain,
+    agl:     float,
+) -> None:
+    """SEARCH → TRACK: avvia l'Extremum Seeking dalla posizione corrente."""
+    ag.state        = DroneState.TRACK
+    ag.detected     = True
+    ag.source_cands = []
+    px, py          = float(ag.x_est[0]), float(ag.x_est[1])
+    ag.source_est   = np.array([px, py, terrain.z(px, py)])
+    ag.init_es(terrain, agl)
+    ag.es_x_hist.clear()
+    ag.es_y_hist.clear()
+    print(
+        f"\n  ★ Drone {drone_id} TRACK-ES (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
+        f"\n    pos reale={ag.x[:3].round(2)}  stimata={ag.x_est[:3].round(2)}"
+        f"\n    ES ref init=({ag.es_x_ref:.1f}, {ag.es_y_ref:.1f})"
+    )
+
+
+def _transition_to_stop(
+    ag:      DroneAgent,
+    drone_id: int,
+    sig:     float,
+    step:    int,
+    t:       float,
+) -> None:
+    """TRACK → STOP quando il segnale supera track_stop_thr."""
+    ag.state     = DroneState.STOP
+    hover_wp     = ag.x_est[:3].copy()
+    ag.waypoints = [hover_wp]
+    ag.wp_idx    = 0
+    print(
+        f"\n  ⬛ Drone {drone_id} STOP (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
+        f"  pos={ag.x[:3].round(1)}"
+    )
 
 
 # ============================================================================
@@ -698,10 +683,10 @@ def triangulate_victim(
     agents: Dict[int, DroneAgent],
     artva:  ARTVASource,
 ) -> np.ndarray:
-    """Stima posizione vittima: media delle stime source_est di droni TRACK/STOP."""
+    """Stima posizione vittima: media delle stime source_est (droni non SEARCH)."""
     ests = [
         ag.source_est for ag in agents.values()
-        if ag.state in (DroneState.TRACK, DroneState.STOP)
+        if ag.state != DroneState.SEARCH
         and ag.source_est is not None
     ]
     if not ests:
@@ -727,30 +712,34 @@ def simulate(
     Esegue la simulazione multi-agente.
 
     Per ogni passo temporale:
-      1. Misura ARTVA reale
-      2. Transizioni di stato (SEARCH→TRACK, TRACK/SUPPORT→STOP)
-      3. MPC step → u_opt  (usa stima IMDCL)
-      4. Propagazione dinamica reale con rumore
-      5. Aggiornamento filtro IMDCL (propagazione + LiDAR + cooperativo)
-      6. DCGD: un passo Adapt+Combine per droni TRACK
-      7. Avanza waypoint se raggiunto (arrival-gated, dispatch per stato)
-      8. Stop: ≥3 droni in STOP → raffinamento DCGD → break
+      1. Misura ARTVA reale (filtrata)
+      2. Transizioni di stato (SEARCH→TRACK, TRACK→STOP, SUPPORT→STOP)
+      3. ES update per droni TRACK
+      4. MPC step → u_opt
+      5. Propagazione dinamica reale con rumore
+      6. Aggiornamento filtro IMDCL
+      7. DICT: un passo Adapt+Combine (o depth step)
+      8. Avanza waypoint se raggiunto (arrival-gated)
+      9. Terminazione
     """
     rng              = np.random.default_rng(rng_seed)
     model            = PointMass3DModel(sigma_acc=sigma)
     drone_ids        = list(agents.keys())
-    consensus_events: list = []   # log eventi consenso per analisi post-simulazione
-    consensus_done:   bool = False
-    converge_triggered: bool = False   # True dopo aver assegnato i target a 120°
-    converge_ids:       list = []      # i 3 droni che devono convergere
-    refine_phase:       int  = 0       # 0=attesa, 1=DCGD refine
-    refine_ctr:         int  = 0       # step trascorsi nella fase corrente
+    consensus_events: list = []   # mantenuto per compatibilità interfaccia (vuoto)
+
+    # DICT state
+    dict_ids:           list = []    # i primi due droni non-SEARCH
+    dict_disam_done:    bool = False
+    dict_disam_mode:    str  = ''    # '3drone_xy'|'3drone'|'2drone'|'2drone_done'|'all_stop'
+    dict_xy_active_ids: list = []    # droni per il consenso XY a 3
+    dict_xy_ctr:        int  = 0
+    dict_depth_ctr:     int  = 0
+
+    # DCGD state
+    dcgd_ctr:  int  = 0
+    dcgd_done: bool = False
 
     # ── Calibrazione rumore e soglie dinamiche ───────────────────────────────
-    # DETECT: max(μ + 5σ, moment/R_ES³) — gate rumore + floor ES (R_ES=50m).
-    #   Il 5σ screena falsi positivi prima di entrare in TRACK.
-    # STOP: puro floor geometrico moment/R_found³ (R_found=10m).
-    #   Il rumore è già stato screened da detect_thr; la stop è solo prossimità.
     print("Calibrazione rumore ARTVA...")
     mu_noise, sigma_noise = _calibrate_noise(agents, artva)
     artva_detect_thr = max(mu_noise + 5*sigma_noise, ARTVA_MOMENT / ES_DETECT_MAX_R**3)
@@ -788,11 +777,6 @@ def simulate(
     R_rel   = np.eye(3) * IMDCL_R_MEAS_STD**2
     R_lidar = np.array([[IMDCL_R_LIDAR_STD**2]])
 
-    lawnmower_orig = {i: list(agents[i].waypoints) for i in drone_ids}
-
-    cx_ws = (terrain.x_min + terrain.x_max) / 2.0
-    cy_ws = (terrain.y_min + terrain.y_max) / 2.0
-
     _STATE_LABEL = {
         DroneState.SEARCH:  "SRCH",
         DroneState.TRACK:   "TRCK",
@@ -812,14 +796,11 @@ def simulate(
         signals: Dict[int, float] = {}
         for i in drone_ids:
             ag       = agents[i]
-            prev_pos = ag.history[-1][:3] if ag.history else ag.x[:3]
-            alphas   = np.linspace(0.0, 1.0, N_SIGNAL_SAMPLES)
-            sig      = float(np.mean([
-                artva.signal(prev_pos * (1.0 - a) + ag.x[:3] * a, noisy=True)
-                for a in alphas
-            ]))
-            
-            sig_filt = ag.update_signal_filter(sig)
+            sig      = float(artva.signal(ag.x[:3] , noisy=True))
+            sig_filt = ag.update_signal_filter_batch(sig)
+            ag.sig_batch.append(sig_filt)
+            ag.r     = (ARTVA_MOMENT / sig_filt) ** (1.0 / 3.0) if sig_filt > 0.0 else None
+            ag.r_log.append(ag.r)
             ag.signal_log.append((ag.x[:3].copy(), sig_filt))
             signals[i] = sig_filt
 
@@ -829,19 +810,13 @@ def simulate(
             sig = signals[i]
 
             if ag.state == DroneState.SEARCH and sig >= artva_detect_thr:
-                _transition_search_to_track(
-                    ag, i, sig, step, t, terrain, agl,
-                    lawnmower_orig, cx_ws, cy_ws,
-                )
+                _transition_search_to_track(ag, i, sig, step, t, terrain, agl)
 
             elif ag.state == DroneState.TRACK and sig >= track_stop_thr:
-                consensus_done = _transition_to_stop(
-                    ag, i, sig, step, t,
-                    agents, drone_ids, terrain, agl,
-                    consensus_done, consensus_events,
-                )
+                _transition_to_stop(ag, i, sig, step, t)
 
-            elif ag.state == DroneState.SUPPORT and sig >= track_stop_thr:
+            elif (ag.state == DroneState.SUPPORT and sig >= track_stop_thr
+                  and not dict_disam_done):
                 ag.state     = DroneState.STOP
                 hover_wp     = ag.x_est[:3].copy()
                 ag.waypoints = [hover_wp]
@@ -851,51 +826,112 @@ def simulate(
                     f"al passo {step} (t={t:.2f}s)"
                 )
 
-        # ── 2b. Retry partner SUPPORT pendenti ──────────────────────────
-        _retry_support_search(agents, drone_ids, terrain, agl, step)
+        # ── 2b. Aggiorna insieme dict_ids ────────────────────────────────
+        not_search = [i for i in drone_ids if agents[i].state != DroneState.SEARCH]
+        if len(dict_ids) < 2 and len(not_search) >= 2:
+            dict_ids = not_search[:2]
+            print(f"\n  ◆ DICT attivato: droni {dict_ids[0]}, {dict_ids[1]} al passo {step}")
+
+        # ── 2b2. Trigger disambiguazione DICT (prima dell'MPC) ──────────────
+        if len(dict_ids) == 2 and not dict_disam_done:
+            first_stopped_early = next(
+                (i for i in dict_ids if agents[i].state == DroneState.STOP), None
+            )
+            if first_stopped_early is not None:
+                dict_disam_done = True
+                not_search_now  = [i for i in drone_ids if agents[i].state != DroneState.SEARCH]
+                third_ids = [i for i in not_search_now if i not in dict_ids]
+                third_id  = third_ids[0] if third_ids else None
+
+                if third_id is not None and agents[third_id].signal_log:
+                    dict_disam_mode    = '3drone_xy'
+                    dict_xy_active_ids = not_search_now[:]
+                    sel_2d, chosen_idx = _dict_disambiguate_3drone(agents, dict_ids, third_id)
+
+                    # Ogni drone DICT mantiene il proprio punto di intersezione
+                    for i in dict_ids:
+                        cands_i = agents[i].source_cands
+                        if len(cands_i) > chosen_idx:
+                            c = cands_i[chosen_idx]
+                            agents[i].source_est = np.array([
+                                c[0], c[1], terrain.z(float(c[0]), float(c[1]))
+                            ])
+                        else:
+                            agents[i].source_est = np.array([
+                                sel_2d[0], sel_2d[1],
+                                terrain.z(float(sel_2d[0]), float(sel_2d[1]))
+                            ])
+                        agents[i].source_cands = [agents[i].source_est.copy()]
+                        agents[i].source_cands_log.append(
+                            (step, [agents[i].source_est.copy()])
+                        )
+
+                    # Terzo drone: media delle stime dei due DICT (inizializzazione XY consensus)
+                    src_mean = np.mean([agents[i].source_est[:2] for i in dict_ids], axis=0)
+                    src = np.array([
+                        src_mean[0], src_mean[1],
+                        terrain.z(float(src_mean[0]), float(src_mean[1]))
+                    ])
+                    agents[third_id].source_est = src.copy()
+
+                    print(
+                        f"\n  ◆ DICT disambiguazione (3 droni) al passo {step}:"
+                        f" cand_idx={chosen_idx}"
+                        f"  d{dict_ids[0]}→({agents[dict_ids[0]].source_est[0]:.1f},{agents[dict_ids[0]].source_est[1]:.1f})"
+                        f"  d{dict_ids[1]}→({agents[dict_ids[1]].source_est[0]:.1f},{agents[dict_ids[1]].source_est[1]:.1f})"
+                        f" — avvio XY consensus ({DICT_XY_ITERS} iter)"
+                    )
+
+                    # Tutti in hover per il consenso XY
+                    for i in dict_xy_active_ids:
+                        if agents[i].state != DroneState.STOP:
+                            agents[i].state     = DroneState.STOP
+                            agents[i].waypoints = [agents[i].x_est[:3].copy()]
+                            agents[i].wp_idx    = 0
+
+                else:
+                    dict_disam_mode = '2drone'
+                    d0_, d1_ = dict_ids
+                    cands_ = agents[d0_].source_cands
+                    print(f"\n  ◆ DICT disambiguazione (2 droni) al passo {step}: droni → c1, c2")
+                    print(f"    source_cands di d{d0_}: {[f'({c[0]:.1f},{c[1]:.1f})' for c in cands_]}")
+                    print(f"    pos d{d0_}={agents[d0_].x_est[:2].round(1)}  stato={agents[d0_].state.name}")
+                    print(f"    pos d{d1_}={agents[d1_].x_est[:2].round(1)}  stato={agents[d1_].state.name}")
+                    if len(cands_) >= 2:
+                        dist_cands = np.linalg.norm(np.array(cands_[0][:2]) - np.array(cands_[1][:2]))
+                        print(f"    distanza tra candidati: {dist_cands:.2f} m")
+                    _dict_setup_2drone_disam(agents, dict_ids, terrain, agl)
+
+        # ── 2b3. All-stop: tutti i droni in STOP → depth-circle ─────────────
+        if (
+            dict_disam_mode not in ('3drone_xy', '3drone', 'all_stop')
+            and all(agents[i].state == DroneState.STOP for i in drone_ids)
+        ):
+            src_estimates = [
+                agents[i].source_est if agents[i].source_est is not None
+                else agents[i].x_est[:3]
+                for i in drone_ids
+            ]
+            src = np.mean(src_estimates, axis=0).copy()
+            src[2] = terrain.z(float(src[0]), float(src[1]))
+            for i in drone_ids:
+                agents[i].source_est = src.copy()
+            print(
+                f"\n  ◆ Tutti i droni in STOP al passo {step}"
+                f" (t={t:.2f}s): avvio depth-circle (r={CONVERGE_RADIUS}m)"
+            )
+            _dict_setup_depth_circle(agents, list(drone_ids), src, terrain, agl)
+            dict_disam_mode = 'all_stop'
+            dict_disam_done = True
 
         # ── 2c. ES update per droni in TRACK ────────────────────────────
-        # Aggiorna il riferimento ES e scrive waypoints[0] prima che l'MPC
-        # calcoli il controllo, garantendo la separazione temporale ES↔MPC.
         for i in drone_ids:
             ag = agents[i]
             if ag.state == DroneState.TRACK:
                 yt = _es_condition_signal(signals[i])
                 _es_update(ag, yt, dt, terrain, agl)
-                ag.es_x_hist.append(ag.es_x_ref)
-                ag.es_y_hist.append(ag.es_y_ref)
 
-        # ── 2d. ES-guided DCGD initialization ───────────────────────────
-        # Ogni ciclo ES completo (T = 2π/ω), la media di (es_x_ref, es_y_ref)
-        # sull'ultimo ciclo converge alla posizione della sorgente (Azzollini
-        # et al. 2021, eq. 12 — media della dinamica ES = gradiente zero).
-        # Aggiornare source_est con questa media evita l'ambiguità di direzione
-        # del drift istantaneo (che nei primi passi dipende dalla fase iniziale).
-        _ES_CYCLE = int(2.0 * np.pi / (ES_OMEGA * dt))  # ~139 step a dt=0.1 s
-        for i in drone_ids:
-            ag = agents[i]
-            if ag.state != DroneState.TRACK or len(ag.es_x_hist) != _ES_CYCLE:
-                continue
-            # Criterio distribuito: se source_est si è già spostato dalla posizione
-            # di rilevamento (es_x_hist[0], es_y_hist[0]) di più di ES_DCGD_SKIP_THR,
-            # il consensus ha già propagato una stima migliore → non reinizializzare.
-            detect_pos = np.array([ag.es_x_hist[0], ag.es_y_hist[0]])
-            moved = np.linalg.norm(ag.source_est[:2] - detect_pos)
-            if moved > ES_DCGD_SKIP_THR:
-                print(
-                    f"    [ES→DCGD] Drone {i}: skip reinit"
-                    f"  (source_est già spostato di {moved:.1f} m dal consensus)"
-                )
-                continue
-            sx = float(np.mean(ag.es_x_hist))
-            sy = float(np.mean(ag.es_y_hist))
-            ag.source_est = np.array([sx, sy, terrain.z(sx, sy)])
-            print(
-                f"    [ES→DCGD] Drone {i}: source_est → ({sx:.1f}, {sy:.1f})"
-                f"  (media primo ciclo ES, consensus non ancora attivo)"
-            )
-
-        # Log waypoint corrente (dopo transizioni, prima di muoversi)
+        # Log waypoint corrente
         for i in drone_ids:
             agents[i].wp_target_log.append(agents[i].current_target().copy())
 
@@ -969,23 +1005,149 @@ def simulate(
         for i in drone_ids:
             agents[i].est_history.append(agents[i].imdcl.x_hat.copy())
 
-        # ── 6. DCGD ──────────────────────────────────────────────────────
-        if refine_phase <= 1:   # sospeso durante depth consensus (fase 2)
-            _dcgd_step(agents, drone_ids)
+        # ── 6. DICT ──────────────────────────────────────────────────────
+        if len(dict_ids) == 2 and not dict_disam_done:
+            # Adapt+Combine mentre entrambi sono ancora in TRACK
+            both_track = (
+                agents[dict_ids[0]].state == DroneState.TRACK and
+                agents[dict_ids[1]].state == DroneState.TRACK
+            )
+            if both_track:
+                _dict_step(agents, dict_ids, terrain)
+                for i in dict_ids:
+                    if agents[i].source_cands:
+                        agents[i].source_cands_log.append(
+                            (step, [c.copy() for c in agents[i].source_cands])
+                        )
+
+        # Disambiguazione 2 droni: confronto segnali a destinazione
+        if dict_disam_mode == '2drone' and dict_disam_done:
+            d0, d1 = dict_ids
+            d0_dist = np.linalg.norm(agents[d0].x_est[:3] - agents[d0].current_target())
+            d1_dist = np.linalg.norm(agents[d1].x_est[:3] - agents[d1].current_target())
+            d0_at = agents[d0].state == DroneState.SUPPORT and d0_dist < STOP_THRESH
+            d1_at = agents[d1].state == DroneState.SUPPORT and d1_dist < STOP_THRESH
+            if step % 20 == 0:
+                print(
+                    f"  [2drone step={step}]"
+                    f"  d{d0}: {agents[d0].state.name} dist={d0_dist:.2f}m tgt={agents[d0].current_target()[:2].round(1)} {'✓' if d0_at else '✗'}"
+                    f"  |  d{d1}: {agents[d1].state.name} dist={d1_dist:.2f}m tgt={agents[d1].current_target()[:2].round(1)} {'✓' if d1_at else '✗'}"
+                )
+            if d0_at and d1_at:
+                s0 = agents[d0].signal_log[-1][1] if agents[d0].signal_log else 0.0
+                s1 = agents[d1].signal_log[-1][1] if agents[d1].signal_log else 0.0
+                winner = d0 if s0 >= s1 else d1
+                loser  = d1 if winner == d0 else d0
+
+                # Winner: mantiene il proprio source_est (già il candidato corretto)
+                # Loser: prende il proprio source_cands più vicino al winner
+                winner_pos = agents[winner].source_est[:2] \
+                    if agents[winner].source_est is not None \
+                    else agents[winner].x_est[:2]
+                loser_cands = agents[loser].source_cands
+                if len(loser_cands) >= 2:
+                    d0c = np.linalg.norm(np.asarray(loser_cands[0][:2]) - winner_pos)
+                    d1c = np.linalg.norm(np.asarray(loser_cands[1][:2]) - winner_pos)
+                    c = loser_cands[0] if d0c <= d1c else loser_cands[1]
+                    agents[loser].source_est = np.array([
+                        c[0], c[1], terrain.z(float(c[0]), float(c[1]))
+                    ])
+                elif loser_cands:
+                    c = loser_cands[0]
+                    agents[loser].source_est = np.array([
+                        c[0], c[1], terrain.z(float(c[0]), float(c[1]))
+                    ])
+
+                # Log 2→1 candidato per entrambi (animazione)
+                for i in dict_ids:
+                    agents[i].source_cands = [agents[i].source_est.copy()]
+                    agents[i].source_cands_log.append((step, [agents[i].source_est.copy()]))
+                print(
+                    f"\n  ◆ DICT 2-drone: drone {winner} segnale più forte."
+                    f"  d{winner}→({agents[winner].source_est[0]:.1f},{agents[winner].source_est[1]:.1f})"
+                    f"  d{loser}→({agents[loser].source_est[0]:.1f},{agents[loser].source_est[1]:.1f})"
+                )
+                dict_disam_mode = '2drone_done'
+
+        # XY consensus a 3 droni (dopo disambiguazione, prima del depth-circle)
+        if dict_disam_mode == '3drone_xy':
+            _dict_step_3drone(agents, dict_xy_active_ids, terrain)
+            dict_xy_ctr += 1
+            if dict_xy_ctr >= DICT_XY_ITERS:
+                # Centro del depth-circle = media delle stime individuali
+                src_xy = np.mean(
+                    [agents[i].source_est[:2] for i in dict_xy_active_ids
+                     if agents[i].source_est is not None], axis=0
+                )
+                circle_center = np.array([
+                    src_xy[0], src_xy[1],
+                    terrain.z(float(src_xy[0]), float(src_xy[1]))
+                ])
+                # Ogni drone mantiene il proprio source_est raffinato dal consenso XY
+                ids_with_est = [i for i in dict_xy_active_ids if agents[i].source_est is not None]
+                print(
+                    f"\n  ◆ DICT 3-drone XY consensus completato al passo {step}:"
+                    f" centro depth-circle → ({circle_center[0]:.1f}, {circle_center[1]:.1f})"
+                )
+                for i in ids_with_est:
+                    e = agents[i].source_est
+                    print(f"    Drone {i}: source_est=({e[0]:.1f},{e[1]:.1f})")
+                _dict_setup_depth_circle(agents, dict_xy_active_ids, circle_center, terrain, agl)
+                dict_disam_mode = '3drone'
+
+        # DCGD + Depth estimation — droni in cerchio a 120°
+        if dict_disam_mode in ('3drone', 'all_stop'):
+            support_ids = [i for i in drone_ids if agents[i].state == DroneState.SUPPORT]
+            if support_ids:
+                all_in_pos = all(
+                    np.linalg.norm(agents[i].x_est[:3] - agents[i].current_target()) < STOP_THRESH
+                    for i in support_ids
+                )
+                if all_in_pos:
+                    if not dcgd_done:
+                        # Fase 1: DCGD — Adapt+Combine + spostamento fisico dei droni
+                        _dcgd_step(agents, support_ids, terrain, agl, DCGD_STEP_XY)
+                        dcgd_ctr += 1
+                        # I droni seguono subito la correzione: aggiorna i waypoint
+                        src_xy = np.mean(
+                            [agents[i].source_est[:2] for i in support_ids
+                             if agents[i].source_est is not None], axis=0
+                        )
+                        new_center = np.array([
+                            src_xy[0], src_xy[1],
+                            terrain.z(float(src_xy[0]), float(src_xy[1]))
+                        ])
+                        _update_orbit_center(agents, support_ids, new_center, terrain, agl)
+                        if dcgd_ctr % 20 == 0:
+                            print(
+                                f"  [DCGD iter={dcgd_ctr}/{DCGD_ITERS}]"
+                                f" est=({src_xy[0]:.1f}, {src_xy[1]:.1f})"
+                            )
+                        if dcgd_ctr >= DCGD_ITERS:
+                            dcgd_done = True
+                            print(
+                                f"\n  ◆ DCGD completato ({DCGD_ITERS} iter) al passo {step}:"
+                                f" centro finale → ({src_xy[0]:.1f}, {src_xy[1]:.1f})"
+                            )
+                    else:
+                        # Fase 2: stima profondità dalla posizione raffinata dal DCGD
+                        _dict_depth_step(agents, support_ids, agl)
+                        dict_depth_ctr += 1
+                        for i in support_ids:
+                            if agents[i].depth_est is not None:
+                                agents[i].depth_est_log.append((step, agents[i].depth_est))
+
+        # Log source_est
         for i in drone_ids:
             ag_i = agents[i]
-            if ag_i.source_est is not None and ag_i.state in (
-                DroneState.TRACK, DroneState.SUPPORT, DroneState.STOP
-            ):
+            if ag_i.source_est is not None and ag_i.state != DroneState.SEARCH:
                 ag_i.source_est_log.append((step, ag_i.source_est.copy()))
 
         # ── 7. Avanza waypoint (arrival-gated) ───────────────────────────
-        # I droni in TRACK sono guidati dall'ES (aggiornato al passo 2c)
-        # e non usano l'arrival gate — il loro target cambia ogni step.
         for i in drone_ids:
             ag = agents[i]
             if ag.state == DroneState.TRACK:
-                continue
+                continue  # guidato dall'ES
             if np.linalg.norm(ag.x_est[:3] - ag.current_target()) < STOP_THRESH:
                 _on_wp_reached(ag, signals[i], terrain, agl)
 
@@ -999,91 +1161,41 @@ def simulate(
                 row    += f"  {_STATE_LABEL[ag.state]}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m"
             print(row)
 
-        # ── 9. Terminazione: ≥3 droni in STOP ───────────────────────────
-        n_stopped = sum(1 for ag in agents.values() if ag.state == DroneState.STOP)
-
-        if n_stopped >= 3 and not converge_triggered:
-            converge_ids = [i for i in drone_ids if agents[i].state == DroneState.STOP][:3]
-            ests = [agents[i].source_est for i in converge_ids
-                    if agents[i].source_est is not None]
-            center = np.mean(ests, axis=0) if ests else np.array(
-                [cx_ws, cy_ws, terrain.z(cx_ws, cy_ws)]
-            )
-
-            # 3 posizioni equidistanti (120°) attorno alla stima della sorgente
-            targets = [
-                np.array([
-                    center[0] + CONVERGE_RADIUS * np.cos(k * 2.0 * np.pi / 3.0),
-                    center[1] + CONVERGE_RADIUS * np.sin(k * 2.0 * np.pi / 3.0),
-                    terrain.agl_z(
-                        center[0] + CONVERGE_RADIUS * np.cos(k * 2.0 * np.pi / 3.0),
-                        center[1] + CONVERGE_RADIUS * np.sin(k * 2.0 * np.pi / 3.0),
-                        agl,
-                    ),
-                ])
-                for k in range(3)
-            ]
-
-            # Assegnazione ottimale: minimizza spostamento totale (6 permutazioni)
-            best_perm, best_cost = None, float('inf')
-            for perm in _iterperms(range(3)):
-                cost = sum(
-                    np.linalg.norm(agents[converge_ids[k]].x_est[:2] - targets[perm[k]][:2])
-                    for k in range(3)
-                )
-                if cost < best_cost:
-                    best_cost, best_perm = cost, perm
-
-            for k, did in enumerate(converge_ids):
-                agents[did].waypoints = [targets[best_perm[k]]]
-                agents[did].wp_idx    = 0
-
-            converge_triggered = True
+        # ── 9. Terminazione ──────────────────────────────────────────────
+        if dict_disam_mode in ('3drone', 'all_stop') and dict_depth_ctr >= DICT_DEPTH_ITERS:
             print(
-                f"\n  ↗ {n_stopped} droni STOP al passo {step+1} (t={(step+1)*dt:.2f}s)"
-                f" — posizionamento a 120° attorno a {center[:2].round(1)} (r={CONVERGE_RADIUS} m)"
+                f"\n  ✔ Depth consensus completato al passo {step+1}"
+                f" (t={(step+1)*dt:.2f}s)"
             )
+            break
 
-        # Attendi arrivo a 120° (solo finché non è ancora iniziato il raffinamento)
-        if converge_triggered and refine_phase == 0:
-            all_in_place = all(
-                np.linalg.norm(agents[i].x_est[:3] - agents[i].current_target()) < STOP_THRESH
-                for i in converge_ids
+        if dict_disam_mode == '2drone_done':
+            print(
+                f"\n  ✔ DICT 2-drone disambiguazione completata al passo {step+1}"
+                f" (t={(step+1)*dt:.2f}s)"
             )
-            if all_in_place:
-                print(
-                    f"\n  ✔ Posizionamento completato al passo {step+1}"
-                    f" (t={(step+1)*dt:.2f}s)"
-                    f" — DCGD refine ({DIST_EST_REFINE} step nel loop)..."
-                )
-                for i in drone_ids:
-                    agents[i].dcgd_refine_step = step + 1
-                refine_phase = 1
-                refine_ctr   = 0
+            break
 
-        # Fase 1: DCGD refinement — _dcgd_step già chiamato al passo 6
-        if refine_phase == 1:
-            refine_ctr += 1
-            if refine_ctr >= DIST_EST_REFINE:
-                print(
-                    f"\n  ✔ DCGD refine completato al passo {step+1}"
-                    f" (t={(step+1)*dt:.2f}s)"
-                )
-                break
-
-    # ── Report finale ─────────────────────────────────────────────────────
+    # ── Report finale ──────────────────────────────────────────────────────
     est      = triangulate_victim(agents, artva)
     err_xy   = np.linalg.norm(est[:2] - artva.position[:2])
     z_true   = artva.position[2]
     depth_true  = terrain.z(artva.position[0], artva.position[1]) - z_true
-    depth_est   = terrain.z(est[0], est[1]) - est[2]
-    err_depth   = abs(depth_est - depth_true)
+
+    # Depth estimate: usa depth_est se disponibile, altrimenti stima da source_est[2]
+    depth_ests = [ag.depth_est for ag in agents.values() if ag.depth_est is not None]
+    if depth_ests:
+        depth_est_val = float(np.mean(depth_ests))
+    else:
+        depth_est_val = terrain.z(est[0], est[1]) - est[2]
+    err_depth = abs(depth_est_val - depth_true)
+
     print(f"\n  Posizione vittima reale  : {artva.position.round(2)}")
-    print(f"  Stima DCGD distribuita   : {est.round(2)}")
+    print(f"  Stima DICT distribuita   : {est.round(2)}")
     print(f"  Errore planimetrico      : {err_xy:.2f} m")
     print(f"  Profondità reale         : {depth_true:.2f} m")
-    print(f"  Profondità stimata       : {depth_est:.2f} m  (errore {err_depth:.2f} m)")
-    err = err_xy  # compatibilità con il resto del codice
+    print(f"  Profondità stimata DICT  : {depth_est_val:.2f} m  (errore {err_depth:.2f} m)")
+
     print("\n  Stime source_est per drone:")
     valid_ests = [agents[i].source_est for i in drone_ids if agents[i].source_est is not None]
     for i in drone_ids:
@@ -1098,10 +1210,23 @@ def simulate(
             f"    Varianza stime [σ²x={var_xy[0]:.3f}, σ²y={var_xy[1]:.3f}]  "
             f"(σ_planimetrica={np.sqrt(var_xy.sum()):.3f} m)"
         )
+
     print("\n  Errore stima IMDCL finale:")
     for i in drone_ids:
         ag = agents[i]
         print(f"    Drone {i}: |x_real - x_est| = {np.linalg.norm(ag.x[:3] - ag.x_est[:3]):.3f} m")
 
-    return agents, consensus_events, artva_detect_thr, track_stop_thr
+    print("\n  Errore di landing per drone:")
+    for i in drone_ids:
+        ag = agents[i]
+        if ag.source_est is None:
+            print(f"    Drone {i}: n/a (nessuna stima)")
+            continue
+        landing_point = ag.source_est - (ag.x_est[:3] - ag.x[:3])
+        landing_err   = landing_point[:2] - artva.position[:2]
+        print(
+            f"    Drone {i}: {np.linalg.norm(landing_err):.3f} m  "
+            f"(Δx={landing_err[0]:+.2f}  Δy={landing_err[1]:+.2f})"
+        )
 
+    return agents, consensus_events, artva_detect_thr, track_stop_thr, dict_ids, dict_disam_mode

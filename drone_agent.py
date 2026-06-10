@@ -14,6 +14,7 @@ Contenuto
 from __future__ import annotations
 
 import numpy as np
+from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import List, Optional
@@ -23,7 +24,7 @@ from mpc_drone import DroneMPC
 from terrain import Terrain
 from config import (
     AGL_HEIGHT, LANE_SPACING, STOP_THRESH,
-    TAU_FILTER_ARTVA, DT_MPC,
+    TAU_FILTER_ARTVA, DT_MPC, N_SIGNAL_SAMPLES,
 )
 
 
@@ -118,9 +119,11 @@ class DroneAgent:
     solo quando quello corrente è raggiunto (o su transizione di stato).
     Il dispatch avviene in simulation.py tramite _on_wp_reached().
 
-    Campi SUPPORT
-    -------------
-    support_center   : posizione (3,) del drone STOP che ha chiamato il supporto
+    Stima sorgente: DICT
+    --------------------
+    source_cands  : [c1, c2] punti di intersezione iterativi (fase Adapt+Combine)
+    source_est    : punto selezionato dopo la disambiguazione
+    depth_est     : profondità stimata [m] dalla fase depth consensus
     """
 
     id:           int
@@ -140,10 +143,16 @@ class DroneAgent:
     wp_target_log: list      = field(default_factory=list)   # current_target() ad ogni step
     detected:     bool       = False
 
-    # DCGD
-    source_est:          Optional[np.ndarray] = None
-    source_est_log:      list                 = field(default_factory=list)  # (step, est_xyz) durante TRACK/SUPPORT/STOP
-    dcgd_refine_step:     Optional[int]       = None   # step in cui inizia il DCGD refine da fermi (refine_phase → 1)
+    # DICT — stima sorgente
+    source_est:       Optional[np.ndarray] = None
+    source_cands:     list                 = field(default_factory=list)   # [c1, c2] candidati DICT
+    source_cands_log: list                 = field(default_factory=list)   # (step, [cand, ...])
+    source_est_log:   list                 = field(default_factory=list)   # (step, est_xyz)
+    depth_est:        Optional[float]      = None                          # stima profondità [m]
+    depth_est_log:    list                 = field(default_factory=list)   # (step, depth_est)
+    r:          Optional[float]      = None
+    r_log:      list                 = field(default_factory=list)
+    r_history:  deque                = field(default_factory=lambda: deque(maxlen=N_SIGNAL_SAMPLES))
 
     # TRACK
     track_dir:          Optional[np.ndarray] = None
@@ -153,14 +162,6 @@ class DroneAgent:
     track_cand_signals: List[float]          = field(default_factory=list)
     track_cand_idx:     int                  = 0
     track_time:         int                  = 0
-
-    # SUPPORT
-    support_center:  Optional[np.ndarray] = None
-
-    # SUPPORT — ricerca partner pendente
-    support_pending:      bool  = False  # True se si attendono ancora partner
-    support_deadline:     int   = 0      # step entro cui chiudere la ricerca
-    support_n_needed:     int   = 0      # partner SUPPORT ancora mancanti
 
     # SEARCH — stato lawnmower a corsie globali
     lane_xs:          np.ndarray = field(default_factory=lambda: np.array([]))
@@ -177,10 +178,12 @@ class DroneAgent:
     # ES history — per calcolare la media su un ciclo completo (usata da step 2d)
     es_x_hist: list = field(default_factory=list)
     es_y_hist: list = field(default_factory=list)
+    es_active: bool = False   # True dopo init_es: ES gestisce i waypoint del drone
 
-    # ARTVA signal filtering
+    # ARTVA signal 
     sig_filt: Optional[float] = None
     sig_raw_last: float = 0.0
+    sig_batch:  deque = field(default_factory=lambda: deque(maxlen=N_SIGNAL_SAMPLES))
 
     # ── Proprietà ──────────────────────────────────────────────────────────
 
@@ -208,38 +211,25 @@ class DroneAgent:
             and np.linalg.norm(self.x_est[:3] - self.current_target()) < STOP_THRESH
         )
 
+    def update_signal_filter_batch(self, sig: float) -> float:
+        """
+        Aggiorna sig_batch con il nuovo campione grezzo e restituisce
+        la media mobile sugli ultimi N_SIGNAL_SAMPLES valori.
+        """
+        self.sig_batch.append(sig)
+        return float(np.mean(self.sig_batch))
+
     def init_es(self, terrain: Terrain, agl: float) -> None:
         """
-        Inizializza lo stato ES alla transizione SEARCH → TRACK.
+        Inizializza lo stato ES (TRACK o SUPPORT).
         Il riferimento parte dalla posizione stimata corrente;
         α parte da 0 e rampa verso ES_ALPHA_MAX secondo eq. 13.
         """
-        self.es_x_ref = float(self.x_est[0])
-        self.es_y_ref = float(self.x_est[1])
-        self.es_alpha = 0.0
-        self.es_time  = 0.0
+        self.es_x_ref  = float(self.x_est[0])
+        self.es_y_ref  = float(self.x_est[1])
+        self.es_alpha  = 0.0
+        self.es_time   = 0.0
+        self.es_active = True
         z = terrain.agl_z(self.es_x_ref, self.es_y_ref, agl)
         self.waypoints = [np.array([self.es_x_ref, self.es_y_ref, z])]
         self.wp_idx    = 0
-
-    def update_signal_filter(self, sig: float,) -> float:
-        """
-        First-order low-pass filter.
-        alpha=0.1:
-        ~10 samples memory
-
-        alpha=0.05:
-        ~20 samples memory
-        given the desired filter time constant τ and the sampling interval Δt,
-        the smoothing factor α can be calculated as:
-        α = Δt / (τ + Δt)
-        α = 1-exp(-Δt/τ) for an exponential moving average interpretation
-        """
-        self.sig_raw_last = sig
-        alpha = 1 - np.exp(-DT_MPC / TAU_FILTER_ARTVA)  
-        if self.sig_filt is None:
-            self.sig_filt = sig
-        else:
-            self.sig_filt = ((1.0 - alpha) * self.sig_filt + alpha * sig)   
-
-        return self.sig_filt

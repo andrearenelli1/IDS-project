@@ -686,114 +686,104 @@ def plot_artva_signal(
     return fig
 
 
-def plot_dcgd_depth_error(
+def plot_dict_depth_error(
     agents:  Dict[int, DroneAgent],
     artva:   ARTVASource,
     terrain: "Terrain",
 ) -> plt.Figure:
-    """
-    Errore di stima della profondità di sepoltura nel tempo.
-
-    Durante TRACK/SUPPORT/STOP: source_est[2] è inizializzato a z_terrain
-    (superficie) — l'errore parte quindi pari alla profondità reale e rimane
-    alto fino al depth_refine finale.
-    Un punto finale mostra il valore post-refine.
-    """
+    """Errore di stima della profondità di sepoltura nel tempo (DICT)."""
     drone_ids  = list(agents.keys())
-    true_depth = (
-        terrain.z(artva.position[0], artva.position[1]) - artva.position[2]
-    )
+    true_depth = terrain.z(artva.position[0], artva.position[1]) - artva.position[2]
 
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(7, 4))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
-        any_data      = False
-        t_refine_start = None
+        any_data = False
         for i in drone_ids:
             ag  = agents[i]
-            log = ag.source_est_log
+            log = ag.depth_est_log
             if not log:
                 continue
             any_data = True
             c = COLORS.get(i, "#aaaaaa")
-
-            times, errs = [], []
-            for (step, src_est) in log:
-                est_depth = terrain.z(src_est[0], src_est[1]) - src_est[2]
-                errs.append(abs(est_depth - true_depth))
-                times.append(step * DT_SIM)
+            times = [s * DT_SIM for (s, _) in log]
+            errs  = [abs(d - true_depth) for (_, d) in log]
             ax.plot(times, errs, color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
 
-            if ag.dcgd_refine_step is not None:
-                t_r = ag.dcgd_refine_step * DT_SIM
-                if t_refine_start is None or t_r < t_refine_start:
-                    t_refine_start = t_r
-
-        if t_refine_start is not None:
-            ax.axvline(t_refine_start, color="#888888", lw=1.8, ls="--",
-                       label="stationary refinement")
-
         if not any_data:
-            ax.text(0.5, 0.5, "No DCGD data (TRACK phase not reached)",
+            ax.text(0.5, 0.5, "No DICT data (TRACK phase not reached)",
                     ha="center", va="center", transform=ax.transAxes)
 
         ax.set_xlabel(r"Time [s]", fontsize=15)
         ax.set_ylabel(r"Depth estimation error [m]", fontsize=15)
-        ax.set_title(r"Burial Depth Estimation Error", fontweight="bold", fontsize=18)
+        ax.set_title(r"Burial Depth Estimation Error (DICT)", fontweight="bold", fontsize=18)
         ax.set_ylim(bottom=0)
         ax.legend(loc="upper center", framealpha=0.85)
         fig.tight_layout()
     return fig
 
 
-def plot_dcgd_convergence(
-    agents: Dict[int, DroneAgent],
-    artva:  ARTVASource,
+def plot_dict_convergence(
+    agents:   Dict[int, DroneAgent],
+    artva:    ARTVASource,
+    dict_ids: list = None,
 ) -> plt.Figure:
-    """Errore planimetrico (xy) stima sorgente DCGD nel tempo.
-    Il raffinamento DCGD è integrato nel loop: il log copre l'intera evoluzione."""
-    drone_ids = list(agents.keys())
-    true_xy   = artva.position[:2]
+    """Mappa 2D XY: landing point stimato da ciascun drone + sorgente reale.
+
+    Mostra tutti i droni con source_est impostato (include i 3 del depth-circle).
+    """
+    true_xy = artva.position[:2]
+
+    # Tutti gli agenti che hanno una stima finale, ordinati per id
+    est_agents = sorted(
+        [(i, ag) for i, ag in agents.items() if ag.source_est is not None],
+        key=lambda x: x[0],
+    )
 
     with plt.rc_context(_LATEX_RC):
-        fig, ax = plt.subplots(figsize=(7, 4))
+        fig, ax = plt.subplots(figsize=(6, 6))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
-        any_data       = False
-        t_refine_start = None
-        for i in drone_ids:
-            ag  = agents[i]
-            log = ag.source_est_log
-            if not log:
-                continue
-            any_data = True
-            c     = COLORS.get(i, "#aaaaaa")
-            steps = np.array([e[0] for e in log]) * DT_SIM
-            errs  = np.array([np.linalg.norm(e[1][:2] - true_xy) for e in log])
-            ax.plot(steps, errs, color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
+        if not est_agents:
+            ax.text(0.5, 0.5, "No DICT data", ha="center", va="center",
+                    transform=ax.transAxes)
+            ax.set_title("DICT — Landing point stimati", fontweight="bold")
+            fig.tight_layout()
+            return fig
 
-            if ag.dcgd_refine_step is not None:
-                t_r = ag.dcgd_refine_step * DT_SIM
-                if t_refine_start is None or t_r < t_refine_start:
-                    t_refine_start = t_r
+        all_pts = [true_xy]
 
-        if t_refine_start is not None:
-            ax.axvline(t_refine_start, color="#888888", lw=1.8, ls="--",
-                       label="stationary refinement")
+        for i, ag in est_agents:
+            # corregge per deriva IMDCL: stessa formula del log di simulazione
+            lp     = ag.source_est - (ag.x_est[:3] - ag.x[:3])
+            lp_xy  = lp[:2]
+            c      = COLORS.get(i, "#aaaaaa")
+            ax.plot(*lp_xy, "P", color=c, ms=12,
+                    mec="black", mew=0.8, zorder=7,
+                    label=f"Drone {i} — landing point")
+            err = np.linalg.norm(lp_xy - true_xy)
+            ax.annotate(f"  {err:.1f} m", lp_xy, fontsize=7,
+                        color=c, zorder=8)
+            all_pts.append(lp_xy)
 
-        if not any_data:
-            ax.text(0.5, 0.5, "No DCGD data (TRACK phase not reached)",
-                    ha="center", va="center", transform=ax.transAxes)
+        ax.plot(*true_xy, "*", color="crimson", ms=16,
+                mec="black", mew=0.6, zorder=9, label=r"$\theta$ (reale)")
 
-        ax.set_xlabel(r"Time [s]", fontsize=15)
-        ax.set_ylabel(r"Planimetric error [m]", fontsize=15)
-        ax.set_title(r"DCGD Source Estimation Convergence (xy)",
-                     fontweight="bold", fontsize=18)
-        ax.set_ylim(bottom=0)
-        ax.legend(loc="upper center", framealpha=0.85)
+        pts    = np.array(all_pts)
+        span   = max(pts[:, 0].max() - pts[:, 0].min(),
+                     pts[:, 1].max() - pts[:, 1].min(), 1.0)
+        margin = max(5.0, span * 0.25)
+        ax.set_xlim(pts[:, 0].min() - margin, pts[:, 0].max() + margin)
+        ax.set_ylim(pts[:, 1].min() - margin, pts[:, 1].max() + margin)
+
+        ax.set_xlabel(r"$x$ [m]")
+        ax.set_ylabel(r"$y$ [m]")
+        ax.set_title("DICT — Landing point stimati vs sorgente reale", fontweight="bold")
+        ax.set_aspect("equal", adjustable="box")
+        ax.legend(loc="best", framealpha=0.85, fontsize=8)
         fig.tight_layout()
     return fig
 
@@ -803,9 +793,11 @@ def plot_dcgd_convergence(
 # ============================================================================
 
 def plot_final_positions(
-    terrain: Terrain,
-    artva:   ARTVASource,
-    agents:  Dict[int, DroneAgent],
+    terrain:          Terrain,
+    artva:            ARTVASource,
+    agents:           Dict[int, DroneAgent],
+    dict_ids:         list = None,
+    dict_disam_mode:  str  = '',
 ) -> plt.Figure:
     """
     Mappa 2D in coordinate workspace (locali):
@@ -814,11 +806,14 @@ def plot_final_positions(
       - sorgente reale e stima DCGD
     Extent calcolato sui soli punti mostrati + margine.
     """
-    # — Solo i droni coinvolti nella triangolazione (STOP o SUPPORT) —
-    triangulation_ids = [
-        i for i, ag in agents.items()
-        if ag.state in (DroneState.STOP, DroneState.SUPPORT)
-    ]
+    # — In modalità 2drone usa solo i due DICT drones; altrimenti tutti STOP/SUPPORT —
+    if dict_disam_mode in ('2drone', '2drone_done') and dict_ids:
+        triangulation_ids = list(dict_ids)
+    else:
+        triangulation_ids = [
+            i for i, ag in agents.items()
+            if ag.state in (DroneState.STOP, DroneState.SUPPORT)
+        ]
     if not triangulation_ids:
         triangulation_ids = list(agents.keys())
 
@@ -827,21 +822,37 @@ def plot_final_positions(
 
     victim_xy = artva.position[:2]
 
-    # Stima DCGD: media delle source_est dei droni di triangolazione
+    # Stima DICT: media delle source_est dei droni di triangolazione
     dcgd_ests = [
         agents[i].source_est[:2] for i in triangulation_ids
         if agents[i].source_est is not None
     ]
     dcgd_xy = np.mean(dcgd_ests, axis=0) if dcgd_ests else victim_xy.copy()
 
-    # — Bounds stretti (include anche le stime driftate) —
+    # — Raggi stimati dai segnali finali: r̂ = (M/s)^{1/3} —
+    circle_radii = {}
+    for i in triangulation_ids:
+        ag  = agents[i]
+        sig = ag.signal_log[-1][1] if ag.signal_log else 0.0
+        if sig > 1e-12:
+            circle_radii[i] = (ARTVA_MOMENT / sig) ** (1.0 / 3.0)
+
+    # — Bounds stretti (include anche le stime driftate e gli estremi dei cerchi) —
     drifted_pts = [
         agents[i].source_est[:2] - (agents[i].x_est[:2] - agents[i].x[:2])
         for i in triangulation_ids if agents[i].source_est is not None
     ]
+    circle_extremes = [
+        finals_real[i] + np.array([dx, dy])
+        for i in triangulation_ids if i in circle_radii
+        for dx, dy in ((circle_radii[i], 0), (-circle_radii[i], 0),
+                       (0, circle_radii[i]), (0, -circle_radii[i]))
+    ]
     all_pts = np.vstack(
         list(finals_real.values()) + list(finals_est.values())
-        + [victim_xy, dcgd_xy] + (drifted_pts if drifted_pts else [dcgd_xy])
+        + [victim_xy, dcgd_xy]
+        + (drifted_pts if drifted_pts else [dcgd_xy])
+        + (circle_extremes if circle_extremes else [dcgd_xy])
     )
     span   = max(all_pts[:, 0].max() - all_pts[:, 0].min(),
                  all_pts[:, 1].max() - all_pts[:, 1].min())
@@ -854,9 +865,18 @@ def plot_final_positions(
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
+        _th = np.linspace(0, 2 * np.pi, 180)
+
         for i in triangulation_ids:
             c  = COLORS.get(i, "#aaaaaa")
             ag = agents[i]
+            # cerchio di distanza stimata centrato sulla posizione reale finale
+            if i in circle_radii:
+                r  = circle_radii[i]
+                cx, cy = finals_real[i]
+                ax.plot(cx + r * np.cos(_th), cy + r * np.sin(_th),
+                        color=c, lw=1.2, ls="--", alpha=0.55, zorder=3,
+                        label=f"$\\hat{{r}}_{{{i}}}={r:.1f}$~m")
             # posizione reale drone
             ax.plot(*finals_real[i], "^", color=c, ms=11, mec="white", mew=0.9,
                     zorder=7, label=f"$p_{{{i}}}$")
@@ -1008,7 +1028,7 @@ def animate_mission(
         wp_dots2[i], = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.6,
                                 alpha=0.35, zorder=4)  # waypoint corrente
         src_dots2[i], = ax2.plot([], [], "D", color=c, ms=9,
-                                 mec="white", mew=1.2, alpha=0.0, zorder=8)  # stima sorgente
+                                 mec="white", mew=1.2, alpha=0.0, zorder=8)  # unused placeholder
 
     # — Frecce direzione ES (visibili solo in TRACK) ───────────────────────
     es_arrows2: Dict[int, FancyArrowPatch] = {}
@@ -1026,6 +1046,38 @@ def animate_mission(
         es_arrows2[i] = arrow
         es_ref_dots2[i], = ax2.plot([], [], "+", color=c, ms=8,
                                      mew=1.8, alpha=0.0, zorder=9)
+
+    # — Diamanti per i candidati circle consensus: 2 per drone (stima locale) ─
+    cand_dots_A: dict = {}   # candidato 0 per drone
+    cand_dots_B: dict = {}   # candidato 1 per drone
+    for i in drone_ids:
+        c = COLORS.get(i, "#aaaaaa")
+        cand_dots_A[i], = ax2.plot([], [], "D", mfc="#ffffff", mec=c,
+                                   ms=9, mew=2.0, alpha=0.0, zorder=11)
+        cand_dots_B[i], = ax2.plot([], [], "D", mfc="#ffffff", mec=c,
+                                   ms=9, mew=2.0, alpha=0.0, zorder=11)
+
+    # — Landing point per drone: source_est corretta per drift IMDCL ─────────
+    landing_dots2: dict = {}
+    true_xy = artva.position[:2]
+    for i in drone_ids:
+        c = COLORS.get(i, "#aaaaaa")
+        landing_dots2[i], = ax2.plot([], [], "P", color=c, ms=13,
+                                     mec="white", mew=1.2, alpha=0.0, zorder=13)
+
+    # Pre-computa candidati per-drone con forward-fill
+    _cands_at: Dict[int, list] = {}
+    for i in drone_ids:
+        arr: list = [None] * T
+        for (step, cands) in agents[i].source_cands_log:
+            if step < T:
+                arr[step] = cands
+        last: list = []
+        for t in range(T):
+            if arr[t] is not None:
+                last = arr[t]
+            arr[t] = last
+        _cands_at[i] = arr
 
     # — Pre-computa source_est per step (forward-fill) ────────────────────
     _src_at: Dict[int, list] = {}
@@ -1060,7 +1112,7 @@ def animate_mission(
 
     fig.suptitle(
         "Ricerca valanga multi-agente — MPC + IMDCL + FSM 4 stati\n"
-        "reale (—)  ·  IMDCL (--)  ·  cerchi: dist. ARTVA  ·  ◆: sorgente DCGD  ·  →+: direzione ES (solo TRACK)",
+        "reale (—)  ·  IMDCL (--)  ·  cerchi: dist. ARTVA  ·  ◆: candidati DICT  ·  ✛: landing point  ·  →+: ES",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
@@ -1167,6 +1219,8 @@ def animate_mission(
         + list(dots2_e.values()) + list(circles2.values())
         + list(wp_dots2.values()) + list(src_dots2.values())
         + list(es_ref_dots2.values())
+        + list(cand_dots_A.values()) + list(cand_dots_B.values())
+        + list(landing_dots2.values())
         + _csn_artists + [info]
     )
 
@@ -1193,6 +1247,13 @@ def animate_mission(
             src_dots2[i].set_alpha(0.0)
             es_arrows2[i].set_alpha(0.0)
             es_ref_dots2[i].set_alpha(0.0)
+        for i in drone_ids:
+            cand_dots_A[i].set_data([], [])
+            cand_dots_A[i].set_alpha(0.0)
+            cand_dots_B[i].set_data([], [])
+            cand_dots_B[i].set_alpha(0.0)
+            landing_dots2[i].set_data([], [])
+            landing_dots2[i].set_alpha(0.0)
         info.set_text("")
         _reset_consensus_artists()
         return all_artists
@@ -1234,12 +1295,13 @@ def animate_mission(
             dots2[i].set_data([traj[ti, 0]], [traj[ti, 1]])
             dots2_e[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
 
-            # Cerchio: raggio = (ARTVA_MOMENT / segnale)^(1/3), solo in TRACK
-            sig = ag.signal_log[ti][1] if ti < len(ag.signal_log) else 0.0
-            if sig >= ARTVA_DETECT_THR:
-                r  = (ARTVA_MOMENT / max(sig, 1e-12)) ** (1.0 / 3.0)
+            # Cerchio: raggio da ag.r_log (distanza stimata dalla sorgente)
+            in_track_or_support = (ag.state_log and ti < len(ag.state_log)
+                                   and ag.state_log[ti] in (DroneState.TRACK, DroneState.SUPPORT, DroneState.STOP))
+            r_val = ag.r_log[ti] if ti < len(ag.r_log) else None
+            if in_track_or_support and r_val is not None:
                 px, py = traj[ti, 0], traj[ti, 1]
-                circles2[i].set_data(px + r * _cos, py + r * _sin)
+                circles2[i].set_data(px + r_val * _cos, py + r_val * _sin)
             else:
                 circles2[i].set_data([], [])
 
@@ -1251,16 +1313,18 @@ def animate_mission(
             else:
                 wp_dots2[i].set_data([], [])
 
-            # Stima sorgente DCGD nel riferimento del drone reale
-            # display = x_true + (source_est - x_est)
-            src = _src_at[i][ti]
-            if src is not None:
-                disp = traj[ti, :2] + (src[:2] - est[ti_e, :2])
-                src_dots2[i].set_data([disp[0]], [disp[1]])
-                src_dots2[i].set_alpha(0.9)
+            # Landing point: source_est corretta per drift IMDCL
+            src_est = _src_at[i][t_step]
+            if src_est is not None:
+                drift_xy = est[ti_e, :2] - traj[ti, :2]
+                lp       = src_est[:2] - drift_xy
+                landing_dots2[i].set_data([lp[0]], [lp[1]])
+                landing_dots2[i].set_alpha(0.85)
+                err_m = np.linalg.norm(lp - true_xy)
+                lines.append(f"  LP{i}: ({lp[0]:.1f},{lp[1]:.1f})  Δ={err_m:.1f}m")
             else:
-                src_dots2[i].set_data([], [])
-                src_dots2[i].set_alpha(0.0)
+                landing_dots2[i].set_data([], [])
+                landing_dots2[i].set_alpha(0.0)
 
             # Direzione ES: freccia dal drone reale verso il riferimento ES
             # (wp_target_log durante TRACK = es_ref clamped)
@@ -1363,6 +1427,43 @@ def animate_mission(
 
             consensus_label.set_text(label)
             consensus_label.set_alpha(a_ring)
+
+        # Candidati DICT — display_i = cand_i - (p_hat_i - p_i)  (corregge drift IMDCL)
+        #   len == 2  → DICT in corso:        2 diamanti bianchi aperti (cand_dots_A/B)
+        #   len == 1  → post-disambiguazione: 1 diamante pieno colorato (src_dots2)
+        #   altrimenti → nulla
+        for i in drone_ids:
+            _ag_i    = agents[i]
+            _tr_i    = np.array(_ag_i.history)
+            _es_i    = np.array(_ag_i.est_history) if _ag_i.est_history else _tr_i
+            _ti_i    = min(t_step, len(_tr_i) - 1)
+            _tie_i   = min(t_step, len(_es_i) - 1)
+            _drift_i = _es_i[_tie_i, :2] - _tr_i[_ti_i, :2]
+            cands_i  = _cands_at[i][t_step]
+
+            if cands_i and len(cands_i) >= 2:
+                # DICT running: mostra entrambi i candidati
+                dA = np.asarray(cands_i[0])[:2] - _drift_i
+                dB = np.asarray(cands_i[1])[:2] - _drift_i
+                cand_dots_A[i].set_data([dA[0]], [dA[1]])
+                cand_dots_A[i].set_alpha(0.9)
+                cand_dots_B[i].set_data([dB[0]], [dB[1]])
+                cand_dots_B[i].set_alpha(0.9)
+                src_dots2[i].set_data([], [])
+                src_dots2[i].set_alpha(0.0)
+            elif cands_i and len(cands_i) == 1:
+                # Post-disambiguazione: mostra solo il punto selezionato
+                cand_dots_A[i].set_data([], [])
+                cand_dots_A[i].set_alpha(0.0)
+                cand_dots_B[i].set_data([], [])
+                cand_dots_B[i].set_alpha(0.0)
+                dS = np.asarray(cands_i[0])[:2] - _drift_i
+                src_dots2[i].set_data([dS[0]], [dS[1]])
+                src_dots2[i].set_alpha(0.9)
+            else:
+                for _d in (cand_dots_A[i], cand_dots_B[i], src_dots2[i]):
+                    _d.set_data([], [])
+                    _d.set_alpha(0.0)
 
         info.set_text("\n".join(lines))
         return all_artists
