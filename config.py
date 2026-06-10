@@ -83,30 +83,28 @@ ES_OMEGA     = 0.45    # [rad/s] frequenza: √(20·0.45) = 3.0 m/s = V_MAX  ✓
 ES_KAPPA     = 0.05    # [-]   guadagno feedback segnale condizionato
 ES_LAMBDA    = 15.0    # [s]   costante di tempo rampa α (α → α_max in ~3λ s)
 ES_EPS       = 1e-12   # [-]   floor per evitare 1/cbrt(0)
-ES_DCGD_SKIP_THR = 3.0  # [m] se source_est si è già spostato più di questa soglia dalla
-                         #      posizione di rilevamento, il consensus ha già migliorato la
-                         #      stima → il drone salta la reinizializzazione ES→DCGD
 
 # ============================================================================
-# Stima distribuita posizione sorgente — DCGD (fase TRACK)
+# DICT — Distributed Iterative Consensus Triangulation
 # ============================================================================
-DIST_EST_ALPHA    = 0.3    # [m]     passo normalizzato discesa del gradiente
-DIST_EST_BETA     = 0.4    # [-]     peso consensus inter-drone
-DIST_EST_H        = 0.1    # [m]     passo differenze finite per gradiente numerico
-DIST_EST_REFINE   = 50     # [-]     iterazioni extra di raffinamento post-blocco
-DIST_EST_BATCH    = 10      # [-]     misure recenti usate per ogni aggiornamento online
+DICT_BETA        = 0.4   # [-]  peso consensus inter-drone (Combine step)
+DICT_XY_ITERS    = 100    # [-]  iterazioni XY consensus a 3 droni (dopo disambiguazione)
+DICT_DEPTH_ITERS = 100    # [-]  iterazioni depth consensus (fase 3)
+
+# ============================================================================
+# DCGD — Distributed Consensus Gradient Descent (fase SUPPORT, XY refinement)
+# ============================================================================
+# Algoritmo Adapt+Combine: ogni drone fa un passo di GD sulla propria misura
+# ARTVA, poi media con i vicini. Si esegue mentre i droni sono fermi sul
+# cerchio a 120°; al termine, l'orbita viene ricentrata sulla stima raffinata
+# e si avvia la stima di profondità dalla posizione aggiornata.
+DCGD_ITERS   = 100   # [-]  iterazioni di Adapt+Combine
+DCGD_STEP_XY = 0.1   # [m]  step per iterazione (gradiente normalizzato)
 
 # ============================================================================
 # Triangolazione
 # ============================================================================
-TRIANGULATE_N_PARTNERS = 2     # droni chiamati in supporto al rilevamento
-CONVERGE_RADIUS        = 5.0   # [m] raggio del triangolo finale attorno a source_est
-SUPPORT_SEARCH_TIMEOUT = 1000  # [steps] attesa max per trovare partner SUPPORT mancanti
-
-# ============================================================================
-# Consenso distribuito selezione partner (min-consensus su grafo limitato)
-# ============================================================================
-CONSENSUS_K_MAX = 10   # iterazioni max: deve essere ≥ diametro stimato della rete
+CONVERGE_RADIUS = 5.0   # [m] raggio circonferenza finale attorno a source_est (depth phase)
 
 # ============================================================================
 # MPC
@@ -133,7 +131,7 @@ IMDCL_H_LIDAR     = np.array([[0., 0., 1., 0., 0., 0.]])  # H per pz (1×6)
 # ============================================================================
 N_SIM         = 600     # passi massimi
 DT_SIM        = DT_MPC
-N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA per step (interpolate lungo il moto)
+N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA salvate nel drone per media mobile
 SIGMA_ACC_SIM = 0.05   # [m/s²] rumore accelerazione simulazione (< IMDCL_SIGMA_ACC)
 STOP_THRESH   = 0.3     # [m]  soglia raggiungimento waypoint
 

@@ -40,7 +40,7 @@ from artva import ARTVASource
 from simulation import build_agents, simulate
 from visualization import (plot_mpc_trajectories, plot_mpc_trajectories_3d,
                            plot_mpc_inputs, plot_mpc_altitude, plot_imdcl_error,
-                           plot_artva_signal, plot_dcgd_convergence, plot_dcgd_depth_error,
+                           plot_artva_signal, plot_dict_convergence, plot_dict_depth_error,
                            plot_final_positions, animate_mission)
 
 import matplotlib.pyplot as plt
@@ -163,7 +163,7 @@ def main() -> None:
 
     # — Simulazione —
     print("\nAvvio simulazione...\n")
-    agents, consensus_events, artva_detect_thr, track_stop_thr = simulate(
+    agents, consensus_events, artva_detect_thr, track_stop_thr, dict_ids, dict_disam_mode = simulate(
         terrain=terrain_obj,
         artva=artva,
         agents=agents,
@@ -182,9 +182,11 @@ def main() -> None:
         "altitude_agl":          plot_mpc_altitude(terrain_obj, agents),
         "imdcl_error":           plot_imdcl_error(agents),
         "artva_signal":          plot_artva_signal(agents, artva_detect_thr, track_stop_thr),
-        "dcgd_convergence":      plot_dcgd_convergence(agents, artva),
-        "dcgd_depth_error":      plot_dcgd_depth_error(agents, artva, terrain_obj),
-        "final_positions":       plot_final_positions(terrain_obj, artva, agents),
+        "dict_convergence":       plot_dict_convergence(agents, artva, dict_ids=dict_ids),
+        "dict_depth_error":       plot_dict_depth_error(agents, artva, terrain_obj),
+        "final_positions":       plot_final_positions(terrain_obj, artva, agents,
+                                                      dict_ids=dict_ids,
+                                                      dict_disam_mode=dict_disam_mode),
     }
 
     if args.save_figs:
