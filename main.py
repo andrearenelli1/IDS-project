@@ -146,9 +146,9 @@ def main() -> None:
     victim_z = terrain_obj.z(victim_x, victim_y) - victim_depth
 
     artva = ARTVASource(
-        position=np.array([victim_x, victim_y, victim_z]),
+        theta=np.array([victim_x, victim_y, victim_z]),
         moment=ARTVA_MOMENT,
-        rng_seed=args.seed + 1,
+        seed=args.seed + 1,
     )
     print(f"\n  Vittima: x={victim_x:.1f}  y={victim_y:.1f}  z={victim_z:.1f} m (locale)")
 

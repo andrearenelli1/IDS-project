@@ -1,60 +1,54 @@
 """
 artva.py
-========
-Sorgente ARTVA modellata come dipolo magnetico verticale.
-
-    S(r) = moment · sqrt(1 + 3·cos²θ) / r³
-
-dove θ è l'angolo tra il vettore r (drone − sorgente) e l'asse z del dipolo.
+Single ARTVA Dipole Source Model
 """
+# In case to allow for forward references in type hints
+from __future__ import annotations 
 
-from __future__ import annotations
-
+# Imports
 import numpy as np
-
 from config import ARTVA_MOMENT, ARTVA_NOISE_STD
-
 
 class ARTVASource:
     """
-    Sorgente ARTVA — dipolo magnetico verticale.
-
-    Parameters
-    ----------
-    position : (3,) [x, y, z] in coordinate UTM [m]
-    moment   : momento magnetico normalizzato [A·m²]
-    rng_seed : seme per il generatore di rumore
+    Parameters:
+    θ      = position of the ARTVA source (victim) in world frame [x, y, z]
+    moment = normalized magnetic moment [A·m²]
+    seed   = seed for noise generation
     """
 
-    def __init__(
-        self,
-        position: np.ndarray,
-        moment: float = ARTVA_MOMENT,
-        rng_seed: int = 1,
-    ) -> None:
-        self.position = np.asarray(position, dtype=float)
-        self.moment   = moment
-        self._rng     = np.random.default_rng(rng_seed)
+    def __init__(self, theta: np.ndarray, moment: float = ARTVA_MOMENT, seed: int = 1) -> None:
+        self._theta  = np.asarray(theta, dtype=float)
+        self._moment = moment
+        self._seed   = np.random.default_rng(seed)
 
-    def signal(self, pos: np.ndarray, noisy: bool = True) -> float:
+    def signal(self, x: np.ndarray, noisy: bool = True) -> float:
         """
-        Intensità segnale ARTVA in 'pos' (3,).
+        Returns the magnetic field strength S at position x due to the ARTVA source:
+        r_vec = x - θ
+        r_norm = ||x - θ||
+        S = m * sqrt(1 + 3*cos²(ψ)) / r_norm³
+        m = magnetic moment
+        cos(ψ) = r_vec_z / r_norm 
 
-        Parameters
-        ----------
-        pos   : posizione del sensore [x, y, z]
-        noisy : se True aggiunge rumore gaussiano additivo
-
-        Returns
-        -------
-        S ≥ 0
+        Parameters:
+        x     = true position where the signal is measured, in world frame [x, y, z]
+        noisy = whether to add Gaussian noise to the signal
         """
-        r_vec     = np.asarray(pos) - self.position
-        r         = np.linalg.norm(r_vec)
-        if r < 1e-3:
-            r = 1e-3          # evita singolarità
-        cos_theta = r_vec[2] / r
-        S = self.moment * np.sqrt(1.0 + 3.0 * cos_theta**2) / r**3
+        # Vector r
+        r_vec  = np.asarray(x) - self._theta
+        r_norm = np.linalg.norm(r_vec)
+
+        # To avoid singularities
+        if r_norm < 1e-3:
+            r_norm = 1e-3
+        
+        # Angle psi and signal strength S
+        cos_psi = r_vec[2] / r_norm
+        S = self._moment * np.sqrt(1.0 + 3.0 * cos_psi**2) / r_norm**3
+
+        # Add Gaussian noise if requested
         if noisy:
-            S += self._rng.normal(0, ARTVA_NOISE_STD)
+            S += self._seed.normal(0, ARTVA_NOISE_STD)
+
         return max(0.0, S)

@@ -238,7 +238,7 @@ def plot_mission(
         ax_a.plot(*traj[0, :2],  "o", color=c, ms=7, mec="white", mew=1.0, zorder=6)
         ax_a.plot(*traj[-1, :2], "^", color=c, ms=9, mec="white", mew=0.8, zorder=6)
 
-    ax_a.plot(*artva.position[:2], "*", color="white", ms=18, zorder=10,
+    ax_a.plot(*artva._theta[:2], "*", color="white", ms=18, zorder=10,
               mec="yellow", mew=1.5)
     # Waypoint markers (pallini semi-trasparenti per ogni drone)
     for i in drone_ids:
@@ -293,7 +293,7 @@ def plot_mission(
         n_est = min(len(est), len(traj))
         ax_b.plot(est[:n_est, 0], est[:n_est, 1], est[:n_est, 2],
                   color=c, lw=1.0, alpha=0.5, ls="--", label=f"D{i} IMDCL")
-    ax_b.scatter(*artva.position, marker="*", color="yellow", s=250,
+    ax_b.scatter(*artva._theta, marker="*", color="yellow", s=250,
                  zorder=10, edgecolors="red", linewidths=1)
     ax_b.set_xlabel("x [m]", fontsize=8, labelpad=3)
     ax_b.set_ylabel("y [m]", fontsize=8, labelpad=3)
@@ -445,7 +445,7 @@ def plot_mpc_trajectories(
             ax.plot(*traj[0,  :2], "o", color=c, ms=7, mec="white", mew=1.0, zorder=7)
             ax.plot(*traj[-1, :2], "^", color=c, ms=8, mec="white", mew=0.8, zorder=7)
 
-        ax.plot(*artva.position[:2], "*", color="crimson", ms=14,
+        ax.plot(*artva._theta[:2], "*", color="crimson", ms=14,
                 mec="black", mew=0.5, zorder=9)
 
         cx = (terrain.x_min + terrain.x_max) / 2.0
@@ -517,7 +517,7 @@ def plot_mpc_trajectories_3d(
             ax.scatter(*traj[-1, :3], marker="^", color=c, s=55, zorder=6,
                        edgecolors="white", linewidths=0.5)
 
-        ax.scatter(*artva.position, marker="*", color="crimson", s=220,
+        ax.scatter(*artva._theta, marker="*", color="crimson", s=220,
                    zorder=9, edgecolors="black", linewidths=0.4, label="Victim")
 
         ax.view_init(elev=25, azim=225)
@@ -693,7 +693,7 @@ def plot_dict_depth_error(
 ) -> plt.Figure:
     """Errore di stima della profondità di sepoltura nel tempo (DICT)."""
     drone_ids  = list(agents.keys())
-    true_depth = terrain.z(artva.position[0], artva.position[1]) - artva.position[2]
+    true_depth = terrain.z(artva._theta[0], artva._theta[1]) - artva._theta[2]
 
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(7, 4))
@@ -734,7 +734,7 @@ def plot_dict_convergence(
 
     Mostra tutti i droni con source_est impostato (include i 3 del depth-circle).
     """
-    true_xy = artva.position[:2]
+    true_xy = artva._theta[:2]
 
     # Tutti gli agenti che hanno una stima finale, ordinati per id
     est_agents = sorted(
@@ -820,7 +820,7 @@ def plot_final_positions(
     finals_real = {i: agents[i].history[-1][:2]    for i in triangulation_ids}
     finals_est  = {i: agents[i].est_history[-1][:2] for i in triangulation_ids}
 
-    victim_xy = artva.position[:2]
+    victim_xy = artva._theta[:2]
 
     # Stima DICT: media delle source_est dei droni di triangolazione
     dcgd_ests = [
@@ -974,7 +974,7 @@ def animate_mission(
         pane.fill = False
     ax.plot_surface(X3, Y3, Z3, cmap="terrain", alpha=0.35,
                     rcount=35, ccount=35, linewidth=0, zorder=1)
-    ax.scatter(*artva.position, marker="*", color="yellow",
+    ax.scatter(*artva._theta, marker="*", color="yellow",
                s=300, zorder=10, edgecolors="red", linewidths=1.5)
     ax.set_xlabel("x [m]", fontsize=8, labelpad=4)
     ax.set_ylabel("y [m]", fontsize=8, labelpad=4)
@@ -1004,7 +1004,7 @@ def animate_mission(
     ext  = [terrain.x_min, terrain.x_max, terrain.y_min, terrain.y_max]
     ax2.imshow(hs2, cmap="gray", alpha=0.4, extent=ext, origin="lower", zorder=1)
     # Posizione reale vittima
-    ax2.scatter(*artva.position[:2], marker="*", color="yellow",
+    ax2.scatter(*artva._theta[:2], marker="*", color="yellow",
                 s=200, zorder=10, edgecolors="red", linewidths=1.2)
 
     # — Artists dinamici: 3-D —
@@ -1059,7 +1059,7 @@ def animate_mission(
 
     # — Landing point per drone: source_est corretta per drift IMDCL ─────────
     landing_dots2: dict = {}
-    true_xy = artva.position[:2]
+    true_xy = artva._theta[:2]
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
         landing_dots2[i], = ax2.plot([], [], "P", color=c, ms=13,

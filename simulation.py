@@ -690,7 +690,7 @@ def triangulate_victim(
         and ag.source_est is not None
     ]
     if not ests:
-        return artva.position.copy()
+        return artva._theta.copy()
     return np.mean(ests, axis=0)
 
 
@@ -1178,9 +1178,9 @@ def simulate(
 
     # ── Report finale ──────────────────────────────────────────────────────
     est      = triangulate_victim(agents, artva)
-    err_xy   = np.linalg.norm(est[:2] - artva.position[:2])
-    z_true   = artva.position[2]
-    depth_true  = terrain.z(artva.position[0], artva.position[1]) - z_true
+    err_xy   = np.linalg.norm(est[:2] - artva._theta[:2])
+    z_true   = artva._theta[2]
+    depth_true  = terrain.z(artva._theta[0], artva._theta[1]) - z_true
 
     # Depth estimate: usa depth_est se disponibile, altrimenti stima da source_est[2]
     depth_ests = [ag.depth_est for ag in agents.values() if ag.depth_est is not None]
@@ -1190,7 +1190,7 @@ def simulate(
         depth_est_val = terrain.z(est[0], est[1]) - est[2]
     err_depth = abs(depth_est_val - depth_true)
 
-    print(f"\n  Posizione vittima reale  : {artva.position.round(2)}")
+    print(f"\n  Posizione vittima reale  : {artva._theta.round(2)}")
     print(f"  Stima DICT distribuita   : {est.round(2)}")
     print(f"  Errore planimetrico      : {err_xy:.2f} m")
     print(f"  Profondità reale         : {depth_true:.2f} m")
@@ -1201,7 +1201,7 @@ def simulate(
     for i in drone_ids:
         ag = agents[i]
         if ag.source_est is not None:
-            e_i = np.linalg.norm(ag.source_est[:2] - artva.position[:2])
+            e_i = np.linalg.norm(ag.source_est[:2] - artva._theta[:2])
             print(f"    Drone {i}: {ag.source_est.round(2)}  (err={e_i:.2f} m)")
     if len(valid_ests) >= 2:
         ests_xy = np.array([e[:2] for e in valid_ests])
@@ -1223,7 +1223,7 @@ def simulate(
             print(f"    Drone {i}: n/a (nessuna stima)")
             continue
         landing_point = ag.source_est - (ag.x_est[:3] - ag.x[:3])
-        landing_err   = landing_point[:2] - artva.position[:2]
+        landing_err   = landing_point[:2] - artva._theta[:2]
         print(
             f"    Drone {i}: {np.linalg.norm(landing_err):.3f} m  "
             f"(Δx={landing_err[0]:+.2f}  Δy={landing_err[1]:+.2f})"

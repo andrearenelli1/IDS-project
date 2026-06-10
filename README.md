@@ -40,9 +40,11 @@ Success requires both ≥ 3 drones in STOP **and** the final position estimate w
 
 - Python 3.10+
 - A local DEM file `w51065_s10.tif` in project root (TINItaly, not versioned)
-
+- A local virtual environment called IDSvenv
 ```bash
-pip install numpy scipy matplotlib casadi tifffile
+./IDSvenv/bin/python -m pip install --upgrade pip && ./IDSvenv/bin/python -m pip install numpy scipy matplotlib casadi tifffile tqdm pillow quadprog
+sudo apt-get update && sudo apt-get install -y texlive-latex-base texlive-latex-recommended texlive-fonts-recommended dvipng ghostscript
+sudo apt-get install -y texlive-latex-extra cm-super
 ```
 
 Download the DEM tile from https://tinitaly.pi.ingv.it/Download_Area1_1.html and place it as `w51065_s10.tif` in the project root.
