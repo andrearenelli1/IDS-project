@@ -5,7 +5,6 @@ Single ARTVA Dipole Source Model
 # In case to allow for forward references in type hints
 from __future__ import annotations 
 
-# Imports
 import numpy as np
 from config import ARTVA_MOMENT, ARTVA_NOISE_STD
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from model import MotionModel, PointMass3DModel
+from model import PointMass3DModel
 from config import IMDCL_PI_MAX_NORM
 
 
