@@ -220,7 +220,7 @@ class AgentIMDCL:
         """
         F = self.motion_model.F_jacobian(self.x_hat, u, dt)
         G = self.motion_model.G_jacobian(self.x_hat, dt)
-        Q = self.motion_model.Q(dt)
+        Q = self.motion_model.Q()
 
         # x^{i-}(k+1) = f^i(x^{i+}(k), u^i(k))
         self.x_hat = self.motion_model.f(self.x_hat, u, dt)
