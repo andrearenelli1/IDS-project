@@ -75,7 +75,7 @@ AREA_SIZES = [100, 200]        # [m]  lato workspace
 N_DRONES_LIST = [3, 4, 5]          # numero di agenti
 
 # Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
-N_RANDOM_VICTIMS = 20
+N_RANDOM_VICTIMS = 2
 
 ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
 
