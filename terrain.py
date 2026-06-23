@@ -135,10 +135,14 @@ def extract_area(dem, transform, center_row=None, center_col=None, size_m=200):
     if center_col is None:
         center_col = cols // 2
 
-    r0 = max(0, center_row - half_px)
-    r1 = min(rows, center_row + half_px)
-    c0 = max(0, center_col - half_px)
-    c1 = min(cols, center_col + half_px)
+    # Clamp so the full patch always fits within the DEM — no border truncation.
+    center_row = int(np.clip(center_row, half_px, rows - half_px))
+    center_col = int(np.clip(center_col, half_px, cols - half_px))
+
+    r0 = center_row - half_px
+    r1 = center_row + half_px
+    c0 = center_col - half_px
+    c1 = center_col + half_px
 
     sub_dem  = dem[r0:r1, c0:c1]
     x_origin, pw, y_origin, ph = transform
@@ -302,8 +306,8 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
     )
     terrain = Terrain(
         rbf_interp=rgi,
-        x_min=0.0,                  x_max=float(x_local.max()),
-        y_min=0.0,                  y_max=float(y_asc_local.max()),
+        x_min=0.0,  x_max=float(AREA_SIZE_M),
+        y_min=0.0,  y_max=float(AREA_SIZE_M),
         utm_origin=(x_min_utm, y_min_utm),
     )
     return terrain, x_local, y_loc_orig, sub_dem, transform
