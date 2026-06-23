@@ -84,27 +84,6 @@ ES_KAPPA     = 0.05    # [-]   guadagno feedback segnale condizionato
 ES_LAMBDA    = 15.0    # [s]   costante di tempo rampa α (α → α_max in ~3λ s)
 ES_EPS       = 1e-12   # [-]   floor per evitare 1/cbrt(0)
 
-# ============================================================================
-# DICT — Distributed Iterative Consensus Triangulation
-# ============================================================================
-DICT_BETA        = 0.4   # [-]  peso consensus inter-drone (Combine step)
-DICT_XY_ITERS    = 100    # [-]  iterazioni XY consensus a 3 droni (dopo disambiguazione)
-DICT_DEPTH_ITERS = 100    # [-]  iterazioni depth consensus (fase 3)
-
-# ============================================================================
-# DCGD — Distributed Consensus Gradient Descent (fase SUPPORT, XY refinement)
-# ============================================================================
-# Algoritmo Adapt+Combine: ogni drone fa un passo di GD sulla propria misura
-# ARTVA, poi media con i vicini. Si esegue mentre i droni sono fermi sul
-# cerchio a 120°; al termine, l'orbita viene ricentrata sulla stima raffinata
-# e si avvia la stima di profondità dalla posizione aggiornata.
-DCGD_ITERS   = 100   # [-]  iterazioni di Adapt+Combine
-DCGD_STEP_XY = 0.1   # [m]  step per iterazione (gradiente normalizzato)
-
-# ============================================================================
-# Triangolazione
-# ============================================================================
-CONVERGE_RADIUS = 5.0   # [m] raggio circonferenza finale attorno a source_est (depth phase)
 
 # ============================================================================
 # MPC
@@ -130,10 +109,24 @@ IMDCL_H_LIDAR     = np.array([[0., 0., 1., 0., 0., 0.]])  # H per pz (1×6)
 # Simulazione
 # ============================================================================
 N_SIM         = 600     # passi massimi
+N_STOP        = 3       # numero di droni in STOP che fa terminare la simulazione
 DT_SIM        = DT_MPC
 N_SIGNAL_SAMPLES  = 5      # [-]  misure ARTVA salvate nel drone per media mobile
 SIGMA_ACC_SIM = 0.05   # [m/s²] rumore accelerazione simulazione (< IMDCL_SIGMA_ACC)
 STOP_THRESH   = 0.3     # [m]  soglia raggiungimento waypoint
+
+# ============================================================================
+# Particle Filter (stima posizione sorgente)
+# ============================================================================
+PF_N_PARTICLES = 300   # numero di particelle per drone
+
+# ============================================================================
+# SUPPORT — selezione partner e orbita cooperativa
+# ============================================================================
+SUPPORT_CIRCLE_N       = 9     # waypoint sulla circonferenza percorsa dai droni SUPPORT
+TRIANGULATE_N_PARTNERS = 2     # droni chiamati in supporto al primo STOP
+SUPPORT_SEARCH_TIMEOUT = 1000  # [steps] attesa max per trovare partner SUPPORT mancanti
+CONSENSUS_K_MAX        = 10    # iterazioni max min-consensus (≥ diametro stimato della rete)
 
 # ============================================================================
 # Visualizzazione

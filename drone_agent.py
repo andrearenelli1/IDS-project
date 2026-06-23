@@ -25,8 +25,10 @@ from terrain import Terrain
 from config import (
     AGL_HEIGHT, LANE_SPACING, STOP_THRESH,
     TAU_FILTER_ARTVA, DT_MPC, N_SIGNAL_SAMPLES,
+    SUPPORT_CIRCLE_N,
 )
 
+from pf import ParticleFilter
 
 # ============================================================================
 # FSM
@@ -103,6 +105,28 @@ def rotate_2d(v: np.ndarray, deg: float) -> np.ndarray:
     return np.array([c * v[0] - s * v[1], s * v[0] + c * v[1]])
 
 
+def circle_waypoints(
+    center:      np.ndarray,
+    radius:      float,
+    start_angle: float,
+    clockwise:   bool,
+    terrain:     "Terrain",
+    n_pts:       int   = SUPPORT_CIRCLE_N,
+    agl:         float = AGL_HEIGHT,
+) -> List[np.ndarray]:
+    """
+    Genera n_pts waypoint equidistanti su una circonferenza di dato raggio
+    attorno a center, a quota AGL costante.
+    """
+    sign   = -1.0 if clockwise else +1.0
+    angles = start_angle + sign * np.linspace(0.0, 2 * np.pi, n_pts, endpoint=False)
+    wps    = []
+    for a in angles:
+        x = center[0] + radius * np.cos(a)
+        y = center[1] + radius * np.sin(a)
+        wps.append(np.array([x, y, terrain.agl_z(x, y, agl)]))
+    return wps
+
 
 # ============================================================================
 # DroneAgent
@@ -119,11 +143,9 @@ class DroneAgent:
     solo quando quello corrente è raggiunto (o su transizione di stato).
     Il dispatch avviene in simulation.py tramite _on_wp_reached().
 
-    Stima sorgente: DICT
-    --------------------
-    source_cands  : [c1, c2] punti di intersezione iterativi (fase Adapt+Combine)
-    source_est    : punto selezionato dopo la disambiguazione
-    depth_est     : profondità stimata [m] dalla fase depth consensus
+    Stima sorgente: Particle Filter
+    --------------------------------
+    source_est : stima corrente della posizione della sorgente (media pesata PF)
     """
 
     id:           int
@@ -143,25 +165,16 @@ class DroneAgent:
     wp_target_log: list      = field(default_factory=list)   # current_target() ad ogni step
     detected:     bool       = False
 
-    # DICT — stima sorgente
-    source_est:       Optional[np.ndarray] = None
-    source_cands:     list                 = field(default_factory=list)   # [c1, c2] candidati DICT
-    source_cands_log: list                 = field(default_factory=list)   # (step, [cand, ...])
-    source_est_log:   list                 = field(default_factory=list)   # (step, est_xyz)
-    depth_est:        Optional[float]      = None                          # stima profondità [m]
-    depth_est_log:    list                 = field(default_factory=list)   # (step, depth_est)
-    r:          Optional[float]      = None
-    r_log:      list                 = field(default_factory=list)
-    r_history:  deque                = field(default_factory=lambda: deque(maxlen=N_SIGNAL_SAMPLES))
+    # SOURCE ESTIMATION (particle filter)
+    pf:                Optional[ParticleFilter] = None
+    artva_sigma_noise: float                    = 0.0
+    source_est:        Optional[np.ndarray]     = None
+    source_est_log:    list                     = field(default_factory=list)
+    pf_log:            list                     = field(default_factory=list)  # (particles, weights) per step
 
-    # TRACK
-    track_dir:          Optional[np.ndarray] = None
-    track_start_pos:    Optional[np.ndarray] = None
-    track_start_signal: float                = 0.0
-    track_candidates:   List[np.ndarray]     = field(default_factory=list)
-    track_cand_signals: List[float]          = field(default_factory=list)
-    track_cand_idx:     int                  = 0
-    track_time:         int                  = 0
+    # ARTVA distance estimate
+    r:     Optional[float] = None
+    r_log: list            = field(default_factory=list)
 
     # SEARCH — stato lawnmower a corsie globali
     lane_xs:          np.ndarray = field(default_factory=lambda: np.array([]))
@@ -180,7 +193,19 @@ class DroneAgent:
     es_y_hist: list = field(default_factory=list)
     es_active: bool = False   # True dopo init_es: ES gestisce i waypoint del drone
 
-    # ARTVA signal 
+    # SUPPORT — orbita cooperativa
+    support_center:       Optional[np.ndarray] = None
+    support_orbit_radius: float = 0.0
+    support_cw:           bool  = False
+    support_pending:      bool  = False   # True se aspetta ancora partner
+    support_deadline:     int   = 0       # step oltre cui si rinuncia
+    support_n_needed:     int   = 0       # partner ancora mancanti
+
+    # STOP — orbita finale attorno alla stima PF
+    stop_orbit_assigned: bool = False
+    stop_orbit_done:     bool = False
+
+    # ARTVA signal
     sig_filt: Optional[float] = None
     sig_raw_last: float = 0.0
     sig_batch:  deque = field(default_factory=lambda: deque(maxlen=N_SIGNAL_SAMPLES))

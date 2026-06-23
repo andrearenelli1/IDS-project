@@ -79,41 +79,6 @@ _LATEX_RC_2X: dict = {
 # Helper privato
 # ============================================================================
 
-def _circle_intersections_2d(
-    c1: np.ndarray, r1: float,
-    c2: np.ndarray, r2: float,
-) -> tuple | None:
-    """Restituisce i 2 punti di intersezione di due cerchi XY, o None."""
-    d = np.linalg.norm(c2 - c1)
-    if d < 1e-9 or d > r1 + r2 + 1e-6 or d < abs(r1 - r2) - 1e-6:
-        return None
-    a = (r1**2 - r2**2 + d**2) / (2.0 * d)
-    h = np.sqrt(max(0.0, r1**2 - a**2))
-    direction = (c2 - c1) / d
-    perp = np.array([-direction[1], direction[0]])
-    mid  = c1 + a * direction
-    return mid + h * perp, mid - h * perp
-
-
-def _circumcircle_2d(
-    p1: np.ndarray, p2: np.ndarray, p3: np.ndarray,
-) -> tuple:
-    """Circonferenza passante per 3 punti 2D. Restituisce (center, radius) o (None, None)."""
-    ax, ay = p1
-    bx, by = p2
-    cx, cy = p3
-    D = 2.0 * (ax*(by - cy) + bx*(cy - ay) + cx*(ay - by))
-    if abs(D) < 1e-9:
-        return None, None
-    a2 = ax**2 + ay**2
-    b2 = bx**2 + by**2
-    c2 = cx**2 + cy**2
-    ux = (a2*(by - cy) + b2*(cy - ay) + c2*(ay - by)) / D
-    uy = (a2*(cx - bx) + b2*(ax - cx) + c2*(bx - ax)) / D
-    center = np.array([ux, uy])
-    return center, float(np.linalg.norm(p1 - center))
-
-
 def _reconstruct_state_sequence(ag: DroneAgent) -> List[DroneState]:
     """
     Ricostruisce la sequenza FSM dal log segnali.
@@ -686,173 +651,45 @@ def plot_artva_signal(
     return fig
 
 
-def plot_dict_depth_error(
-    agents:  Dict[int, DroneAgent],
-    artva:   ARTVASource,
-    terrain: "Terrain",
-) -> plt.Figure:
-    """Errore di stima della profondità di sepoltura nel tempo (DICT)."""
-    drone_ids  = list(agents.keys())
-    true_depth = terrain.z(artva._theta[0], artva._theta[1]) - artva._theta[2]
-
-    with plt.rc_context(_LATEX_RC):
-        fig, ax = plt.subplots(figsize=(7, 4))
-        fig.patch.set_facecolor("#ffffff")
-        _mpc_style(ax)
-
-        any_data = False
-        for i in drone_ids:
-            ag  = agents[i]
-            log = ag.depth_est_log
-            if not log:
-                continue
-            any_data = True
-            c = COLORS.get(i, "#aaaaaa")
-            times = [s * DT_SIM for (s, _) in log]
-            errs  = [abs(d - true_depth) for (_, d) in log]
-            ax.plot(times, errs, color=c, lw=1.4, alpha=0.90, label=f"Drone {i}")
-
-        if not any_data:
-            ax.text(0.5, 0.5, "No DICT data (TRACK phase not reached)",
-                    ha="center", va="center", transform=ax.transAxes)
-
-        ax.set_xlabel(r"Time [s]", fontsize=15)
-        ax.set_ylabel(r"Depth estimation error [m]", fontsize=15)
-        ax.set_title(r"Burial Depth Estimation Error (DICT)", fontweight="bold", fontsize=18)
-        ax.set_ylim(bottom=0)
-        ax.legend(loc="upper center", framealpha=0.85)
-        fig.tight_layout()
-    return fig
-
-
-def plot_dict_convergence(
-    agents:   Dict[int, DroneAgent],
-    artva:    ARTVASource,
-    dict_ids: list = None,
-) -> plt.Figure:
-    """Mappa 2D XY: landing point stimato da ciascun drone + sorgente reale.
-
-    Mostra tutti i droni con source_est impostato (include i 3 del depth-circle).
-    """
-    true_xy = artva._theta[:2]
-
-    # Tutti gli agenti che hanno una stima finale, ordinati per id
-    est_agents = sorted(
-        [(i, ag) for i, ag in agents.items() if ag.source_est is not None],
-        key=lambda x: x[0],
-    )
-
-    with plt.rc_context(_LATEX_RC):
-        fig, ax = plt.subplots(figsize=(6, 6))
-        fig.patch.set_facecolor("#ffffff")
-        _mpc_style(ax)
-
-        if not est_agents:
-            ax.text(0.5, 0.5, "No DICT data", ha="center", va="center",
-                    transform=ax.transAxes)
-            ax.set_title("DICT — Landing point stimati", fontweight="bold")
-            fig.tight_layout()
-            return fig
-
-        all_pts = [true_xy]
-
-        for i, ag in est_agents:
-            # corregge per deriva IMDCL: stessa formula del log di simulazione
-            lp     = ag.source_est - (ag.x_est[:3] - ag.x[:3])
-            lp_xy  = lp[:2]
-            c      = COLORS.get(i, "#aaaaaa")
-            ax.plot(*lp_xy, "P", color=c, ms=12,
-                    mec="black", mew=0.8, zorder=7,
-                    label=f"Drone {i} — landing point")
-            err = np.linalg.norm(lp_xy - true_xy)
-            ax.annotate(f"  {err:.1f} m", lp_xy, fontsize=7,
-                        color=c, zorder=8)
-            all_pts.append(lp_xy)
-
-        ax.plot(*true_xy, "*", color="crimson", ms=16,
-                mec="black", mew=0.6, zorder=9, label=r"$\theta$ (reale)")
-
-        pts    = np.array(all_pts)
-        span   = max(pts[:, 0].max() - pts[:, 0].min(),
-                     pts[:, 1].max() - pts[:, 1].min(), 1.0)
-        margin = max(5.0, span * 0.25)
-        ax.set_xlim(pts[:, 0].min() - margin, pts[:, 0].max() + margin)
-        ax.set_ylim(pts[:, 1].min() - margin, pts[:, 1].max() + margin)
-
-        ax.set_xlabel(r"$x$ [m]")
-        ax.set_ylabel(r"$y$ [m]")
-        ax.set_title("DICT — Landing point stimati vs sorgente reale", fontweight="bold")
-        ax.set_aspect("equal", adjustable="box")
-        ax.legend(loc="best", framealpha=0.85, fontsize=8)
-        fig.tight_layout()
-    return fig
-
-
 # ============================================================================
-# Plot posizioni finali in coordinate UTM assolute
+# Plot posizioni finali
 # ============================================================================
 
 def plot_final_positions(
-    terrain:          Terrain,
-    artva:            ARTVASource,
-    agents:           Dict[int, DroneAgent],
-    dict_ids:         list = None,
-    dict_disam_mode:  str  = '',
+    terrain: Terrain,
+    artva:   ARTVASource,
+    agents:  Dict[int, DroneAgent],
 ) -> plt.Figure:
     """
-    Mappa 2D in coordinate workspace (locali):
-      - posizione reale finale di ogni drone coinvolto nella triangolazione
-      - posizione stimata IMDCL finale (con drift)
-      - sorgente reale e stima DCGD
-    Extent calcolato sui soli punti mostrati + margine.
+    Mappa 2D: posizioni finali droni, stima PF (con correzione drift IMDCL),
+    cerchi di distanza stimata, sorgente reale.
     """
-    # — In modalità 2drone usa solo i due DICT drones; altrimenti tutti STOP/SUPPORT —
-    if dict_disam_mode in ('2drone', '2drone_done') and dict_ids:
-        triangulation_ids = list(dict_ids)
-    else:
-        triangulation_ids = [
-            i for i, ag in agents.items()
-            if ag.state in (DroneState.STOP, DroneState.SUPPORT)
-        ]
-    if not triangulation_ids:
-        triangulation_ids = list(agents.keys())
+    drone_ids   = list(agents.keys())
+    victim_xy   = artva._theta[:2]
+    finals_real = {i: agents[i].history[-1][:2]     for i in drone_ids}
+    finals_est  = {i: agents[i].est_history[-1][:2] for i in drone_ids}
 
-    finals_real = {i: agents[i].history[-1][:2]    for i in triangulation_ids}
-    finals_est  = {i: agents[i].est_history[-1][:2] for i in triangulation_ids}
-
-    victim_xy = artva._theta[:2]
-
-    # Stima DICT: media delle source_est dei droni di triangolazione
-    dcgd_ests = [
-        agents[i].source_est[:2] for i in triangulation_ids
-        if agents[i].source_est is not None
-    ]
-    dcgd_xy = np.mean(dcgd_ests, axis=0) if dcgd_ests else victim_xy.copy()
-
-    # — Raggi stimati dai segnali finali: r̂ = (M/s)^{1/3} —
     circle_radii = {}
-    for i in triangulation_ids:
-        ag  = agents[i]
-        sig = ag.signal_log[-1][1] if ag.signal_log else 0.0
+    for i in drone_ids:
+        sig = agents[i].signal_log[-1][1] if agents[i].signal_log else 0.0
         if sig > 1e-12:
             circle_radii[i] = (ARTVA_MOMENT / sig) ** (1.0 / 3.0)
 
-    # — Bounds stretti (include anche le stime driftate e gli estremi dei cerchi) —
-    drifted_pts = [
+    landing_pts = [
         agents[i].source_est[:2] - (agents[i].x_est[:2] - agents[i].x[:2])
-        for i in triangulation_ids if agents[i].source_est is not None
+        for i in drone_ids if agents[i].source_est is not None
     ]
     circle_extremes = [
         finals_real[i] + np.array([dx, dy])
-        for i in triangulation_ids if i in circle_radii
+        for i in drone_ids if i in circle_radii
         for dx, dy in ((circle_radii[i], 0), (-circle_radii[i], 0),
                        (0, circle_radii[i]), (0, -circle_radii[i]))
     ]
     all_pts = np.vstack(
         list(finals_real.values()) + list(finals_est.values())
-        + [victim_xy, dcgd_xy]
-        + (drifted_pts if drifted_pts else [dcgd_xy])
-        + (circle_extremes if circle_extremes else [dcgd_xy])
+        + [victim_xy]
+        + (landing_pts if landing_pts else [victim_xy])
+        + (circle_extremes if circle_extremes else [victim_xy])
     )
     span   = max(all_pts[:, 0].max() - all_pts[:, 0].min(),
                  all_pts[:, 1].max() - all_pts[:, 1].min())
@@ -860,62 +697,47 @@ def plot_final_positions(
     xlim   = (all_pts[:, 0].min() - margin, all_pts[:, 0].max() + margin)
     ylim   = (all_pts[:, 1].min() - margin, all_pts[:, 1].max() + margin)
 
+    _th = np.linspace(0, 2 * np.pi, 180)
+
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(6, 6))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
-        _th = np.linspace(0, 2 * np.pi, 180)
-
-        for i in triangulation_ids:
+        for i in drone_ids:
             c  = COLORS.get(i, "#aaaaaa")
             ag = agents[i]
-            # cerchio di distanza stimata centrato sulla posizione reale finale
             if i in circle_radii:
-                r  = circle_radii[i]
+                r = circle_radii[i]
                 cx, cy = finals_real[i]
                 ax.plot(cx + r * np.cos(_th), cy + r * np.sin(_th),
                         color=c, lw=1.2, ls="--", alpha=0.55, zorder=3,
                         label=f"$\\hat{{r}}_{{{i}}}={r:.1f}$~m")
-            # posizione reale drone
             ax.plot(*finals_real[i], "^", color=c, ms=11, mec="white", mew=0.9,
                     zorder=7, label=f"$p_{{{i}}}$")
-            # posizione stimata drone
             ax.plot(*finals_est[i], "^", color=c, ms=11, mec="black", mew=1.0,
                     alpha=0.55, zorder=6, label=f"$\\hat{{p}}_{{{i}}}$")
-            # segmento drift IMDCL
             ax.plot(
                 [finals_real[i][0], finals_est[i][0]],
                 [finals_real[i][1], finals_est[i][1]],
                 color=c, lw=0.8, ls=":", alpha=0.6, zorder=5,
             )
             if ag.source_est is not None:
-                src = ag.source_est[:2]
-                drift = ag.x_est[:2] - ag.x[:2]
-                # actual landing point: drone executes displacement (src − p̂_i) from p_i
-                src_landing = src - drift
-                # empty diamond = DCGD estimate ĥeta_i
-                ax.plot(*src, "D", color=c, ms=9,
-                        mfc="none", mec=c, mew=1.5, zorder=6,
-                        label=f"$\\hat{{\\theta}}_{{{i}}}$")
-                # filled diamond = actual landing ĥeta_i − (p̂_i − p_i)
+                src         = ag.source_est[:2]
+                src_landing = src - (ag.x_est[:2] - ag.x[:2])
+                ax.plot(*src, "D", color=c, ms=9, mfc="none", mec=c, mew=1.5,
+                        zorder=6, label=f"$\\hat{{\\theta}}^{{PF}}_{{{i}}}$")
                 ax.plot(*src_landing, "D", color=c, ms=9, mec="black", mew=1.0,
                         alpha=0.80, zorder=6,
-                        label=f"$\\hat{{\\theta}}_{{{i}}} - (\\hat{{p}}_{{{i}}} - p_{{{i}}})$")
-                ax.plot(
-                    [src[0], src_landing[0]], [src[1], src_landing[1]],
-                    color=c, lw=0.7, ls="--", alpha=0.5, zorder=5,
-                )
+                        label=f"$\\hat{{\\theta}}^{{PF}}_{{{i}}} - \\delta\\hat{{p}}_{{{i}}}$")
+                ax.plot([src[0], src_landing[0]], [src[1], src_landing[1]],
+                        color=c, lw=0.7, ls="--", alpha=0.5, zorder=5)
 
-        # Sorgente reale
         ax.plot(*victim_xy, "*", color="crimson", ms=16,
                 mec="black", mew=0.6, zorder=9, label=r"$\theta$")
-
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
-        ax.set_xlabel(r"$x$ [m]")
-        ax.set_ylabel(r"$y$ [m]")
-        ax.set_title(r"Final positions", fontweight="bold")
+        ax.set_xlim(*xlim); ax.set_ylim(*ylim)
+        ax.set_xlabel(r"$x$ [m]"); ax.set_ylabel(r"$y$ [m]")
+        ax.set_title(r"Final positions — PF source estimate", fontweight="bold")
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="best", framealpha=0.85, fontsize=9)
         fig.tight_layout()
@@ -927,16 +749,15 @@ def plot_final_positions(
 # ============================================================================
 
 def animate_mission(
-    terrain:          Terrain,
-    artva:            ARTVASource,
-    agents:           Dict[int, DroneAgent],
-    dt:               float = DT_SIM,
-    fps:              int   = 30,
-    speed:            float = 2.0,
-    interval:         int   = None,
-    save:             bool  = False,
-    save_path:        str   = "mission_animation",
-    consensus_events: list  = None,
+    terrain:   Terrain,
+    artva:     ARTVASource,
+    agents:    Dict[int, DroneAgent],
+    dt:        float = DT_SIM,
+    fps:       int   = 30,
+    speed:     float = 2.0,
+    interval:  int   = None,
+    save:      bool  = False,
+    save_path: str   = "mission_animation",
 ) -> FuncAnimation:
     """
     Animazione 3-D (sinistra) + vista overhead 2-D (destra).
@@ -1017,22 +838,18 @@ def animate_mission(
         trails_e[i], = ax.plot([], [], [], color=c, lw=1.0, alpha=0.5, ls="--")
         dots_e[i],   = ax.plot([], [], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.0, zorder=7)
 
-    # — Artists dinamici: 2-D trail, dot reale, dot stimato, cerchio, dot waypoint —
-    trails2, dots2, dots2_e, circles2, wp_dots2, src_dots2 = {}, {}, {}, {}, {}, {}
+    # — Artists dinamici: 2-D trail, dot reale, dot stimato, dot waypoint —
+    trails2, dots2, dots2_e, wp_dots2 = {}, {}, {}, {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
         trails2[i],  = ax2.plot([], [], color=c, lw=1.2, alpha=0.65, zorder=3)
         dots2[i],    = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.8, zorder=5)
         dots2_e[i],  = ax2.plot([], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.2, zorder=6)
-        circles2[i], = ax2.plot([], [], color=c, lw=1.0, alpha=0.7, ls="--", zorder=4)
         wp_dots2[i], = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.6,
-                                alpha=0.35, zorder=4)  # waypoint corrente
-        src_dots2[i], = ax2.plot([], [], "D", color=c, ms=9,
-                                 mec="white", mew=1.2, alpha=0.0, zorder=8)  # unused placeholder
+                                alpha=0.35, zorder=4)
 
     # — Frecce direzione ES (visibili solo in TRACK) ───────────────────────
     es_arrows2: Dict[int, FancyArrowPatch] = {}
-    es_ref_dots2 = {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
         arrow = FancyArrowPatch(
@@ -1044,55 +861,34 @@ def animate_mission(
         )
         ax2.add_patch(arrow)
         es_arrows2[i] = arrow
-        es_ref_dots2[i], = ax2.plot([], [], "+", color=c, ms=8,
-                                     mew=1.8, alpha=0.0, zorder=9)
 
-    # — Diamanti per i candidati circle consensus: 2 per drone (stima locale) ─
-    cand_dots_A: dict = {}   # candidato 0 per drone
-    cand_dots_B: dict = {}   # candidato 1 per drone
+    # — Pre-calcola pf_log per step (forward-fill: None prima dell'attivazione) ──
+    _pf_at: Dict[int, list] = {}
     for i in drone_ids:
-        c = COLORS.get(i, "#aaaaaa")
-        cand_dots_A[i], = ax2.plot([], [], "D", mfc="#ffffff", mec=c,
-                                   ms=9, mew=2.0, alpha=0.0, zorder=11)
-        cand_dots_B[i], = ax2.plot([], [], "D", mfc="#ffffff", mec=c,
-                                   ms=9, mew=2.0, alpha=0.0, zorder=11)
-
-    # — Landing point per drone: source_est corretta per drift IMDCL ─────────
-    landing_dots2: dict = {}
-    true_xy = artva._theta[:2]
-    for i in drone_ids:
-        c = COLORS.get(i, "#aaaaaa")
-        landing_dots2[i], = ax2.plot([], [], "P", color=c, ms=13,
-                                     mec="white", mew=1.2, alpha=0.0, zorder=13)
-
-    # Pre-computa candidati per-drone con forward-fill
-    _cands_at: Dict[int, list] = {}
-    for i in drone_ids:
-        arr: list = [None] * T
-        for (step, cands) in agents[i].source_cands_log:
-            if step < T:
-                arr[step] = cands
-        last: list = []
-        for t in range(T):
-            if arr[t] is not None:
-                last = arr[t]
-            arr[t] = last
-        _cands_at[i] = arr
-
-    # — Pre-computa source_est per step (forward-fill) ────────────────────
-    _src_at: Dict[int, list] = {}
-    for i in drone_ids:
-        arr: list = [None] * T
-        for (step, src) in agents[i].source_est_log:
-            if step < T:
-                arr[step] = src
+        log  = agents[i].pf_log
+        arr  = [None] * T
+        for k in range(min(len(log), T)):
+            arr[k] = log[k]
         last = None
-        for t in range(T):
-            if arr[t] is not None:
-                last = arr[t]
+        for k in range(T):
+            if arr[k] is not None:
+                last = arr[k]
             else:
-                arr[t] = last
-        _src_at[i] = arr
+                arr[k] = last
+        _pf_at[i] = arr
+
+    # — Particelle PF: scatter 2-D (overhead) e 3-D —————————————————————────
+    pf_scatters:    dict = {}
+    pf_scatters_3d: dict = {}
+    for i in drone_ids:
+        c = COLORS.get(i, "#aaaaaa")
+        pf_scatters[i] = ax2.scatter(
+            [], [], s=5, c=c, alpha=0.50, zorder=2, linewidths=0,
+        )
+        pf_scatters_3d[i] = ax.scatter(
+            [], [], [], s=5, c=c, alpha=0.35, zorder=6, linewidths=0,
+            depthshade=False,
+        )
 
     # — Sfera di comunicazione 3-D: 3 cerchi ortogonali per drone ────────
     N_SP   = 60
@@ -1111,129 +907,29 @@ def animate_mission(
                      color=_TEXT_COLOR, fontsize=8, va="top", fontfamily="monospace")
 
     fig.suptitle(
-        "Ricerca valanga multi-agente — MPC + IMDCL + FSM 4 stati\n"
-        "reale (—)  ·  IMDCL (--)  ·  cerchi: dist. ARTVA  ·  ◆: candidati DICT  ·  ✛: landing point  ·  →+: ES",
+        "Ricerca valanga multi-agente — MPC + IMDCL + PF\n"
+        "reale (—)  ·  IMDCL (--)  ·  particelle PF (coordinate mondo)  ·  →: ES",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
     step_skip = max(1, int(round(1.0 / (dt * fps) * speed)))
     frame_idx = list(range(0, T, step_skip))
 
-    # ── Consensus overlay artists (2-D panel) ────────────────────────────
-    # Colours
-    _C_LINK    = "#ff3333"   # red  — active communication link
-    _C_HOVER   = "#ff0055"   # rose — hover drone ring
-    _C_INFORM  = "#ff9900"   # orange — newly-informed drone ring
-    _C_PARTNER = "#00ff88"   # green — selected partner ring
-
-    _FRAMES_PER_ROUND  = 6   # animation frames to show each consensus round
-    _PARTNER_LINGER    = 20  # extra frames to keep green partner rings
-
-    # Pre-compute which animation frames map to which consensus round
-    # Each entry: {'f_start', 'f_end', 'round', 'round_idx', 'n_rounds',
-    #              'hover_id', 'partners', 'show_partners',
-    #              'hover_pos', 'drone_pos'}
-    _csn_windows: List[dict] = []
-    if consensus_events:
-        for ev in consensus_events:
-            base_f     = ev['step'] // step_skip
-            n_rounds   = len(ev['rounds'])
-            hover_id   = ev.get('stop_id', ev.get('hover_id'))
-            # Snapshot positions at the event step (fixed reference)
-            ev_step    = min(ev['step'], T - 1)
-            hover_pos2 = np.array(agents[hover_id].history[ev_step][:2])
-            drone_pos2 = {
-                did: np.array(agents[did].history[ev_step][:2])
-                for did in drone_ids
-            }
-            for r_idx, rnd in enumerate(ev['rounds']):
-                f_s = base_f + r_idx * _FRAMES_PER_ROUND
-                f_e = f_s + _FRAMES_PER_ROUND
-                is_last = (r_idx == n_rounds - 1)
-                _csn_windows.append({
-                    'f_start':       f_s,
-                    'f_end':         f_e + (_PARTNER_LINGER if is_last else 0),
-                    'round_end':     f_e,
-                    'round':         rnd,
-                    'round_idx':     r_idx,
-                    'n_rounds':      n_rounds,
-                    'hover_id':      hover_id,
-                    'partners':      ev['partners'],
-                    'show_partners': is_last,
-                    'hover_pos':     hover_pos2,
-                    'drone_pos':     drone_pos2,
-                })
-
-    # One comm-link Line2D per undirected pair (shared across all consensus events)
-    n_dr   = len(drone_ids)
-    _pairs = [
-        (drone_ids[a], drone_ids[b])
-        for a in range(n_dr) for b in range(a + 1, n_dr)
-    ]
-    comm_links = {}
-    for pair in _pairs:
-        comm_links[pair], = ax2.plot(
-            [], [], color=_C_LINK, lw=2.0, ls="--",
-            alpha=0.0, zorder=8, solid_capstyle="round",
-        )
-
-    # Per-drone rings (orange = informed, green = partner, red = hover)
-    informed_rings = {}
-    partner_rings  = {}
-    hover_rings    = {}
-    for i in drone_ids:
-        informed_rings[i], = ax2.plot(
-            [], [], "o", ms=20, mfc="none",
-            mec=_C_INFORM, mew=2.5, alpha=0.0, zorder=9,
-        )
-        partner_rings[i], = ax2.plot(
-            [], [], "o", ms=26, mfc="none",
-            mec=_C_PARTNER, mew=2.5, alpha=0.0, zorder=10,
-        )
-        hover_rings[i], = ax2.plot(
-            [], [], "*", ms=22, mfc="none",
-            mec=_C_HOVER, mew=2.5, alpha=0.0, zorder=11,
-        )
-
-    consensus_label = ax2.text(
-        terrain.x_max - 5, terrain.y_max - 8, "",
-        color=_C_LINK, fontsize=8, fontweight="bold",
-        ha="right", va="top", alpha=0.0, zorder=12,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor=_BG_COLOR,
-                  alpha=0.7, edgecolor=_C_LINK, lw=1.0),
-    )
-
-    _csn_artists = (
-        list(comm_links.values())
-        + list(informed_rings.values())
-        + list(partner_rings.values())
-        + list(hover_rings.values())
-        + [consensus_label]
-    )
+    _empty2 = np.empty((0, 2))
 
     all_artists = (
         list(trails_r.values()) + list(dots_r.values())
         + list(trails_e.values()) + list(dots_e.values())
         + list(sph_xy.values()) + list(sph_xz.values()) + list(sph_yz.values())
         + list(trails2.values()) + list(dots2.values())
-        + list(dots2_e.values()) + list(circles2.values())
-        + list(wp_dots2.values()) + list(src_dots2.values())
-        + list(es_ref_dots2.values())
-        + list(cand_dots_A.values()) + list(cand_dots_B.values())
-        + list(landing_dots2.values())
-        + _csn_artists + [info]
+        + list(dots2_e.values())
+        + list(wp_dots2.values())
+        + list(pf_scatters.values())
+        + list(pf_scatters_3d.values())
+        + [info]
     )
 
-    def _reset_consensus_artists():
-        for ln in comm_links.values():
-            ln.set_data([], [])
-            ln.set_alpha(0.0)
-        for i in drone_ids:
-            for ring in (informed_rings[i], partner_rings[i], hover_rings[i]):
-                ring.set_data([], [])
-                ring.set_alpha(0.0)
-        consensus_label.set_text("")
-        consensus_label.set_alpha(0.0)
+    _empty3 = (np.array([]), np.array([]), np.array([]))
 
     def init():
         for i in drone_ids:
@@ -1241,21 +937,12 @@ def animate_mission(
                         sph_xy[i], sph_xz[i], sph_yz[i]):
                 obj.set_data([], [])
                 obj.set_3d_properties([])
-            for obj in (trails2[i], dots2[i], dots2_e[i], circles2[i],
-                        wp_dots2[i], src_dots2[i], es_ref_dots2[i]):
+            for obj in (trails2[i], dots2[i], dots2_e[i], wp_dots2[i]):
                 obj.set_data([], [])
-            src_dots2[i].set_alpha(0.0)
             es_arrows2[i].set_alpha(0.0)
-            es_ref_dots2[i].set_alpha(0.0)
-        for i in drone_ids:
-            cand_dots_A[i].set_data([], [])
-            cand_dots_A[i].set_alpha(0.0)
-            cand_dots_B[i].set_data([], [])
-            cand_dots_B[i].set_alpha(0.0)
-            landing_dots2[i].set_data([], [])
-            landing_dots2[i].set_alpha(0.0)
+            pf_scatters[i].set_offsets(_empty2)
+            pf_scatters_3d[i]._offsets3d = _empty3
         info.set_text("")
-        _reset_consensus_artists()
         return all_artists
 
     def update(f):
@@ -1295,16 +982,6 @@ def animate_mission(
             dots2[i].set_data([traj[ti, 0]], [traj[ti, 1]])
             dots2_e[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
 
-            # Cerchio: raggio da ag.r_log (distanza stimata dalla sorgente)
-            in_track_or_support = (ag.state_log and ti < len(ag.state_log)
-                                   and ag.state_log[ti] in (DroneState.TRACK, DroneState.SUPPORT, DroneState.STOP))
-            r_val = ag.r_log[ti] if ti < len(ag.r_log) else None
-            if in_track_or_support and r_val is not None:
-                px, py = traj[ti, 0], traj[ti, 1]
-                circles2[i].set_data(px + r_val * _cos, py + r_val * _sin)
-            else:
-                circles2[i].set_data([], [])
-
             # Waypoint corrente (pallino semi-trasparente)
             wp_log = ag.wp_target_log
             if wp_log:
@@ -1313,41 +990,37 @@ def animate_mission(
             else:
                 wp_dots2[i].set_data([], [])
 
-            # Landing point: source_est corretta per drift IMDCL
-            src_est = _src_at[i][t_step]
-            if src_est is not None:
-                drift_xy = est[ti_e, :2] - traj[ti, :2]
-                lp       = src_est[:2] - drift_xy
-                landing_dots2[i].set_data([lp[0]], [lp[1]])
-                landing_dots2[i].set_alpha(0.85)
-                err_m = np.linalg.norm(lp - true_xy)
-                lines.append(f"  LP{i}: ({lp[0]:.1f},{lp[1]:.1f})  Δ={err_m:.1f}m")
+            # Particelle PF — coordinate mondo assolute (convergono alla vittima)
+            pf_entry = _pf_at[i][t_step]
+            if pf_entry is not None:
+                parts, w = pf_entry
+                w_norm   = w / (w.max() + 1e-15)
+                sizes    = 3 + w_norm * 22
+                pf_scatters[i].set_offsets(parts[:, :2])
+                pf_scatters[i].set_sizes(sizes)
+                pf_scatters_3d[i]._offsets3d = (parts[:, 0], parts[:, 1], parts[:, 2])
+                pf_scatters_3d[i].set_sizes(sizes)
             else:
-                landing_dots2[i].set_data([], [])
-                landing_dots2[i].set_alpha(0.0)
+                pf_scatters[i].set_offsets(_empty2)
+                pf_scatters_3d[i]._offsets3d = _empty3
 
-            # Direzione ES: freccia dal drone reale verso il riferimento ES
-            # (wp_target_log durante TRACK = es_ref clamped)
+            # Direzione ES: freccia dal drone verso il riferimento ES
             wp_log = ag.wp_target_log
             in_track = (ag.state_log and ti < len(ag.state_log)
                         and ag.state_log[ti] == DroneState.TRACK)
             if in_track and wp_log:
-                es_ref   = wp_log[min(ti, len(wp_log) - 1)][:2]
-                drone_xy = traj[ti, :2]
+                es_ref    = wp_log[min(ti, len(wp_log) - 1)][:2]
+                drone_xy  = traj[ti, :2]
                 direction = es_ref - drone_xy
-                norm = np.linalg.norm(direction)
+                norm      = np.linalg.norm(direction)
                 if norm > 0.1:
                     es_tip = drone_xy + direction / norm * max(norm, 25.0)
                 else:
                     es_tip = es_ref
                 es_arrows2[i].set_positions(tuple(drone_xy), tuple(es_tip))
                 es_arrows2[i].set_alpha(0.85)
-                es_ref_dots2[i].set_data([es_ref[0]], [es_ref[1]])
-                es_ref_dots2[i].set_alpha(0.85)
             else:
                 es_arrows2[i].set_alpha(0.0)
-                es_ref_dots2[i].set_data([], [])
-                es_ref_dots2[i].set_alpha(0.0)
 
             # Testo stato — usa lo state_log reale se disponibile
             if ag.state_log and ti < len(ag.state_log):
@@ -1368,102 +1041,6 @@ def animate_mission(
                 st = "TRCK"
             err = np.linalg.norm(traj[ti, :3] - est[ti_e, :3])
             lines.append(f"D{i}: {st}  z={traj[ti, 2]:.1f}m  Δ={err:.2f}m")
-
-        # ── Consensus overlay ─────────────────────────────────────────────
-        _reset_consensus_artists()
-        active_win = None
-        for win in _csn_windows:
-            if win['f_start'] <= f < win['f_end']:
-                active_win = win
-                break
-
-        if active_win is not None:
-            dp    = active_win['drone_pos']
-            hp    = active_win['hover_pos']
-            rnd   = active_win['round']
-            r_idx = active_win['round_idx']
-            n_r   = active_win['n_rounds']
-            h_id  = active_win['hover_id']
-
-            # Blink: high alpha on even frames within the window, low on odd
-            blink_hi = ((f - active_win['f_start']) % 4) < 2
-            a_link   = 0.85 if blink_hi else 0.20
-            a_ring   = 0.90 if blink_hi else 0.25
-
-            still_in_round = f < active_win['round_end']
-
-            if still_in_round:
-                # Draw all in-range communication links
-                for (id_a, id_b) in rnd['links']:
-                    pair_key = (min(id_a, id_b), max(id_a, id_b))
-                    if pair_key in comm_links:
-                        pa, pb = dp[id_a], dp[id_b]
-                        comm_links[pair_key].set_data([pa[0], pb[0]], [pa[1], pb[1]])
-                        comm_links[pair_key].set_alpha(a_link)
-
-                # Orange rings on newly-informed drones
-                for did in rnd['newly_informed']:
-                    p = dp[did]
-                    informed_rings[did].set_data([p[0]], [p[1]])
-                    informed_rings[did].set_alpha(a_ring)
-
-                # Red star on hover drone
-                hover_rings[h_id].set_data([hp[0]], [hp[1]])
-                hover_rings[h_id].set_alpha(a_ring)
-
-                label = f"MIN-CONSENSUS  round {r_idx + 1}/{n_r}  (Rc={_cfg.IMDCL_COMM_RADIUS:.0f} m)"
-            else:
-                # Linger phase: only show partner rings (no links, no label round)
-                label = f"CONSENSO — partner selezionati"
-
-            # Green rings on selected partners (last round + linger)
-            # Usa la posizione corrente del drone (non lo snapshot al momento del consenso)
-            if active_win['show_partners']:
-                for did in active_win['partners']:
-                    hist = agents[did].history
-                    p = hist[min(t_step, len(hist) - 1)][:2]
-                    partner_rings[did].set_data([p[0]], [p[1]])
-                    partner_rings[did].set_alpha(a_ring)
-
-            consensus_label.set_text(label)
-            consensus_label.set_alpha(a_ring)
-
-        # Candidati DICT — display_i = cand_i - (p_hat_i - p_i)  (corregge drift IMDCL)
-        #   len == 2  → DICT in corso:        2 diamanti bianchi aperti (cand_dots_A/B)
-        #   len == 1  → post-disambiguazione: 1 diamante pieno colorato (src_dots2)
-        #   altrimenti → nulla
-        for i in drone_ids:
-            _ag_i    = agents[i]
-            _tr_i    = np.array(_ag_i.history)
-            _es_i    = np.array(_ag_i.est_history) if _ag_i.est_history else _tr_i
-            _ti_i    = min(t_step, len(_tr_i) - 1)
-            _tie_i   = min(t_step, len(_es_i) - 1)
-            _drift_i = _es_i[_tie_i, :2] - _tr_i[_ti_i, :2]
-            cands_i  = _cands_at[i][t_step]
-
-            if cands_i and len(cands_i) >= 2:
-                # DICT running: mostra entrambi i candidati
-                dA = np.asarray(cands_i[0])[:2] - _drift_i
-                dB = np.asarray(cands_i[1])[:2] - _drift_i
-                cand_dots_A[i].set_data([dA[0]], [dA[1]])
-                cand_dots_A[i].set_alpha(0.9)
-                cand_dots_B[i].set_data([dB[0]], [dB[1]])
-                cand_dots_B[i].set_alpha(0.9)
-                src_dots2[i].set_data([], [])
-                src_dots2[i].set_alpha(0.0)
-            elif cands_i and len(cands_i) == 1:
-                # Post-disambiguazione: mostra solo il punto selezionato
-                cand_dots_A[i].set_data([], [])
-                cand_dots_A[i].set_alpha(0.0)
-                cand_dots_B[i].set_data([], [])
-                cand_dots_B[i].set_alpha(0.0)
-                dS = np.asarray(cands_i[0])[:2] - _drift_i
-                src_dots2[i].set_data([dS[0]], [dS[1]])
-                src_dots2[i].set_alpha(0.9)
-            else:
-                for _d in (cand_dots_A[i], cand_dots_B[i], src_dots2[i]):
-                    _d.set_data([], [])
-                    _d.set_alpha(0.0)
 
         info.set_text("\n".join(lines))
         return all_artists
