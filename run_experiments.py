@@ -142,6 +142,7 @@ CSV_FIELDS = [
     "est_error_depth_m",
     "dcgd_err_final_mean_m",
     "landing_err_mean_m",
+    "pf_std_xy_mean_m",
     "note",
 ]
 
@@ -241,9 +242,9 @@ def run_one(
         victim_z = terrain_obj.z(victim_x, victim_y) - victim_depth
 
         artva = ARTVASource(
-            position=np.array([victim_x, victim_y, victim_z]),
+            theta=np.array([victim_x, victim_y, victim_z]),
             moment=config.ARTVA_MOMENT,
-            rng_seed=seed + 1,
+            seed=seed + 1,
         )
         deploy_xy    = np.array([terrain_obj.x_min + 5.0, terrain_obj.y_min + 5.0])
         victim_dist  = float(np.linalg.norm(np.array([victim_x, victim_y]) - deploy_xy))
@@ -285,23 +286,31 @@ def run_one(
         if valid_ests:
             ests_arr    = np.array(valid_ests)       # (n, 3)
             est_mean    = np.mean(ests_arr, axis=0)  # 3D centroid
-            est_error   = float(np.linalg.norm(est_mean[:2] - artva.position[:2]))
-            est_error_3d = float(np.linalg.norm(est_mean    - artva.position))
+            est_error   = float(np.linalg.norm(est_mean[:2] - artva._theta[:2]))
+            est_error_3d = float(np.linalg.norm(est_mean    - artva._theta))
             est_depth   = float(terrain_obj.z(est_mean[0], est_mean[1]) - est_mean[2])
             est_depth_err = abs(est_depth - victim_depth)
             # same metric as plot_dcgd_convergence: mean per-drone final XY error
             dcgd_err_mean = float(np.mean([
-                np.linalg.norm(e[:2] - artva.position[:2]) for e in valid_ests
+                np.linalg.norm(e[:2] - artva._theta[:2]) for e in valid_ests
             ]))
             # landing error: source_est − (p̂_i − p_i) = where drone would actually land
             landing_err_mean = float(np.mean([
                 np.linalg.norm(
-                    ag.source_est[:2] - (ag.x_est[:2] - ag.x[:2]) - artva.position[:2]
+                    ag.source_est[:2] - (ag.x_est[:2] - ag.x[:2]) - artva._theta[:2]
                 )
                 for ag in agents.values() if ag.source_est is not None
             ]))
+            # PF intra-drone std: mean of ||σ_xy|| across drones with active PF
+            pf_stds = [
+                float(np.linalg.norm(ag.source_est_std[:2]))
+                for ag in agents.values()
+                if ag.source_est_std is not None
+            ]
+            pf_std_xy_mean = float(np.mean(pf_stds)) if pf_stds else float("nan")
         else:
-            est_error = est_error_3d = est_depth = est_depth_err = dcgd_err_mean = landing_err_mean = float("nan")
+            est_error = est_error_3d = est_depth = est_depth_err = float("nan")
+            dcgd_err_mean = landing_err_mean = pf_std_xy_mean = float("nan")
 
         # Criterio found: ≥3 droni in STOP E stima entro FOUND_RADIUS dalla
         # vittima reale. Evita falsi positivi in cui i droni si fermano lontano
@@ -338,6 +347,7 @@ def run_one(
             "est_error_depth_m":     round(est_depth_err, 3) if not math.isnan(est_depth_err) else float("nan"),
             "dcgd_err_final_mean_m": round(dcgd_err_mean, 3) if not math.isnan(dcgd_err_mean) else float("nan"),
             "landing_err_mean_m":    round(landing_err_mean, 3) if not math.isnan(landing_err_mean) else float("nan"),
+            "pf_std_xy_mean_m":      round(pf_std_xy_mean, 3) if not math.isnan(pf_std_xy_mean) else float("nan"),
             "note":                  note,
         }
 
@@ -745,6 +755,7 @@ def main() -> None:
                     "est_error_depth_m":     float("nan"),
                     "dcgd_err_final_mean_m": float("nan"),
                     "landing_err_mean_m":    float("nan"),
+                    "pf_std_xy_mean_m":      float("nan"),
                     "note":                  f"ERRORE: {tb.splitlines()[-1]}",
                 }
             elif metrics["found"]:

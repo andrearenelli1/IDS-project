@@ -382,9 +382,7 @@ def _on_wp_reached(
             ag.wp_idx = 0   # cicla la circonferenza
 
     elif ag.state == DroneState.STOP:
-        if ag.stop_orbit_assigned and not ag.stop_orbit_done:
-            if not ag.advance_waypoint():
-                ag.stop_orbit_done = True
+        pass  # hovering
 
 
 # ============================================================================
@@ -438,33 +436,6 @@ def _transition_to_stop(
         f"\n  ⬛ Drone {drone_id} STOP (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
         f"  pos={ag.x[:3].round(1)}"
     )
-
-
-def _assign_stop_orbits(
-    agents:    Dict[int, DroneAgent],
-    drone_ids: list,
-    terrain:   Terrain,
-    agl:       float,
-) -> None:
-    """
-    Assegna a ciascun drone STOP un'orbita attorno alla sua stima PF corrente.
-    Il raggio è la distanza attuale drone→source_est (floor 5 m).
-    """
-    for i in drone_ids:
-        ag = agents[i]
-        if ag.state != DroneState.STOP or ag.stop_orbit_assigned:
-            continue
-        center = ag.source_est if ag.source_est is not None else ag.x_est[:3].copy()
-        orbit_r = max(float(np.linalg.norm(ag.x[:3] - center)), 5.0)
-        start_angle = float(np.arctan2(ag.x_est[1] - center[1], ag.x_est[0] - center[0]))
-        wps = circle_waypoints(center, orbit_r, start_angle, clockwise=False, terrain=terrain, agl=agl)
-        ag.waypoints            = wps
-        ag.wp_idx               = 0
-        ag.stop_orbit_assigned  = True
-        print(
-            f"    STOP orbit: Drone {i} → source_est={np.round(center, 1)}"
-            f"  r={orbit_r:.1f} m"
-        )
 
 
 # ============================================================================
@@ -591,8 +562,7 @@ def simulate(
 
     R_rel         = np.eye(3) * IMDCL_R_MEAS_STD**2
     R_lidar       = np.array([[IMDCL_R_LIDAR_STD**2]])
-    consensus_done       = [False]   # True dopo il primo STOP con partner assegnati
-    stop_orbits_assigned = [False]   # True dopo che le orbite finali STOP sono state assegnate
+    consensus_done = [False]   # True dopo il primo STOP con partner assegnati
 
     _STATE_LABEL = {
         DroneState.SEARCH:  "SRCH",
@@ -780,18 +750,20 @@ def simulate(
         # ── 9. Terminazione ──────────────────────────────────────────────
         n_stopped = sum(1 for i in drone_ids if agents[i].state == DroneState.STOP)
         if n_stopped >= N_STOP:
-            if not stop_orbits_assigned[0]:
-                print(f"\n  {N_STOP} droni in STOP al passo {step} — avvio orbite finali")
-                _assign_stop_orbits(agents, drone_ids, terrain, agl)
-                stop_orbits_assigned[0] = True
-            stop_drones = [i for i in drone_ids if agents[i].state == DroneState.STOP]
-            if all(agents[i].stop_orbit_done for i in stop_drones):
-                print(
-                    f"\n  Orbite finali completate al passo {step} (t={t:.2f}s) — "
-                    "simulazione terminata"
-                )
-                break
+            print(
+                f"\n  {N_STOP} droni in STOP al passo {step} (t={t:.2f}s) — "
+                "simulazione terminata"
+            )
+            break
 
+
+    # ── Stima finale PF: media pesata + deviazione standard ───────────────
+    for i in drone_ids:
+        ag = agents[i]
+        if ag.pf is not None and ag.source_est is not None:
+            diff = ag.pf.particles - ag.source_est
+            var  = np.average(diff ** 2, weights=ag.pf.weights, axis=0)
+            ag.source_est_std = np.sqrt(var)
 
     # ── Report finale ──────────────────────────────────────────────────────
     valid_ests = [agents[i].source_est for i in drone_ids if agents[i].source_est is not None]
@@ -801,7 +773,11 @@ def simulate(
         ag = agents[i]
         if ag.source_est is not None:
             e_i = np.linalg.norm(ag.source_est[:2] - artva._theta[:2])
-            print(f"    Drone {i}: {ag.source_est.round(2)}  (err_xy={e_i:.2f} m)")
+            std_str = ""
+            if ag.source_est_std is not None:
+                s = ag.source_est_std
+                std_str = f"  σ=({s[0]:.2f}, {s[1]:.2f}, {s[2]:.2f}) m"
+            print(f"    Drone {i}: {ag.source_est.round(2)}  (err_xy={e_i:.2f} m){std_str}")
         else:
             print(f"    Drone {i}: n/a (PF non attivato)")
 

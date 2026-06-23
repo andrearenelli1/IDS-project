@@ -661,43 +661,40 @@ def plot_final_positions(
     agents:  Dict[int, DroneAgent],
 ) -> plt.Figure:
     """
-    Mappa 2D: posizioni finali droni, stima PF (con correzione drift IMDCL),
-    cerchi di distanza stimata, sorgente reale.
+    Mappa 2D — posizioni finali della missione:
+      ▲ (pieno)    — posizione reale del drone
+      ▲ (bordo)    — posizione stimata IMDCL del drone
+      ◆            — stima PF della sorgente (senza correzione drift;
+                     il drone atterrerà qui secondo il suo piano di volo)
+      segmenti ±σ  — incertezza PF sugli assi x e y
+      ★            — posizione reale vittima
     """
     drone_ids   = list(agents.keys())
     victim_xy   = artva._theta[:2]
     finals_real = {i: agents[i].history[-1][:2]     for i in drone_ids}
     finals_est  = {i: agents[i].est_history[-1][:2] for i in drone_ids}
 
-    circle_radii = {}
+    source_ests: Dict[int, np.ndarray] = {}
+    source_stds: Dict[int, np.ndarray] = {}
     for i in drone_ids:
-        sig = agents[i].signal_log[-1][1] if agents[i].signal_log else 0.0
-        if sig > 1e-12:
-            circle_radii[i] = (ARTVA_MOMENT / sig) ** (1.0 / 3.0)
+        ag = agents[i]
+        if ag.source_est is not None:
+            source_ests[i] = ag.source_est[:2]
+        if ag.source_est_std is not None:
+            source_stds[i] = ag.source_est_std[:2]
 
-    landing_pts = [
-        agents[i].source_est[:2] - (agents[i].x_est[:2] - agents[i].x[:2])
-        for i in drone_ids if agents[i].source_est is not None
-    ]
-    circle_extremes = [
-        finals_real[i] + np.array([dx, dy])
-        for i in drone_ids if i in circle_radii
-        for dx, dy in ((circle_radii[i], 0), (-circle_radii[i], 0),
-                       (0, circle_radii[i]), (0, -circle_radii[i]))
-    ]
-    all_pts = np.vstack(
-        list(finals_real.values()) + list(finals_est.values())
+    all_pts_list = (
+        list(finals_real.values())
+        + list(finals_est.values())
         + [victim_xy]
-        + (landing_pts if landing_pts else [victim_xy])
-        + (circle_extremes if circle_extremes else [victim_xy])
+        + list(source_ests.values())
     )
+    all_pts = np.vstack(all_pts_list)
     span   = max(all_pts[:, 0].max() - all_pts[:, 0].min(),
                  all_pts[:, 1].max() - all_pts[:, 1].min())
     margin = max(8.0, span * 0.30)
     xlim   = (all_pts[:, 0].min() - margin, all_pts[:, 0].max() + margin)
     ylim   = (all_pts[:, 1].min() - margin, all_pts[:, 1].max() + margin)
-
-    _th = np.linspace(0, 2 * np.pi, 180)
 
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(6, 6))
@@ -706,38 +703,40 @@ def plot_final_positions(
 
         for i in drone_ids:
             c  = COLORS.get(i, "#aaaaaa")
-            ag = agents[i]
-            if i in circle_radii:
-                r = circle_radii[i]
-                cx, cy = finals_real[i]
-                ax.plot(cx + r * np.cos(_th), cy + r * np.sin(_th),
-                        color=c, lw=1.2, ls="--", alpha=0.55, zorder=3,
-                        label=f"$\\hat{{r}}_{{{i}}}={r:.1f}$~m")
+
+            # ── posizione reale e stimata IMDCL ───────────────────────────
             ax.plot(*finals_real[i], "^", color=c, ms=11, mec="white", mew=0.9,
-                    zorder=7, label=f"$p_{{{i}}}$")
+                    zorder=7, label=f"$p_{{{i}}}$ reale")
             ax.plot(*finals_est[i], "^", color=c, ms=11, mec="black", mew=1.0,
-                    alpha=0.55, zorder=6, label=f"$\\hat{{p}}_{{{i}}}$")
+                    alpha=0.55, zorder=6, label=f"$\\hat{{p}}_{{{i}}}$ IMDCL")
             ax.plot(
                 [finals_real[i][0], finals_est[i][0]],
                 [finals_real[i][1], finals_est[i][1]],
                 color=c, lw=0.8, ls=":", alpha=0.6, zorder=5,
             )
-            if ag.source_est is not None:
-                src         = ag.source_est[:2]
-                src_landing = src - (ag.x_est[:2] - ag.x[:2])
-                ax.plot(*src, "D", color=c, ms=9, mfc="none", mec=c, mew=1.5,
-                        zorder=6, label=f"$\\hat{{\\theta}}^{{PF}}_{{{i}}}$")
-                ax.plot(*src_landing, "D", color=c, ms=9, mec="black", mew=1.0,
-                        alpha=0.80, zorder=6,
-                        label=f"$\\hat{{\\theta}}^{{PF}}_{{{i}}} - \\delta\\hat{{p}}_{{{i}}}$")
-                ax.plot([src[0], src_landing[0]], [src[1], src_landing[1]],
-                        color=c, lw=0.7, ls="--", alpha=0.5, zorder=5)
 
+            # ── stima PF sorgente (senza correzione drift) ────────────────
+            if i in source_ests:
+                src = source_ests[i]
+                ax.plot(*src, "D", color=c, ms=10, mec=c, mew=1.5,
+                        zorder=8, label=f"$\\hat{{\\theta}}^{{\\mathrm{{PF}}}}_{{{i}}}$")
+
+                # segmenti di incertezza ±σ_x e ±σ_y
+                if i in source_stds:
+                    sx, sy = source_stds[i]
+                    ax.plot([src[0] - sx, src[0] + sx], [src[1], src[1]],
+                            color=c, lw=2.0, solid_capstyle="round", alpha=0.75, zorder=7)
+                    ax.plot([src[0], src[0]], [src[1] - sy, src[1] + sy],
+                            color=c, lw=2.0, solid_capstyle="round", alpha=0.75, zorder=7)
+
+        # ── posizione reale vittima ────────────────────────────────────────
         ax.plot(*victim_xy, "*", color="crimson", ms=16,
-                mec="black", mew=0.6, zorder=9, label=r"$\theta$")
+                mec="black", mew=0.6, zorder=9, label=r"$\theta$ (vittima)")
+
         ax.set_xlim(*xlim); ax.set_ylim(*ylim)
         ax.set_xlabel(r"$x$ [m]"); ax.set_ylabel(r"$y$ [m]")
-        ax.set_title(r"Final positions — PF source estimate", fontweight="bold")
+        ax.set_title(r"Final positions — PF source estimate ($\pm\sigma$)",
+                     fontweight="bold")
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="best", framealpha=0.85, fontsize=9)
         fig.tight_layout()

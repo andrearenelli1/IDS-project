@@ -24,10 +24,11 @@ import numpy as np
 FIELDS = [
     "run_id", "area_size_m", "n_drones",
     "victim_x_m", "victim_y_m", "victim_depth_m",
-    "artva_noise_std", "noise_detect_factor", "comm_radius_m",
+    "artva_noise_std", "comm_radius_m",
     "workspace_frac_r", "workspace_frac_c",
     "found", "time_found_s", "n_drones_stopped",
-    "pos_variance_m2", "pos_std_m", "est_error_2d_m", "note",
+    "pos_variance_m2", "pos_std_m", "est_error_2d_m",
+    "landing_err_mean_m", "est_error_depth_m", "pf_std_xy_mean_m", "note",
 ]
 
 
@@ -61,7 +62,6 @@ def load(path: str) -> list[dict]:
                 "depth":     _flt(r["victim_depth_m"]),
                 "depth_bin": _depth_bin(_flt(r["victim_depth_m"])),
                 "noise":     _flt(r["artva_noise_std"]),
-                "detect":    _flt(r.get("noise_detect_factor", "100.0")),
                 "rc":        int(float(r["comm_radius_m"])),
                 "acc_sim":   _flt(r.get("acc_sim_ms2", "0.05")),
                 "found":     r["found"].strip() == "True",
@@ -69,9 +69,10 @@ def load(path: str) -> list[dict]:
                 "dist":      _flt(r.get("victim_dist_m", "nan")),
                 "err2d":       _flt(r["est_error_2d_m"]),
                 "pos_std":     _flt(r["pos_std_m"]),
-                "landing_err": _flt(r.get("landing_err_mean_m", "nan")),
-                "depth_err":   _flt(r.get("est_error_depth_m",  "nan")),
-                "note":        r["note"].strip(),
+                "landing_err":   _flt(r.get("landing_err_mean_m",  "nan")),
+                "depth_err":     _flt(r.get("est_error_depth_m",   "nan")),
+                "pf_std_xy":     _flt(r.get("pf_std_xy_mean_m",    "nan")),
+                "note":          r["note"].strip(),
             })
     return rows
 
@@ -688,6 +689,59 @@ def fig_localization_errors(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 12 — PF intra-drone uncertainty (pf_std_xy_mean_m)
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_pf_uncertainty(rows: list[dict]) -> plt.Figure:
+    """
+    Incertezza intra-drone del Particle Filter (||σ_xy|| medio).
+    Diversa da pos_std_m (dispersione *inter*-drone): questa misura quanto
+    ogni singolo drone è incerto sulla posizione della sorgente.
+    """
+    found = [r for r in rows if r["found"] and not math.isnan(r["pf_std_xy"])]
+    if not found:
+        return None
+
+    noise_sorted = sorted(NOISE_STDS)
+    noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
+                             constrained_layout=True, sharey=True)
+    fig.suptitle(
+        r"Particle Filter intra-drone XY uncertainty $\|\sigma_{xy}\|$ vs.\ ARTVA noise",
+        fontsize=10, fontweight="bold",
+    )
+
+    bp_kw = dict(patch_artist=True, notch=False, widths=0.55,
+                 medianprops=dict(color="black", lw=1.5),
+                 flierprops=dict(marker=".", markersize=3, alpha=0.3))
+
+    for ax, area in zip(axes, AREAS):
+        data = [
+            [r["pf_std_xy"] for r in found if r["noise"] == noise and r["area"] == area]
+            for noise in noise_sorted
+        ]
+        bp = ax.boxplot(data, positions=range(len(noise_sorted)), **bp_kw)
+        for patch, color in zip(bp["boxes"], noise_colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.75)
+
+        ax.set_xticks(range(len(noise_sorted)))
+        ax.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted])
+        ax.set_xlabel(r"ARTVA noise $\sigma$")
+        ax.set_ylabel(r"$\|\sigma_{xy}\|$ PF [m]")
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+
+        for pos, d in enumerate(data):
+            if d:
+                med = median(d)
+                ax.text(pos + 0.32, med, rf" {med:.2f}\,m",
+                        va="center", fontsize=7, color="#333333")
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -721,6 +775,7 @@ def main() -> None:
     fig_acc_sim(rows)
     fig_victim_map(rows)
     fig_localization_errors(rows)
+    fig_pf_uncertainty(rows)
     plt.show()
 
 

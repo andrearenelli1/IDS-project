@@ -169,6 +169,7 @@ class DroneAgent:
     pf:                Optional[ParticleFilter] = None
     artva_sigma_noise: float                    = 0.0
     source_est:        Optional[np.ndarray]     = None
+    source_est_std:    Optional[np.ndarray]     = None  # deviazione std pesata su (x,y,z) alla fine
     source_est_log:    list                     = field(default_factory=list)
     pf_log:            list                     = field(default_factory=list)  # (particles, weights) per step
 
@@ -201,9 +202,6 @@ class DroneAgent:
     support_deadline:     int   = 0       # step oltre cui si rinuncia
     support_n_needed:     int   = 0       # partner ancora mancanti
 
-    # STOP — orbita finale attorno alla stima PF
-    stop_orbit_assigned: bool = False
-    stop_orbit_done:     bool = False
 
     # ARTVA signal
     sig_filt: Optional[float] = None
