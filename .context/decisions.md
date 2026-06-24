@@ -28,11 +28,19 @@
 
 ---
 
-## Criterio `found` con soglia di posizione
+## Criterio `found` basato sull'ellisse di confidenza PF
 
-**Decisione**: `found = (n_stopped >= 3) AND (est_error < FOUND_RADIUS)` con `FOUND_RADIUS = 10 m`.
+**Decisione** (sostituisce il vecchio `n_stopped >= 3 AND est_error < FOUND_RADIUS`): `found = True` se **almeno un drone con PF attivo** ha l'**ellisse di confidenza 95% drift-corretta** che (i) contiene la vittima (Mahalanobis ≤ k²) e (ii) ha area ≤ `FOUND_ELLIPSE_AREA_MAX` (≈78.5 m², cerchio r≈5 m). Costanti: `FOUND_ELLIPSE_CONF`, `FOUND_ELLIPSE_AREA_MAX`.
 
-**Perché**: senza la condizione sulla posizione, i run in cui l'ES converge su un ottimo locale lontano dalla sorgente venivano contati come successi (i droni si fermano perché il segnale è alto, non perché sono vicini alla vittima). Il valore 10 m è più permissivo della soglia operativa del paper (5×5 m box) per tenere conto delle approssimazioni della simulazione.
+**Perché**: da quando esiste il PF, anche un solo drone può stimare la sorgente — il vecchio requisito di 3 droni in STOP era troppo legato alla logica di conferma cooperativa. L'ellisse cattura sia l'accuratezza (contenenza) sia la confidenza (area), ed è ciò che conta operativamente: il soccorritore sonda l'area dell'ellisse. La correzione del drift è necessaria perché il PF lavora nel frame stimato `x_est` (GPS-denied), quindi `source_est` va riportato nel frame reale via `source_est − (x_est − x)` prima del confronto con la vittima.
+
+---
+
+## Orbita finale di raffinamento (FINAL_ORBIT)
+
+**Decisione**: comunque la ricerca termini (team in STOP, timeout SUPPORT scaduto, o timeout globale), prima dell'arresto tutti i droni con PF attivo compiono un'orbita attorno alla stima (centro statico). Durata definita dal numero di waypoint del cerchio (`FINAL_ORBIT_N_WAYPOINTS`), non da un tempo: fine al raggiungimento dell'ultimo waypoint.
+
+**Perché**: l'orbita raccoglie misure da viste angolari diverse attorno alla sorgente, affinando il PF prima di consegnare la stima ai soccorritori. Con un solo drone può far passare un run da non-trovato a trovato. Il timeout della chiamata SUPPORT va sempre atteso (anche se un partner si è già fermato) per dare al team la possibilità di reclutare fino a 3 droni quando ne sono raggiungibili meno.
 
 ---
 

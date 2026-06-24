@@ -7,14 +7,16 @@
 
 Simulazione multi-agente di ricerca in valanga con droni autonomi.
 Ogni drone vola a quota costante sopra un DEM reale (TINItaly 10 m).
-FSM a 4 stati, tutti con waypoint arrival-gated:
+FSM a 5 stati, tutti con waypoint arrival-gated:
 
 - **SEARCH**: lawnmower con lane spacing adattivo; → TRACK quando segnale ≥ `artva_detect_thr` (dinamica, con floor fisico)
 - **TRACK**: Extremum Seeking (Azzollini et al. arXiv:2106.14514) — il drone percorre una traiettoria circolare il cui centro converge verso il massimo del segnale ARTVA (= sorgente); → STOP quando segnale ≥ `track_stop_thr` (dinamica)
 - **STOP**: hovering; seleziona 2 droni SUPPORT via min-consensus; il Particle Filter continua ad affinare la stima
 - **SUPPORT**: percorre una circonferenza di raggio `(moment/S)^(1/3)` centrata sul drone STOP (uno CW, uno CCW); → STOP a `track_stop_thr` (dinamica)
+- **FINAL_ORBIT**: alla terminazione, tutti i droni con PF attivo orbitano un cerchio di `FINAL_ORBIT_N_WAYPOINTS` waypoint attorno alla stima congelata per affinare il PF; fine quando ogni drone raggiunge l'ultimo waypoint
 
-Terminazione: ≥ 3 droni in STOP **E** stima PF entro `FOUND_RADIUS` (10 m) dalla vittima.
+Terminazione della ricerca: (1) `N_STOP`=3 droni in STOP; (2) chiamata SUPPORT scaduta (`SUPPORT_SEARCH_TIMEOUT`, sempre attesa anche se un partner si è già fermato); (3) timeout globale. In ogni caso, prima dell'arresto, segue l'orbita finale FINAL_ORBIT. Il successo (`found`) è valutato a posteriori sul PF: ellisse di confidenza 95% **drift-corretta** che contiene la vittima ED ha area ≤ `FOUND_ELLIPSE_AREA_MAX` (non più "≥3 STOP entro 10 m").
+Il PF lavora nel **frame stimato** `x_est` (GPS-denied): `source_est` va confrontato con la vittima dopo aver rimosso il drift `(x_est − x)`.
 Il controllo traiettoria usa MPC a orizzonte finito; la localizzazione distribuita usa filtro IMDCL (cooperative Kalman).
 Tutte le coordinate sono in **metri locali del workspace** (origine = angolo SW dell'area DEM estratta); `terrain.utm_origin` contiene l'offset UTM.
 
@@ -74,7 +76,7 @@ La stima finale è la media pesata delle particelle: `source_est = Σ w_k · ξ_
 | `mpc_drone.py` | Controllore MPC + modello punto-massa 3-D |
 | `imdcl.py` | Filtro Kalman cooperativo distribuito |
 | `pf.py` | Particle Filter 3-D per stima sorgente |
-| `drone_agent.py` | FSM drone (SEARCH/TRACK ES/STOP/SUPPORT), lawnmower, ES nav |
+| `drone_agent.py` | FSM drone (SEARCH/TRACK ES/STOP/SUPPORT/FINAL_ORBIT), lawnmower, ES nav |
 | `simulation.py` | Loop temporale multi-agente + calibrazione soglie |
 | `visualization.py` | Plot statici + animazioni |
 | `main.py` | Entry point CLI (singola run, replay da parametri CSV) |
@@ -110,7 +112,8 @@ python plot_results.py results.csv
 |---|---|
 | Cambiare parametri (AGL, N_MPC, N droni…) | `config.py` |
 | Cambiare portata massima ES (floor rilevamento) | `config.py → ES_DETECT_MAX_R` |
-| Cambiare raggio "found" | `config.py → FOUND_RADIUS` |
+| Cambiare criterio "found" (ellisse) | `config.py → FOUND_ELLIPSE_CONF, FOUND_ELLIPSE_AREA_MAX` |
+| Cambiare orbita finale | `config.py → FINAL_ORBIT_RADIUS, FINAL_ORBIT_N_WAYPOINTS` |
 | Calibrazione rumore (campioni, consensus) | `simulation.py → _calibrate_noise` |
 | Parametri ES (alpha, omega, kappa) | `config.py → ES_*` |
 | Cambiare il pattern SEARCH | `drone_agent.py → lawnmower_waypoints` |

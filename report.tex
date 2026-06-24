@@ -257,9 +257,9 @@ as digging proceeds and the signal strengthens.
 \subsection{Finite State Machine}
 \label{sec:fsm}
 
-Each drone cycles through four states (Fig.~\ref{fig:topview}):
-\begin{list}{}{\setlength{\labelwidth}{1.6cm}%
-               \setlength{\leftmargin}{1.8cm}%
+Each drone cycles through five states (Fig.~\ref{fig:topview}):
+\begin{list}{}{\setlength{\labelwidth}{1.9cm}%
+               \setlength{\leftmargin}{2.1cm}%
                \setlength{\labelsep}{0.2cm}%
                \setlength{\itemsep}{2pt}}
   \item[\textsc{Search}] Lawnmower coverage; transitions to
@@ -275,22 +275,36 @@ Each drone cycles through four states (Fig.~\ref{fig:topview}):
         of radius $r_{\text{orbit}}$, one clockwise, one
         counter-clockwise; transitions to \textsc{Stop} when its own
         signal exceeds $\tau_{\text{stop}}$.
+  \item[\textsc{Final\,Orbit}] Triggered once on mission stop: every
+        drone with an active PF flies a single circle of $N_{\text{wp}}$
+        waypoints around the (frozen) estimated source to gather
+        viewpoint diversity and sharpen the filter before delivery.
 \end{list}
-The mission stops as soon as the team reaches the \textsc{Stop}
-configuration, or as soon as a \textsc{Stop} drone's support call expires
-without any reachable partner: since a single active Particle Filter
-already suffices to localize the source, waiting longer would only delay
-the estimate handed to rescuers.  Success is assessed a posteriori on the
-PF estimate rather than on the number of stopped drones
-(Sec.~\ref{sec:pf}).
+
+\paragraph{Stop conditions and final orbit}
+The search phase ends as soon as any of the following holds:
+(i) the full team is in \textsc{Stop} ($N_{\text{stop}} = 3$ drones);
+(ii) a \textsc{Stop} drone's support call expires --- the recruitment
+timeout is \emph{always} awaited, even if a partner has meanwhile stopped,
+so that the team is given its full chance to recruit up to three drones
+before giving up when fewer are reachable; or
+(iii) the global time budget is exhausted.
+However the search ends, the mission does not halt immediately: all drones
+with an active PF first execute a brief \textsc{Final\,Orbit} around the
+estimate frozen at that instant, and the simulation terminates only once
+every orbiting drone has reached the last waypoint of its circle.  This
+short multi-view sweep refines the cooperative estimate before it is handed
+to rescuers.  Because a single active PF already suffices to localize the
+source, success is assessed a posteriori on the PF estimate rather than on
+the number of stopped drones (Sec.~\ref{sec:pf}).
 
 \begin{figure}[tb]
   \centering
   \includegraphics[width=\columnwidth]{figures/trajectories_top_view}
   \caption{Top-view trajectories of a multi-drone mission on a real
   alpine DEM patch.  Colors distinguish drones; line style encodes the FSM
-  state (dashed = Search, solid = Track/Support, dotted = Stop), with the
-  IMDCL self-estimate also dotted.  The victim is marked with a star.}
+  state (dashed = Search, solid = Track/Support/Final-orbit, dotted = Stop),
+  with the IMDCL self-estimate also dotted.  The victim is marked with a star.}
   \label{fig:topview}
 \end{figure}
 
@@ -830,11 +844,13 @@ Burial depth             & random, $\mathcal{U}[1, 5]$\,m \\
 \end{tabular}
 \end{center}
 
-Each run ends when the team reaches the \textsc{Stop} configuration (or a
-\textsc{Stop} drone's support call expires with no reachable partner), or
-after a 900\,s timeout.  A run is counted as a success according to the
-drift-corrected confidence-ellipse criterion of Sec.~\ref{sec:pf}
-(victim contained in the $95\%$ ellipse with area $\le A_{\max}$).
+Each run ends when the team reaches the \textsc{Stop} configuration, when a
+\textsc{Stop} drone's support call expires (the recruitment timeout being
+always awaited), or after a 900\,s timeout; in every case a final
+refinement orbit (Sec.~\ref{sec:fsm}) precedes the halt.  A run is counted
+as a success according to the drift-corrected confidence-ellipse criterion
+of Sec.~\ref{sec:pf} (victim contained in the $95\%$ ellipse with area
+$\le A_{\max}$).
 
 \subsection{Mission Success Rate}
 

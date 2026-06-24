@@ -16,18 +16,21 @@ main.py
   │       lawnmower_waypoints() → DroneAgent(MPC + IMDCL + FSM)
   │
   └── simulate()               ← simulation.py
-        loop per step t=0..N_SIM:
+        while step < N_SIM (o finché l'orbita finale non è completa):
           1. misura ARTVA reale
-          2. Transizioni FSM:
+          2. Transizioni FSM (sospese durante FINAL_ORBIT):
                SEARCH → TRACK se segnale ≥ ARTVA_DETECT_THR
                TRACK/SUPPORT → STOP se segnale ≥ TRACK_STOP_THR
                STOP (primo): consenso → 2 droni SUPPORT con circonferenza
           3. MPC step → u_opt   (usa stima IMDCL, non posizione reale)
           4. propagazione dinamica reale + rumore
           5. IMDCL: propagazione + update LiDAR + update cooperativo
-          6. DCGD: Adapt+Combine per droni TRACK
+          6. Particle Filter: update pesi (proprie + vicini, su x_est) + resample
           7. avanza waypoint (arrival-gated, dispatch per stato FSM)
-          8. se ≥3 droni in STOP → raffinamento DCGD → break
+          8. Terminazione: N_STOP droni in STOP, o chiamata SUPPORT scaduta
+             (timeout sempre atteso), o timeout globale → avvia FINAL_ORBIT
+             (orbita di raffinamento dei droni con PF attivo); break quando
+             tutti raggiungono l'ultimo waypoint del cerchio
 ```
 
 ## Layers

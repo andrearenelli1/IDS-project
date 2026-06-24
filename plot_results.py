@@ -762,7 +762,7 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
 
     Il regime ideale è in basso-a-destra (confidenti E d'accordo). La IoU evita
     il confondente geometrico dell'intersezione grezza (box grandi → più overlap).
-    Colore = rumore ARTVA; marker pieno = run riuscito, vuoto = fallito.
+    Marker pieno = run riuscito, vuoto = fallito.
     """
     valid = [r for r in rows
              if not math.isnan(r["pf_iou"]) and not math.isnan(r["pf_area"])
@@ -770,8 +770,8 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
     if not valid:
         return None
 
-    noise_sorted = sorted(NOISE_STDS)
-    noise_colors = {1e-7: "#4e79a7", 1e-6: "#f28e2b", 1e-5: "#e15759"}
+    color_found  = "#4e79a7"
+    color_failed = "#e15759"
 
     fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.6),
                              constrained_layout=True, sharey=True)
@@ -780,22 +780,19 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
         fontsize=10, fontweight="bold")
 
     for ax, area in zip(axes, AREAS):
-        sub = [r for r in valid if r["area"] == area]
-        for noise in noise_sorted:
-            pts_f = [r for r in sub if r["noise"] == noise and r["found"]]
-            pts_n = [r for r in sub if r["noise"] == noise and not r["found"]]
-            color = noise_colors.get(noise, "#777777")
-            if pts_f:
-                ax.scatter([100 * r["pf_iou"] for r in pts_f],
-                           [r["pf_area"] for r in pts_f],
-                           c=color, s=16, alpha=0.55, edgecolors="none",
-                           label=rf"{NOISE_LABELS[noise]} (found)")
-            if pts_n:
-                ax.scatter([100 * r["pf_iou"] for r in pts_n],
-                           [r["pf_area"] for r in pts_n],
-                           facecolors="none", edgecolors=color, s=16,
-                           linewidths=0.8, alpha=0.7,
-                           label=rf"{NOISE_LABELS[noise]} (timeout)")
+        sub   = [r for r in valid if r["area"] == area]
+        pts_f = [r for r in sub if r["found"]]
+        pts_n = [r for r in sub if not r["found"]]
+        if pts_f:
+            ax.scatter([100 * r["pf_iou"] for r in pts_f],
+                       [r["pf_area"] for r in pts_f],
+                       c=color_found, s=16, alpha=0.55, edgecolors="none",
+                       label="found")
+        if pts_n:
+            ax.scatter([100 * r["pf_iou"] for r in pts_n],
+                       [r["pf_area"] for r in pts_n],
+                       facecolors="none", edgecolors=color_failed, s=16,
+                       linewidths=0.8, alpha=0.7, label="failed")
 
         ax.set_yscale("log")
         ax.set_xlim(-3, 103)

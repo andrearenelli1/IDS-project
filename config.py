@@ -144,7 +144,7 @@ CONSENSUS_K_MAX        = 10    # iterazioni max min-consensus (≥ diametro stim
 # attorno alla posizione stimata (centro statico catturato all'istante di stop)
 # per raccogliere viste diverse e affinare il PF prima di consegnare la stima.
 FINAL_ORBIT_RADIUS  = 10.0   # [m]  raggio dell'orbita finale
-FINAL_ORBIT_N_WAYPOINTS = 12  # waypoint sul cerchio: l'orbita finisce quando
+FINAL_ORBIT_N_WAYPOINTS = 6  # waypoint sul cerchio: l'orbita finisce quando
                               # ogni drone ha raggiunto l'ultimo waypoint
 
 # ============================================================================

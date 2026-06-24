@@ -16,18 +16,22 @@ from config import AGL_HEIGHT, ES_DETECT_MAX_R
 AGL = 1.5   # duplicazione → deriva silenziosa
 ```
 
-## 2. Il controllore MPC usa sempre la stima IMDCL
+## 2. MPC e Particle Filter usano sempre la stima IMDCL
 
-Il MPC riceve `ag.x_est` (= `ag.imdcl.x_hat`), **mai** `ag.x` (posizione reale).
-Questo replica il comportamento reale: il drone non conosce la propria posizione esatta.
+Sia il MPC sia il Particle Filter ricevono `ag.x_est` (= `ag.imdcl.x_hat`), **mai** `ag.x` (posizione reale).
+Questo replica il comportamento reale GPS-denied: il drone non conosce la propria posizione esatta. Usare `ag.x` nel PF è "cheating" (il filtro avrebbe la verità di terra).
 
 ```python
 # ✅ CORRETTO
 u_opt = ag.ctrl.step(ag.x_est, ag.current_target())
+ag.pf.update_weights(ag.x_est[:3], sig, ...)          # PF nel frame stimato
 
 # ❌ SBAGLIATO
-u_opt = ag.ctrl.step(ag.x, ag.current_target())  # cheating!
+u_opt = ag.ctrl.step(ag.x, ag.current_target())       # cheating!
+ag.pf.update_weights(ag.x[:3], sig, ...)              # cheating!
 ```
+
+Conseguenza: `source_est` è nel frame stimato. Per confrontarlo con la vittima vera (criterio `found`, plot, metriche) **rimuovere il drift**: `source_est − (ag.x_est − ag.x)`.
 
 ## 3. Stato del drone: convenzioni array
 
