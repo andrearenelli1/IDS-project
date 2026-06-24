@@ -255,6 +255,11 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
     Legge il GeoTIFF, estrae area AREA_SIZE_M × AREA_SIZE_M m,
     costruisce un oggetto Terrain interrogabile.
 
+    Strategia: si estrae un patch leggermente più grande (AREA_SIZE_M + 2 pixel
+    di margine per lato) per costruire il RegularGridInterpolator, poi il dominio
+    del Terrain rimane esattamente [0, AREA_SIZE_M]². In questo modo non si
+    arriva mai al fill_value dell'interpolatore ai bordi.
+
     Parameters
     ----------
     tif_path    : percorso al file GeoTIFF
@@ -264,12 +269,14 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
     Returns
     -------
     terrain  : Terrain
-    x_coords : np.ndarray  (coordinate E dei pixel dell'area)
-    y_coords : np.ndarray  (coordinate N dei pixel dell'area)
-    sub_dem  : np.ndarray  (quota grezza dell'area, per i plot)
+    x_coords : np.ndarray  (coordinate E dei pixel dell'area nominale)
+    y_coords : np.ndarray  (coordinate N dei pixel dell'area nominale)
+    sub_dem  : np.ndarray  (quota grezza dell'area nominale, per i plot)
     transform: tuple       (x_origin, pixel_w, y_origin, pixel_h)
     """
     dem, transform = read_geotiff(tif_path)
+    _, pixel_w, _, pixel_h = transform
+    pixel_size = abs(pixel_w)
 
     center_row, center_col = None, None
     if center_frac is not None:
@@ -277,39 +284,59 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
         center_row = int(np.clip(center_frac[0] * rows, 0, rows - 1))
         center_col = int(np.clip(center_frac[1] * cols, 0, cols - 1))
 
-    sub_dem, x_coords, y_coords, _ = extract_area(
+    # Patch nominale (usata per i plot diagnostici e come riferimento UTM)
+    sub_dem, x_coords, y_coords, (cr, cc) = extract_area(
         dem, transform,
         center_row=center_row, center_col=center_col,
         size_m=AREA_SIZE_M,
     )
 
-    if y_coords[0] > y_coords[-1]:
-        y_asc   = y_coords[::-1]
-        sub_asc = sub_dem[::-1, :]
+    # Patch allargata: +2 pixel per lato → l'interpolatore non ha bordi "vuoti"
+    # all'interno del dominio [0, AREA_SIZE_M]²
+    margin_px   = 2
+    size_large  = AREA_SIZE_M + 2 * margin_px * pixel_size
+    sub_big, x_big, y_big, _ = extract_area(
+        dem, transform,
+        center_row=cr, center_col=cc,
+        size_m=size_large,
+    )
+
+    if y_big[0] > y_big[-1]:
+        y_big_asc   = y_big[::-1]
+        sub_big_asc = sub_big[::-1, :]
     else:
-        y_asc   = y_coords
-        sub_asc = sub_dem
+        y_big_asc   = y_big
+        sub_big_asc = sub_big
 
-    # Converti in coordinate locali del workspace (origine = angolo SW)
-    x_min_utm   = float(x_coords.min())
-    y_min_utm   = float(y_asc.min())
-    x_local     = x_coords - x_min_utm          # 0 … AREA_SIZE_M
-    y_asc_local = y_asc    - y_min_utm          # 0 … AREA_SIZE_M
-    y_loc_orig  = y_coords - y_min_utm          # ordine originale per i plot
+    # Origine UTM = angolo SW del patch nominale (invariato rispetto a prima)
+    x_min_utm = float(x_coords.min())
+    y_min_utm = float((y_coords[::-1] if y_coords[0] > y_coords[-1] else y_coords).min())
 
-    mean_z     = np.nanmean(sub_asc)
-    sub_filled = np.where(np.isnan(sub_asc), mean_z, sub_asc)
+    x_big_local   = x_big     - x_min_utm
+    y_big_asc_loc = y_big_asc - y_min_utm
+
+    mean_z      = np.nanmean(sub_big_asc)
+    sub_filled  = np.where(np.isnan(sub_big_asc), mean_z, sub_big_asc)
 
     rgi = RegularGridInterpolator(
-        (y_asc_local, x_local), sub_filled,
-        method="linear", bounds_error=False, fill_value=mean_z,
+        (y_big_asc_loc, x_big_local), sub_filled,
+        method="linear", bounds_error=False, fill_value=np.nan,
     )
+
     terrain = Terrain(
         rbf_interp=rgi,
         x_min=0.0,  x_max=float(AREA_SIZE_M),
         y_min=0.0,  y_max=float(AREA_SIZE_M),
         utm_origin=(x_min_utm, y_min_utm),
     )
+
+    # y_loc_orig per i plot: ordine originale dei pixel nominali
+    if y_coords[0] > y_coords[-1]:
+        y_loc_orig = y_coords - y_min_utm
+    else:
+        y_loc_orig = y_coords - y_min_utm
+    x_local = x_coords - x_min_utm
+
     return terrain, x_local, y_loc_orig, sub_dem, transform
 
 

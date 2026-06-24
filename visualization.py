@@ -721,13 +721,22 @@ def plot_final_positions(
                 ax.plot(*src, "D", color=c, ms=10, mec=c, mew=1.5,
                         zorder=8, label=f"$\\hat{{\\theta}}^{{\\mathrm{{PF}}}}_{{{i}}}$")
 
-                # segmenti di incertezza ±σ_x e ±σ_y
+                # bounding box ±σ_x × ±σ_y
                 if i in source_stds:
                     sx, sy = source_stds[i]
-                    ax.plot([src[0] - sx, src[0] + sx], [src[1], src[1]],
-                            color=c, lw=2.0, solid_capstyle="round", alpha=0.75, zorder=7)
-                    ax.plot([src[0], src[0]], [src[1] - sy, src[1] + sy],
-                            color=c, lw=2.0, solid_capstyle="round", alpha=0.75, zorder=7)
+                    rect = mpatches.Rectangle(
+                        (src[0] - sx, src[1] - sy), 2 * sx, 2 * sy,
+                        linewidth=1.5, edgecolor=c, facecolor=c,
+                        alpha=0.18, zorder=6,
+                    )
+                    ax.add_patch(rect)
+                    # bordo solido sopra il fill
+                    rect_edge = mpatches.Rectangle(
+                        (src[0] - sx, src[1] - sy), 2 * sx, 2 * sy,
+                        linewidth=1.5, edgecolor=c, facecolor="none",
+                        alpha=0.75, zorder=7,
+                    )
+                    ax.add_patch(rect_edge)
 
         # ── posizione reale vittima ────────────────────────────────────────
         ax.plot(*victim_xy, "*", color="crimson", ms=16,
@@ -735,7 +744,7 @@ def plot_final_positions(
 
         ax.set_xlim(*xlim); ax.set_ylim(*ylim)
         ax.set_xlabel(r"$x$ [m]"); ax.set_ylabel(r"$y$ [m]")
-        ax.set_title(r"Final positions — PF source estimate ($\pm\sigma$)",
+        ax.set_title(r"Final positions — PF source estimate ($\pm\sigma$ box)",
                      fontweight="bold")
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="best", framealpha=0.85, fontsize=9)

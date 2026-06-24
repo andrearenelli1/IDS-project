@@ -9,12 +9,12 @@ Simulazione multi-agente di ricerca in valanga con droni autonomi.
 Ogni drone vola a quota costante sopra un DEM reale (TINItaly 10 m).
 FSM a 4 stati, tutti con waypoint arrival-gated:
 
-- **SEARCH**: lawnmower; → TRACK quando segnale ≥ `artva_detect_thr` (dinamica, con floor fisico)
+- **SEARCH**: lawnmower con lane spacing adattivo; → TRACK quando segnale ≥ `artva_detect_thr` (dinamica, con floor fisico)
 - **TRACK**: Extremum Seeking (Azzollini et al. arXiv:2106.14514) — il drone percorre una traiettoria circolare il cui centro converge verso il massimo del segnale ARTVA (= sorgente); → STOP quando segnale ≥ `track_stop_thr` (dinamica)
-- **STOP**: hovering; seleziona 2 droni SUPPORT via min-consensus; raffinamento DCGD finale
-- **SUPPORT**: percorre una circonferenza di raggio `min(r_segnale, r_dcgd)` centrata sul drone STOP (uno CW, uno CCW); → STOP a `track_stop_thr` (dinamica)
+- **STOP**: hovering; seleziona 2 droni SUPPORT via min-consensus; il Particle Filter continua ad affinare la stima
+- **SUPPORT**: percorre una circonferenza di raggio `(moment/S)^(1/3)` centrata sul drone STOP (uno CW, uno CCW); → STOP a `track_stop_thr` (dinamica)
 
-Terminazione: ≥ 3 droni in STOP **E** stima entro `FOUND_RADIUS` (10 m) dalla vittima → raffinamento DCGD → stima posizione vittima.
+Terminazione: ≥ 3 droni in STOP **E** stima PF entro `FOUND_RADIUS` (10 m) dalla vittima.
 Il controllo traiettoria usa MPC a orizzonte finito; la localizzazione distribuita usa filtro IMDCL (cooperative Kalman).
 Tutte le coordinate sono in **metri locali del workspace** (origine = angolo SW dell'area DEM estratta); `terrain.utm_origin` contiene l'offset UTM.
 
@@ -23,19 +23,33 @@ Tutte le coordinate sono in **metri locali del workspace** (origine = angolo SW 
 Le soglie di rilevamento non sono costanti — vengono calcolate a runtime in `simulate()`:
 ```
 σ̂ = consensus(misure locali di ogni drone)
-DETECT_THR = max(NOISE_DETECT_FACTOR × σ̂,  ARTVA_MOMENT / ES_DETECT_MAX_R³)
-STOP_THR   = max(NOISE_STOP_FACTOR   × σ̂,  10 × ARTVA_MOMENT / ES_DETECT_MAX_R³)
+DETECT_THR = max(mu_noise + 5 × σ̂,  ARTVA_MOMENT / ES_DETECT_MAX_R³)
+STOP_THR   = ARTVA_MOMENT / FOUND_RADIUS³
 ```
 Il floor fisico (`ES_DETECT_MAX_R = 50 m`, da paper SITL) garantisce che il TRACK parta sempre entro il bacino di convergenza dell'ES.
 
 Subito dopo, il lane spacing del lawnmower viene ricalcolato adattivamente:
 ```
 r_detect     = (ARTVA_MOMENT / DETECT_THR)^(1/3)
-strip_width  = area_x / n_drones
-n_lanes      = ceil(strip_width / (2 × r_detect))
-lane_spacing = strip_width / n_lanes
+n_lanes      = ceil(workspace_x / (2 × r_detect × n_drones))
+lane_spacing = workspace_x / (n_lanes × n_drones)
 ```
-Questo garantisce copertura completa senza gap per qualsiasi livello di rumore. I waypoint vengono rigenerati e `wp_idx` azzerato per ogni drone. Il valore di `LANE_SPACING` in `config.py` è usato solo per il warm-start iniziale prima della calibrazione.
+Questo garantisce copertura completa senza gap per qualsiasi livello di rumore.
+I waypoint vengono rigenerati e `wp_idx` azzerato per ogni drone dopo il calcolo.
+
+## Stima sorgente: Particle Filter (pf.py)
+
+Ogni drone inizializza un `ParticleFilter` (300 particelle) al momento del primo rilevamento.
+Le particelle sono campionate in coordinate polari relative alla posizione del drone:
+- $r_0$ dalla formula del modello ARTVA inverso
+- $\phi \sim \mathcal{U}[0, 2\pi]$, $\sin\psi \sim \mathcal{U}[0,1]$
+
+Ad ogni passo:
+1. **update_weights** con misura locale (likelihood Gaussiana con sigma adattivo = sqrt(σ_n² + (0.20·S)²))
+2. **update cooperativo**: per ogni vicino entro `IMDCL_COMM_RADIUS` che ha già il PF attivo, update aggiuntivo con la sua misura
+3. **resample** sistematico solo se N_eff < N/2
+
+La stima finale è la media pesata delle particelle: `source_est = Σ w_k · ξ_k`.
 
 ## Livelli di rumore attivi
 
@@ -59,9 +73,10 @@ Questo garantisce copertura completa senza gap per qualsiasi livello di rumore. 
 | `artva.py` | Modello dipolo magnetico sorgente ARTVA |
 | `mpc_drone.py` | Controllore MPC + modello punto-massa 3-D |
 | `imdcl.py` | Filtro Kalman cooperativo distribuito |
+| `pf.py` | Particle Filter 3-D per stima sorgente |
 | `drone_agent.py` | FSM drone (SEARCH/TRACK ES/STOP/SUPPORT), lawnmower, ES nav |
 | `simulation.py` | Loop temporale multi-agente + calibrazione soglie |
-| `visualization.py` | Plot statici + animazioni (missione e MPC standalone) |
+| `visualization.py` | Plot statici + animazioni |
 | `main.py` | Entry point CLI (singola run, replay da parametri CSV) |
 | `run_experiments.py` | Sweep parametrico multi-processo con resume automatico |
 | `plot_results.py` | Analisi e visualizzazione risultati sweep CSV |
@@ -85,7 +100,7 @@ python main.py --n 4 --noise 1e-6 --rc 80 --area 200 \
 # Sweep parametrico (riparte dai run mancanti se il CSV esiste già)
 python run_experiments.py --workers 4 --out results.csv
 
-# Plot risultati (filtra automaticamente rumore non in NOISE_STDS)
+# Plot risultati
 python plot_results.py results.csv
 ```
 
@@ -94,16 +109,15 @@ python plot_results.py results.csv
 | Obiettivo | File/Sezione |
 |---|---|
 | Cambiare parametri (AGL, N_MPC, N droni…) | `config.py` |
-| Cambiare fattori soglia SNR | `config.py → NOISE_DETECT_FACTOR / NOISE_STOP_FACTOR` |
-| Cambiare portata massima ES | `config.py → ES_DETECT_MAX_R` |
+| Cambiare portata massima ES (floor rilevamento) | `config.py → ES_DETECT_MAX_R` |
 | Cambiare raggio "found" | `config.py → FOUND_RADIUS` |
 | Calibrazione rumore (campioni, consensus) | `simulation.py → _calibrate_noise` |
 | Parametri ES (alpha, omega, kappa) | `config.py → ES_*` |
 | Cambiare il pattern SEARCH | `drone_agent.py → lawnmower_waypoints` |
-| Cambiare il lane spacing (adattivo) | `simulation.py` (formula dopo `_calibrate_noise`) |
-| Cambiare la navigazione TRACK | `drone_agent.py` (ES logic) |
-| Cambiare la circonferenza SUPPORT | `drone_agent.py → circle_waypoints`, `simulation.py → _transition_to_stop` |
-| Migliorare la stima posizione | `imdcl.py`, `simulation.py → _dcgd_step` |
+| Lane spacing adattivo | `simulation.py` (formula dopo `_calibrate_noise`) |
+| Cambiare la navigazione TRACK | `simulation.py → _es_update` |
+| Cambiare la circonferenza SUPPORT | `drone_agent.py → circle_waypoints`, `simulation.py → _assign_support_partners` |
+| Migliorare la stima posizione | `pf.py`, `simulation.py` (sezione PF update) |
 | Nuovi plot o metriche | `plot_results.py`, `visualization.py` |
 | Aggiungere livelli di rumore allo sweep | `run_experiments.py → ARTVA_NOISE_STDS` + `plot_results.py → NOISE_STDS/NOISE_LABELS` |
 | Usare un DEM diverso | `terrain.py → TIF_PATH` |

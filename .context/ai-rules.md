@@ -10,7 +10,7 @@ Importa **sempre** da `config.py`.
 
 ```python
 # ✅ CORRETTO
-from config import AGL_HEIGHT, ARTVA_DETECT_THR
+from config import AGL_HEIGHT, ES_DETECT_MAX_R
 
 # ❌ SBAGLIATO
 AGL = 1.5   # duplicazione → deriva silenziosa
@@ -75,7 +75,14 @@ Questa è una proprietà fondamentale del filtro IMDCL distribuito.
 | Terreno interrogabile | `terrain.z(x, y)` / `terrain.agl_z(x, y, agl)` |
 | Step MPC | `ag.ctrl.step(x_est, target)` |
 | Segnale ARTVA | `artva.signal(pos, noisy=True)` |
+| Stima sorgente | `ag.source_est` (media pesata PF, shape `(3,)`) |
+| Update PF | `ag.pf.update_weights(pos, S, moment, sigma)` |
 
-## 9. Context update
+## 9. Soglie dinamiche: non usare le costanti di config come soglie operative
 
-Dopo ogni modifica controllare se il contesto e il README.md sono ancora coerenti con il progetto.
+`ARTVA_DETECT_THR` e `TRACK_STOP_THR` in `config.py` sono valori nominali **solo per la visualizzazione**.
+Le soglie operative si calcolano a runtime in `simulate()` dopo `_calibrate_noise()`.
+
+## 10. Context update
+
+Dopo ogni modifica controllare se i file `.context/` e il `README.md` sono ancora coerenti con il progetto.

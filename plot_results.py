@@ -697,6 +697,9 @@ def fig_pf_uncertainty(rows: list[dict]) -> plt.Figure:
     Incertezza intra-drone del Particle Filter (||σ_xy|| medio).
     Diversa da pos_std_m (dispersione *inter*-drone): questa misura quanto
     ogni singolo drone è incerto sulla posizione della sorgente.
+    Atteso: diminuisce con il rumore ARTVA — la soglia di rilevamento dinamica
+    (mu+5σ) aumenta con il rumore, quindi il drone rileva la sorgente solo da
+    vicino, il PF si inizializza con r piccolo e le particelle restano concentrate.
     """
     found = [r for r in rows if r["found"] and not math.isnan(r["pf_std_xy"])]
     if not found:
