@@ -201,6 +201,7 @@ class DroneAgent:
     support_pending:      bool  = False   # True se aspetta ancora partner
     support_deadline:     int   = 0       # step oltre cui si rinuncia
     support_n_needed:     int   = 0       # partner ancora mancanti
+    support_failed:       bool  = False   # True se la chiamata di supporto è scaduta senza partner
 
 
     # ARTVA signal

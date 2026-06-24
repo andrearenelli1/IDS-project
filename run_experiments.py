@@ -60,7 +60,8 @@ from contextlib import redirect_stdout
 
 import numpy as np
 
-from pf import weighted_mean_cov_xy, run_ellipse_metrics
+from pf import (weighted_mean_cov_xy, run_ellipse_metrics,
+                ellipse_contains, ellipse_area)
 
 try:
     from tqdm import tqdm as _tqdm
@@ -109,10 +110,6 @@ MAX_SIM_SECONDS = 900.0             # 15 minuti → soglia timeout
 DT_SIM          = 0.1               # [s] — deve coincidere con DT_MPC in config
 MAX_STEPS       = int(MAX_SIM_SECONDS / DT_SIM)
 SEED            = 42
-
-# La simulazione termina quando n_stopped >= STOP_THRESHOLD.
-# Con n_drones < 3, questa condizione non è mai raggiungibile.
-STOP_THRESHOLD  = 3
 
 # ============================================================================
 # Intestazione CSV
@@ -277,33 +274,33 @@ def run_one(
 
         n_tracked  = sum(1 for ag in agents.values() if ag.detected)
 
-        valid_ests = [ag.source_est for ag in agents.values() if ag.source_est is not None]
-        if len(valid_ests) >= 2:
-            ests_arr = np.array(valid_ests)          # (n, 3)
+        # Il PF lavora nel frame stimato del drone (x_est): per confrontare con la
+        # vittima vera ogni stima va depurata dal drift IMDCL (x_est − x). Tutte
+        # le metriche di errore e l'inter-drone spread usano le stime corrette.
+        corrected_ests = [
+            ag.source_est - (ag.x_est[:3] - ag.x[:3])
+            for ag in agents.values() if ag.source_est is not None
+        ]
+        if len(corrected_ests) >= 2:
+            ests_arr = np.array(corrected_ests)      # (n, 3)
             var_xy   = np.var(ests_arr[:, :2], axis=0)
             pos_var  = float(var_xy.sum())
             pos_std  = float(np.sqrt(pos_var))
         else:
             pos_var = pos_std = float("nan")
 
-        if valid_ests:
-            ests_arr    = np.array(valid_ests)       # (n, 3)
-            est_mean    = np.mean(ests_arr, axis=0)  # 3D centroid
+        if corrected_ests:
+            ests_arr    = np.array(corrected_ests)   # (n, 3)
+            est_mean    = np.mean(ests_arr, axis=0)  # 3D centroid (frame reale)
             est_error   = float(np.linalg.norm(est_mean[:2] - artva._theta[:2]))
             est_error_3d = float(np.linalg.norm(est_mean    - artva._theta))
             est_depth   = float(terrain_obj.z(est_mean[0], est_mean[1]) - est_mean[2])
             est_depth_err = abs(est_depth - victim_depth)
-            # same metric as plot_dcgd_convergence: mean per-drone final XY error
+            # mean per-drone XY error (drift-corrected = errore di landing reale)
             dcgd_err_mean = float(np.mean([
-                np.linalg.norm(e[:2] - artva._theta[:2]) for e in valid_ests
+                np.linalg.norm(e[:2] - artva._theta[:2]) for e in corrected_ests
             ]))
-            # landing error: source_est − (p̂_i − p_i) = where drone would actually land
-            landing_err_mean = float(np.mean([
-                np.linalg.norm(
-                    ag.source_est[:2] - (ag.x_est[:2] - ag.x[:2]) - artva._theta[:2]
-                )
-                for ag in agents.values() if ag.source_est is not None
-            ]))
+            landing_err_mean = dcgd_err_mean
             # PF intra-drone std: mean of ||σ_xy|| across drones with active PF
             pf_stds = [
                 float(np.linalg.norm(ag.source_est_std[:2]))
@@ -311,36 +308,50 @@ def run_one(
                 if ag.source_est_std is not None
             ]
             pf_std_xy_mean = float(np.mean(pf_stds)) if pf_stds else float("nan")
-            # Ellisse di confidenza 95% per drone: area media + IoU media a coppie
-            ell_means, ell_covs = [], []
+            # Ellissi di confidenza per drone (riusate per metriche e criterio found)
+            # Centri depurati dal drift IMDCL (frame reale) + covarianza PF.
+            # Coerente tra criterio found, metriche IoU/area e plot.
+            pf_clouds = []
             for ag in agents.values():
-                if ag.pf is not None and ag.source_est is not None:
-                    m_xy, cov_xy = weighted_mean_cov_xy(ag.pf.particles, ag.pf.weights)
-                    ell_means.append(m_xy)
-                    ell_covs.append(cov_xy)
-            pf_ellipse_area_mean, pf_iou_mean = run_ellipse_metrics(ell_means, ell_covs)
+                if ag.pf is None or ag.source_est is None:
+                    continue
+                m_xy, cov_xy = weighted_mean_cov_xy(ag.pf.particles, ag.pf.weights)
+                center = m_xy - (ag.x_est[:2] - ag.x[:2])
+                pf_clouds.append((center, cov_xy))
+            pf_ellipse_area_mean, pf_iou_mean = run_ellipse_metrics(
+                [c for c, _ in pf_clouds], [cov for _, cov in pf_clouds])
         else:
             est_error = est_error_3d = est_depth = est_depth_err = float("nan")
             dcgd_err_mean = landing_err_mean = pf_std_xy_mean = float("nan")
             pf_ellipse_area_mean = pf_iou_mean = float("nan")
+            pf_clouds = []
 
-        # Criterio found: ≥3 droni in STOP E stima entro FOUND_RADIUS dalla
-        # vittima reale. Evita falsi positivi in cui i droni si fermano lontano
-        # dalla sorgente (es. rumore bassissimo → ES converge su ottimo locale).
-        from config import FOUND_RADIUS
-        found = (n_stopped >= STOP_THRESHOLD
-                 and not math.isnan(est_error)
-                 and est_error < FOUND_RADIUS)
+        # Criterio found (PF-based): basta UN drone con PF attivo la cui ellisse
+        # di confidenza (depurata dal drift IMDCL) contenga la vittima nel piano
+        # xy ED abbia area ≤ FOUND_ELLIPSE_AREA_MAX. Da quando esiste il PF un
+        # solo drone è sufficiente a localizzare la sorgente: niente più soglia
+        # di droni in STOP. Il vincolo sull'area scarta le stime troppo larghe.
+        from config import FOUND_ELLIPSE_CONF, FOUND_ELLIPSE_AREA_MAX
+        found = False
+        for center, cov_xy in pf_clouds:
+            if (ellipse_area(cov_xy, FOUND_ELLIPSE_CONF) <= FOUND_ELLIPSE_AREA_MAX
+                    and ellipse_contains(artva._theta[:2], center, cov_xy,
+                                         FOUND_ELLIPSE_CONF)):
+                found = True
+                break
 
         if found:
             note = ""
-        elif n_drones < STOP_THRESHOLD:
+        elif not pf_clouds:
             note = (
                 f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti "
-                f"(n_drones={n_drones} < soglia={STOP_THRESHOLD})"
+                "(nessun PF attivato)"
             )
         else:
-            note = f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti"
+            note = (
+                f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti "
+                "(ellisse PF non contiene la vittima o troppo larga)"
+            )
 
         return {
             "victim_x_m":         round(victim_x, 1),

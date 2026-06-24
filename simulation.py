@@ -189,7 +189,8 @@ def _transition_to_support(
         ag.artva_sigma_noise = sigma_noise
         sig0 = ag.signal_log[-1][1] if ag.signal_log else 1e-9
         ag.pf = ParticleFilter(PF_N_PARTICLES, state_dim=3, measurement_dim=1)
-        ag.pf.initialize_particles(ag.x[:3], sig0, z_ground=ag.x[2] - AGL_HEIGHT)
+        ag.pf.initialize_particles(ag.x_est[:3], sig0,
+                                   z_ground=ag.x_est[2] - AGL_HEIGHT)
 
     print(
         f"    SUPPORT: Drone {drone_id} → orbita Drone {stop_id}"
@@ -256,6 +257,7 @@ def _retry_support_search(
         return
     if step >= stop_ag.support_deadline:
         stop_ag.support_pending = False
+        stop_ag.support_failed  = True
         print(f"    SUPPORT timeout: Drone {stop_id} rinuncia (step {step})")
         return
 
@@ -310,8 +312,12 @@ def _es_update(
     ag.es_x_ref += dt * speed * np.cos(phase)
     ag.es_y_ref += dt * speed * np.sin(phase)
     ag.es_time  += dt
-    x = float(np.clip(ag.es_x_ref, terrain.x_min, terrain.x_max))
-    y = float(np.clip(ag.es_y_ref, terrain.y_min, terrain.y_max))
+    # Il riferimento ES non è confinato al workspace: il drone deve poter
+    # inseguire la sorgente anche oltre i bordi del patch (il workspace è solo
+    # l'area di copertura del lawnmower). terrain.z() estrapola gracefully la
+    # quota di bordo fuori dominio, così l'AGL resta ben definito.
+    x = float(ag.es_x_ref)
+    y = float(ag.es_y_ref)
     z = terrain.agl_z(x, y, agl)
     ag.waypoints = [np.array([x, y, z])]
     ag.wp_idx    = 0
@@ -410,7 +416,8 @@ def _transition_search_to_track(
 
     ag.artva_sigma_noise = sigma_noise
     ag.pf = ParticleFilter(PF_N_PARTICLES, state_dim=3, measurement_dim=1)
-    ag.pf.initialize_particles(ag.x[:3], sig, z_ground=ag.x[2] - AGL_HEIGHT)
+    ag.pf.initialize_particles(ag.x_est[:3], sig,
+                               z_ground=ag.x_est[2] - AGL_HEIGHT)
 
     print(
         f"\n    Drone {drone_id} TRACK-ES (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
@@ -709,17 +716,18 @@ def simulate(
                 ag.pf_log.append(None)
                 continue
 
-            # update con la misura del drone stesso
-            ag.pf.update_weights(ag.x[:3], signals[i], ARTVA_MOMENT, ag.artva_sigma_noise)
+            # update con la misura del drone stesso (frame stimato: il drone
+            # conosce solo x_est, non la posizione vera → niente "cheating" GPS)
+            ag.pf.update_weights(ag.x_est[:3], signals[i], ARTVA_MOMENT, ag.artva_sigma_noise)
 
             # update con le misure dei droni vicini che hanno già il PF inizializzato
             for j in drone_ids:
                 if j == i or agents[j].pf is None:
                     continue
-                if np.linalg.norm(ag.x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS:
-                    ag.pf.update_weights(agents[j].x[:3], signals[j], ARTVA_MOMENT, ag.artva_sigma_noise)
+                if np.linalg.norm(ag.x_est[:3] - agents[j].x_est[:3]) < IMDCL_COMM_RADIUS:
+                    ag.pf.update_weights(agents[j].x_est[:3], signals[j], ARTVA_MOMENT, ag.artva_sigma_noise)
 
-            ag.pf.resample_particles(z_ground=ag.x[2] - AGL_HEIGHT)
+            ag.pf.resample_particles(z_ground=ag.x_est[2] - AGL_HEIGHT)
             ag.source_est = np.average(ag.pf.particles, weights=ag.pf.weights, axis=0)
             ag.pf_log.append((ag.pf.particles.copy(), ag.pf.weights.copy()))
 
@@ -753,6 +761,18 @@ def simulate(
             print(
                 f"\n  {N_STOP} droni in STOP al passo {step} (t={t:.2f}s) — "
                 "simulazione terminata"
+            )
+            break
+
+        # Un solo drone basta per stimare la sorgente (PF). Se un drone in STOP
+        # ha esaurito la finestra di chiamata SUPPORT senza trovare partner
+        # vicini, è inutile attendere oltre: si chiude subito per dare prima una
+        # posizione ai soccorritori.
+        if any(agents[i].state == DroneState.STOP and agents[i].support_failed
+               for i in drone_ids):
+            print(
+                f"\n  Chiamata SUPPORT scaduta senza partner al passo {step} "
+                f"(t={t:.2f}s) — stima PF disponibile, simulazione terminata"
             )
             break
 

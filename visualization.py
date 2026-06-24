@@ -666,8 +666,8 @@ def plot_final_positions(
     Mappa 2D — posizioni finali della missione:
       ▲ (pieno)    — posizione reale del drone
       ▲ (bordo)    — posizione stimata IMDCL del drone
-      ◆            — stima PF della sorgente (senza correzione drift;
-                     il drone atterrerà qui secondo il suo piano di volo)
+      ◆            — stima PF della sorgente, depurata dal drift IMDCL
+                     (riportata nel frame reale per il confronto con la vittima)
       ellisse 95%  — regione di confidenza PF (covarianza 2×2 delle particelle)
       ★            — posizione reale vittima
 
@@ -682,15 +682,19 @@ def plot_final_positions(
     finals_real = {i: agents[i].history[-1][:2]     for i in drone_ids}
     finals_est  = {i: agents[i].est_history[-1][:2] for i in drone_ids}
 
+    # Il PF lavora nel frame stimato del drone: per confrontare la stima con la
+    # vittima vera si rimuove il drift IMDCL  center = m_xy − (x_est − x).
     source_ests: Dict[int, np.ndarray] = {}
     source_covs: Dict[int, np.ndarray] = {}
     for i in drone_ids:
         ag = agents[i]
-        if ag.source_est is not None:
-            source_ests[i] = ag.source_est[:2]
-            if ag.pf is not None:
-                m_xy, cov_xy = weighted_mean_cov_xy(ag.pf.particles, ag.pf.weights)
-                source_covs[i] = cov_xy
+        if ag.source_est is not None and ag.pf is not None:
+            m_xy, cov_xy = weighted_mean_cov_xy(ag.pf.particles, ag.pf.weights)
+            drift = ag.x_est[:2] - ag.x[:2]
+            source_ests[i] = m_xy - drift
+            source_covs[i] = cov_xy
+        elif ag.source_est is not None:
+            source_ests[i] = ag.source_est[:2] - (ag.x_est[:2] - ag.x[:2])
 
     # Metriche aggregate coerenti con lo sweep (area media ellisse 95% + IoU media)
     _ids_cov  = [i for i in drone_ids if i in source_covs]
@@ -828,8 +832,17 @@ def plot_pf_evolution(
         indices = np.round(np.linspace(0, len(active) - 1, n_snaps)).astype(int)
         snap_idx = [active[i] for i in indices]
 
+    # Le particelle vivono nel frame stimato del drone (il PF usa x_est): per
+    # confrontarle con vittima e drone reali si rimuove il drift IMDCL del passo.
+    def _world_particles(step):
+        parts, w = ag.pf_log[step]
+        drift = np.zeros(3)
+        if step < len(ag.history) and step < len(ag.est_history):
+            drift = ag.est_history[step][:3] - ag.history[step][:3]
+        return parts[:, :3] - drift, w
+
     # ── Range fissi: bounding box di tutte le particelle + vittima ──────────
-    all_parts = np.vstack([ag.pf_log[k][0] for k in snap_idx])
+    all_parts = np.vstack([_world_particles(k)[0] for k in snap_idx])
     margin = 5.0
     xl = (all_parts[:, 0].min() - margin, all_parts[:, 0].max() + margin)
     yl = (all_parts[:, 1].min() - margin, all_parts[:, 1].max() + margin)
@@ -856,7 +869,7 @@ def plot_pf_evolution(
             ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.35,
                             rcount=res, ccount=res, linewidth=0, zorder=1)
 
-            particles, weights = ag.pf_log[step]
+            particles, weights = _world_particles(step)
             w_norm = weights / (weights.max() + 1e-30)
 
             sc = ax.scatter(
@@ -1153,15 +1166,19 @@ def animate_mission(
             else:
                 wp_dots2[i].set_data([], [])
 
-            # Particelle PF — coordinate mondo assolute (convergono alla vittima)
+            # Particelle PF — il PF lavora nel frame stimato del drone (x_est):
+            # per il rendering nel mondo reale si rimuove il drift IMDCL del
+            # passo corrente (est − reale), così la nuvola converge alla vittima.
             pf_entry = _pf_at[i][t_step]
             if pf_entry is not None:
                 parts, w = pf_entry
+                drift    = est[ti_e, :3] - traj[ti, :3]
+                parts_w  = parts[:, :3] - drift
                 w_norm   = w / (w.max() + 1e-15)
                 sizes    = 3 + w_norm * 22
-                pf_scatters[i].set_offsets(parts[:, :2])
+                pf_scatters[i].set_offsets(parts_w[:, :2])
                 pf_scatters[i].set_sizes(sizes)
-                pf_scatters_3d[i]._offsets3d = (parts[:, 0], parts[:, 1], parts[:, 2])
+                pf_scatters_3d[i]._offsets3d = (parts_w[:, 0], parts_w[:, 1], parts_w[:, 2])
                 pf_scatters_3d[i].set_sizes(sizes)
             else:
                 pf_scatters[i].set_offsets(_empty2)

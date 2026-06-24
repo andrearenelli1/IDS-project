@@ -253,6 +253,20 @@ def ellipse_area(cov, conf=0.95):
     return float(np.pi * chi2_quantile_2dof(conf) * np.sqrt(det))
 
 
+def ellipse_contains(point, mean, cov, conf=0.95):
+    """
+    True se `point` cade dentro l'ellisse di confidenza di livello `conf`
+    centrata in `mean` con covarianza `cov` (test di Mahalanobis):
+        (x-μ)^T Σ^{-1} (x-μ) ≤ k²,   k² = χ²₂(conf).
+    """
+    d = np.asarray(point, dtype=float)[:2] - np.asarray(mean, dtype=float)[:2]
+    try:
+        m2 = float(d @ np.linalg.solve(cov, d))
+    except np.linalg.LinAlgError:
+        return False
+    return m2 <= chi2_quantile_2dof(conf)
+
+
 def ellipse_axes_angle(cov, conf=0.95):
     """
     Semiassi (a, b) e angolo [rad] dell'ellisse di confidenza, per il disegno.

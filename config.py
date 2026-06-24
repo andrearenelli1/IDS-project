@@ -58,6 +58,14 @@ ES_DETECT_MAX_R = 50.0   # [m]
 # usiamo 10 m per tenere conto delle approssimazioni della simulazione.
 FOUND_RADIUS = 10.0      # [m]
 
+# Criterio di successo basato sul Particle Filter: una run è riuscita se almeno
+# un drone con PF attivo ha l'ellisse di confidenza al 95% (depurata dal drift
+# IMDCL) che CONTIENE la vittima nel piano xy, ed è abbastanza concentrata.
+# Soglia sull'area: cerchio equivalente di raggio ~5 m → il soccorritore sonda
+# un'area ridotta. Coerente col bounding box pratico di Azzollini et al.
+FOUND_ELLIPSE_CONF     = 0.95               # livello di confidenza dell'ellisse
+FOUND_ELLIPSE_AREA_MAX = np.pi * 5.0**2     # [m²] ≈ 78.5 (cerchio equiv. r≈5 m)
+
 # Valori nominali per la visualizzazione — questi servono solo ai plot.
 # La simulazione usa soglie dinamiche misurate.
 ARTVA_DETECT_THR = max(5 * ARTVA_NOISE_STD, ARTVA_MOMENT / ES_DETECT_MAX_R**3)  # ≈ 8e-6
@@ -125,7 +133,7 @@ PF_N_PARTICLES = 300   # numero di particelle per drone
 # ============================================================================
 SUPPORT_CIRCLE_N       = 9     # waypoint sulla circonferenza percorsa dai droni SUPPORT
 TRIANGULATE_N_PARTNERS = 2     # droni chiamati in supporto al primo STOP
-SUPPORT_SEARCH_TIMEOUT = 1000  # [steps] attesa max per trovare partner SUPPORT mancanti
+SUPPORT_SEARCH_TIMEOUT = 500  # [steps] attesa max per trovare partner SUPPORT mancanti
 CONSENSUS_K_MAX        = 10    # iterazioni max min-consensus (≥ diametro stimato della rete)
 
 # ============================================================================

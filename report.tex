@@ -530,6 +530,63 @@ estimate is the weighted mean of all particles:
   \label{eq:pf_estimate}
 \end{equation}
 
+\paragraph{Estimate uncertainty and inter-drone consensus}
+The point estimate~\eqref{eq:pf_estimate} alone does not convey how
+\emph{confident} each drone is, nor whether the drones \emph{agree}.
+We therefore characterise each drone's planar uncertainty by the
+weighted $2\times2$ covariance of its particle cloud,
+\begin{equation}
+  \bm{\Sigma}_i = \sum_{k=1}^{N_p} w_k\,
+  \bigl(\bm{\xi}_k^{xy} - \hat{\bm{\theta}}_i^{xy}\bigr)
+  \bigl(\bm{\xi}_k^{xy} - \hat{\bm{\theta}}_i^{xy}\bigr)^{\!\top},
+  \label{eq:pf_cov}
+\end{equation}
+whose $\alpha$-level confidence ellipse is the set
+\begin{equation}
+  \mathcal{E}_i = \Bigl\{\, \mathbf{x}\in\mathbb{R}^2 :
+  (\mathbf{x}-\hat{\bm{\theta}}_i^{xy})^{\!\top}\bm{\Sigma}_i^{-1}
+  (\mathbf{x}-\hat{\bm{\theta}}_i^{xy}) \le k^2 \,\Bigr\},
+  \label{eq:pf_ellipse}
+\end{equation}
+with $k^2 = \chi^2_{2}(\alpha) = -2\ln(1-\alpha)$ the chi-square quantile
+for two degrees of freedom (closed form for $2$ d.o.f.;
+$\alpha = 0.95 \Rightarrow k^2 \approx 5.991$).  The area of this ellipse,
+\begin{equation}
+  A_i = \pi\,k^2\sqrt{\det \bm{\Sigma}_i},
+  \label{eq:pf_area}
+\end{equation}
+measures the \emph{intra-drone} uncertainty: a smaller $A_i$ means a more
+concentrated, more confident estimate.  Averaging over the $D$ drones with
+an active PF gives the mean confidence-ellipse area $\bar{A} =
+\frac{1}{D}\sum_{i} A_i$.
+
+To quantify \emph{inter-drone} agreement we use the
+intersection-over-union (IoU) of the confidence ellipses of every drone
+pair $(i,j)$,
+\begin{equation}
+  \mathrm{IoU}_{ij} =
+  \frac{\operatorname{area}(\mathcal{E}_i \cap \mathcal{E}_j)}
+       {\operatorname{area}(\mathcal{E}_i \cup \mathcal{E}_j)}
+  \in [0,1],
+  \label{eq:pf_iou}
+\end{equation}
+computed exactly by convex-polygon clipping of the two ellipse contours,
+and report its pairwise mean
+\begin{equation}
+  \overline{\mathrm{IoU}} = \frac{2}{D(D-1)}
+  \sum_{i<j} \mathrm{IoU}_{ij}.
+  \label{eq:pf_iou_mean}
+\end{equation}
+Unlike the spread of the estimate centroids, the IoU jointly captures
+\emph{both} the disagreement between centres \emph{and} the magnitude of
+each drone's uncertainty: two distant but very uncertain estimates still
+overlap (they are mutually consistent), whereas two close but tight
+estimates do not.  Crucially, normalising by the union rather than using
+the raw intersection removes the geometric bias whereby larger ellipses
+trivially overlap more.  The ideal operating regime is therefore
+\emph{small} $\bar{A}$ together with \emph{high} $\overline{\mathrm{IoU}}$:
+drones that are individually confident and mutually in agreement.
+
 % ============================================================
 \section{Implementation Details}
 \label{sec:impl}
@@ -830,8 +887,12 @@ for UWB cooperative updates during the lawnmower phase.
 \begin{figure}[tb]
   \centering
   \includegraphics[width=\columnwidth]{figures/final_positions}
-  \caption{Final drone positions and PF source estimate (cross) vs.
-  true victim (star) for a 3-drone mission.}
+  \caption{Final drone positions and PF source estimate (diamond) vs.\
+  true victim (star).  Each drone's shaded $95\%$ confidence ellipse
+  (\eqref{eq:pf_ellipse}) visualises its planar uncertainty; the inset
+  reports the mean ellipse area $\bar{A}$~\eqref{eq:pf_area} and the mean
+  pairwise IoU $\overline{\mathrm{IoU}}$~\eqref{eq:pf_iou_mean}.  Tightly
+  overlapping ellipses near the victim indicate inter-drone consensus.}
   \label{fig:final}
 \end{figure}
 
@@ -841,6 +902,17 @@ Among successful runs, the median search time is \textbf{105.5\,s}
 with a median 2-D position error of \textbf{1.76\,m}, well within the
 10\,m operational requirement for rescuers to probe the exact burial
 point.
+
+Beyond the point-estimate error, we assess the \emph{consistency} of the
+distributed estimate through the confidence-ellipse metrics of
+Section~\ref{sec:pf}.  The mean ellipse area $\bar{A}$~\eqref{eq:pf_area}
+quantifies how concentrated each drone's particle cloud is, while the
+mean pairwise Intersection over Union $\overline{\mathrm{IoU}}$~\eqref{eq:pf_iou_mean}
+quantifies inter-drone agreement.  As illustrated in
+Fig.~\ref{fig:final}, the drones recruited near the victim produce
+tightly overlapping ellipses (high IoU), confirming that cooperative
+fusion~\eqref{eq:pf_fusion} drives the team toward a shared, confident
+estimate rather than merely toward coincidentally close centroids.
 
 % ============================================================
 \section{Conclusions}
