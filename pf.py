@@ -30,9 +30,30 @@ class ParticleFilter:
         self.particles = np.random.rand(n_particles, state_dim)  # Initialize particles randomly
         self.weights = np.ones(n_particles) / n_particles  # Initialize weights uniformly
     
-    def initialize_particles(self, p, S):
+    def _sinpsi_max(self, p, S, z_ground, grid=512):
+        # Tetto su sinpsi imposto dalla quota del terreno (misura LiDAR).
+        # La vittima è sepolta, quindi ogni particella deve stare sotto la
+        # superficie: ξz ≤ z_ground. In polari questo vincolo si traduce in
+        # una profondità verticale minima sotto il drone d = r·cosψ ≥ d_min,
+        # con d_min = p_z − z_ground (≈ quota AGL letta dal LiDAR).
+        d_min = p[2] - z_ground
+        if d_min <= 0.0:
+            return 1.0
+        sp    = np.linspace(0.0, 1.0, grid)
+        depth = measurement_model(S, sp) * np.sqrt(1.0 - sp ** 2)  # r·cosψ, decrescente in sinpsi
+        valid = depth >= d_min
+        if not valid[0]:
+            # nemmeno lo straight-down (sinpsi=0) raggiunge il terreno: il drone
+            # è praticamente sopra la sorgente. Campiona quasi verticale; lo z
+            # viene comunque riportato sotto z_ground dal clamp finale.
+            return 0.0
+        return float(sp[valid][-1])
+
+    def initialize_particles(self, p, S, z_ground=None):
         phi_min, phi_max = 0.0, 2*np.pi
-        sinpsi_min, sinpsi_max = 0, 1
+        sinpsi_min, sinpsi_max = 0.0, 1.0
+        if z_ground is not None:
+            sinpsi_max = self._sinpsi_max(p, S, z_ground)
         self.particles = np.column_stack([
             np.ones(self.n_particles),
             np.random.uniform(phi_min, phi_max, self.n_particles),
@@ -41,6 +62,9 @@ class ParticleFilter:
         self.weights = np.ones(self.n_particles) / self.n_particles
         self.particles[:, 0] = measurement_model(S, self.particles[:, 2])
         self.particles = self.polar_to_world(p, self.particles)
+        if z_ground is not None:
+            # clamp di sicurezza per il caso degenere (sinpsi_max=0)
+            np.minimum(self.particles[:, 2], z_ground, out=self.particles[:, 2])
 
     def update_weights(self, p, S, m, sigma):
         r_vecs  = np.asarray(p) - self.particles
@@ -63,7 +87,7 @@ class ParticleFilter:
         else:
             self.weights[:] = 1.0 / self.n_particles
 
-    def resample_particles(self, jitter_std=None):
+    def resample_particles(self, z_ground=None, jitter_std=None):
         # Resample solo quando il filtro è degenerato (N_eff < N/2).
         # Quando i pesi sono ancora diversificati non serve: evita la perdita prematura
         # di diversità che causa il collasso della stima di profondità.
@@ -89,6 +113,14 @@ class ParticleFilter:
                 np.array([1.0, 1.0, 0.5]),   # [m] floor in x, y, z
             )
         self.particles += np.random.normal(0, std, self.particles.shape)
+
+        # Mantieni le particelle entro il limite imposto dal LiDAR: il jitter
+        # può spingerle sopra la superficie (impossibile per una vittima
+        # sepolta). Quelle sopra z_ground vengono riflesse sotto, preservando
+        # la densità a ridosso del terreno.
+        if z_ground is not None:
+            above = self.particles[:, 2] > z_ground
+            self.particles[above, 2] = 2.0 * z_ground - self.particles[above, 2]
 
     def polar_to_world(self, p, polar_coords):
         # Convert polar coordinates to world coordinates

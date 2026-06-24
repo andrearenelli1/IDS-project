@@ -40,7 +40,8 @@ from artva import ARTVASource
 from simulation import build_agents, simulate
 from visualization import (plot_mpc_trajectories, plot_mpc_trajectories_3d,
                            plot_mpc_inputs, plot_mpc_altitude, plot_imdcl_error,
-                           plot_artva_signal, plot_final_positions, animate_mission)
+                           plot_artva_signal, plot_final_positions,
+                           plot_pf_evolution, animate_mission)
 
 import matplotlib.pyplot as plt
 
@@ -182,6 +183,7 @@ def main() -> None:
         "imdcl_error":           plot_imdcl_error(agents),
         "artva_signal":          plot_artva_signal(agents, artva_detect_thr, track_stop_thr),
         "final_positions":       plot_final_positions(terrain_obj, artva, agents),
+        "pf_evolution":          plot_pf_evolution(terrain_obj, artva, agents),
     }
 
     if args.save_figs:

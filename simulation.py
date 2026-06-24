@@ -189,7 +189,7 @@ def _transition_to_support(
         ag.artva_sigma_noise = sigma_noise
         sig0 = ag.signal_log[-1][1] if ag.signal_log else 1e-9
         ag.pf = ParticleFilter(PF_N_PARTICLES, state_dim=3, measurement_dim=1)
-        ag.pf.initialize_particles(ag.x[:3], sig0)
+        ag.pf.initialize_particles(ag.x[:3], sig0, z_ground=ag.x[2] - AGL_HEIGHT)
 
     print(
         f"    SUPPORT: Drone {drone_id} → orbita Drone {stop_id}"
@@ -410,7 +410,7 @@ def _transition_search_to_track(
 
     ag.artva_sigma_noise = sigma_noise
     ag.pf = ParticleFilter(PF_N_PARTICLES, state_dim=3, measurement_dim=1)
-    ag.pf.initialize_particles(ag.x[:3], sig)
+    ag.pf.initialize_particles(ag.x[:3], sig, z_ground=ag.x[2] - AGL_HEIGHT)
 
     print(
         f"\n    Drone {drone_id} TRACK-ES (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
@@ -719,7 +719,7 @@ def simulate(
                 if np.linalg.norm(ag.x[:3] - agents[j].x[:3]) < IMDCL_COMM_RADIUS:
                     ag.pf.update_weights(agents[j].x[:3], signals[j], ARTVA_MOMENT, ag.artva_sigma_noise)
 
-            ag.pf.resample_particles()
+            ag.pf.resample_particles(z_ground=ag.x[2] - AGL_HEIGHT)
             ag.source_est = np.average(ag.pf.particles, weights=ag.pf.weights, axis=0)
             ag.pf_log.append((ag.pf.particles.copy(), ag.pf.weights.copy()))
 

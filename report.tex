@@ -123,8 +123,9 @@ This work contributes:
   \item Dynamic detection thresholds with a physics-based floor,
         derived at runtime from a distributed noise calibration step.
   \item A 3-D cooperative Particle Filter for victim localization,
-        initialized from the ARTVA dipole model in polar coordinates
-        and updated cooperatively from all drones in range.
+        initialized from the ARTVA dipole model in polar coordinates,
+        constrained below the LiDAR-sensed terrain surface, and updated
+        cooperatively from all drones in range.
   \item Full simulation over real TINItaly DEM tiles, with a
         parametric sweep across terrain patches, fleet sizes, noise
         levels, and communication radii.
@@ -345,7 +346,12 @@ and PF updates.
 
 \subsection{Track: Extremum Seeking}
 \label{sec:es}
-
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.6\columnwidth]{figures/ES_example.png}
+    \caption{ES trajectory example, image adapted from ~\cite{Azzollini2021}}
+    \label{fig:ESexample}
+\end{figure}
 Upon detection, the drone switches to Extremum Seeking
 (ES)~\cite{Azzollini2021}, a model-free algorithm that drives a
 circular probe trajectory whose center gradient-ascends toward the
@@ -401,17 +407,43 @@ $\pi$), ensuring diverse angular measurements for the Particle Filter.
 \subsection{Distributed Source Estimation: Particle Filter}
 \label{sec:pf}
 
-When a drone first detects the signal ($S_0 \geq \tau_{\text{detect}}$),
-it initializes a 3-D Particle Filter with $N_p = 300$ particles
-$\{\bm{\xi}_k\}_{k=1}^{N_p}$ and uniform weights $w_k = 1/N_p$.
+When a drone transitions to \textsc{Track} (or to \textsc{Support} without
+prior detection), it initializes a 3-D Particle Filter with $N_p = 300$
+particles $\{\bm{\xi}_k\}_{k=1}^{N_p}$ and uniform weights $w_k = 1/N_p$.
+
+\paragraph{LiDAR ground constraint}
+The victim is buried, so every particle must lie \emph{below} the terrain
+surface.  The LiDAR altimeter provides the terrain height directly beneath
+the drone, $z_{\text{ground}} = p_z - h_{\text{AGL}}$, and under the
+locally-flat assumption this yields a hard physical prior on every particle:
+\begin{equation}
+  \xi_{k,z} \leq z_{\text{ground}} = p_z - h_{\text{AGL}}.
+  \label{eq:pf_ground}
+\end{equation}
+The constraint is enforced both at initialization and after every
+resampling jitter, so that the particle cloud never occupies the
+physically impossible volume above the snow surface.
 
 \paragraph{Initialization}
 Particles are drawn in polar coordinates relative to the detecting
 drone's position $\mathbf{p}$, on the shell of probable source positions
-consistent with the first measurement.  For each particle:
+consistent with the first measurement.  The vertical depth of a particle
+below the drone is $d = r_0\cos\psi$; imposing the ground
+constraint~\eqref{eq:pf_ground}, i.e.\ $d \geq p_z - z_{\text{ground}} =
+h_{\text{AGL}}$, gives
+\begin{equation}
+  r_0(\sin\psi)\,\cos\psi \geq h_{\text{AGL}},
+  \quad
+  r_0(\sin\psi) = \left(\frac{m\sqrt{1+3\cos^2\!\psi}}{S_0}\right)^{1/3}.
+  \label{eq:pf_sinpsi_constraint}
+\end{equation}
+The left-hand side is monotonically decreasing in $\sin\psi$, hence the
+constraint admits a unique upper bound $\sin\psi_{\max}$ (located by a fast
+monotone scan) that restricts the elevation sampling interval.  For each
+particle:
 \begin{gather}
   \phi \sim \mathcal{U}[0, 2\pi],\quad
-  \sin\psi \sim \mathcal{U}[0,1],\notag\\
+  \sin\psi \sim \mathcal{U}[0,\,\sin\psi_{\max}],\notag\\
   r_0 = \left(\frac{m\sqrt{1+3(1-\sin^2\!\psi)}}{S_0}\right)^{1/3},
   \label{eq:pf_init_polar}
 \end{gather}
@@ -422,6 +454,10 @@ converted to Cartesian coordinates as
   -\cos\psi \end{bmatrix}.
   \label{eq:pf_init_cart}
 \end{equation}
+In the degenerate case where even a straight-down particle
+($\sin\psi = 0$) cannot reach the ground—drone almost directly over the
+source—$\sin\psi_{\max}$ collapses to $0$ and a final clamp to
+$z_{\text{ground}}$ enforces~\eqref{eq:pf_ground}.
 
 \paragraph{Weight update}
 At each step the predicted signal at particle $k$ for the measuring
@@ -457,12 +493,32 @@ count
   \label{eq:neff}
 \end{equation}
 drops below $N_p/2$, preserving particle diversity near the source.
+After resampling, independent Gaussian jitter is added to each particle:
+\begin{equation}
+  \bm{\xi}_k \leftarrow \bm{\xi}_k + \mathcal{N}(\mathbf{0},\,\mathrm{diag}(\bm{\sigma}_j^2)),
+  \label{eq:pf_jitter}
+\end{equation}
+with $\bm{\sigma}_j = \max(0.1\,\hat{\bm{\sigma}},\,[1,1,0.5]^{\top})$\,m,
+where $\hat{\bm{\sigma}}$ is the per-axis standard deviation of the current
+particle cloud. This roughening prevents collapse when the cloud is already
+concentrated near the source.
+Since the vertical jitter can push particles above the terrain, the ground
+constraint~\eqref{eq:pf_ground} is re-enforced afterwards by reflecting any
+violating particle back below the surface:
+\begin{equation}
+  \xi_{k,z} \leftarrow 2\,z_{\text{ground}} - \xi_{k,z}
+  \quad \text{if } \xi_{k,z} > z_{\text{ground}},
+  \label{eq:pf_reflect}
+\end{equation}
+which preserves particle density immediately beneath the surface (a clamp
+would instead pile probability mass exactly at $z_{\text{ground}}$).
 
 \paragraph{Cooperative fusion}
 Any drone $i$ with an active PF incorporates the ARTVA measurements of
-all neighbors within the communication radius $r_c$:
+all neighbors that also have an active PF and lie within $r_c$:
 \begin{equation}
-  \forall j : \|\mathbf{p}_i - \mathbf{p}_j\| < r_c,\ j \neq i
+  \forall j \neq i : \|\mathbf{p}_i - \mathbf{p}_j\| < r_c
+  \;\wedge\; \mathrm{PF}_j \text{ active}
   \;\Rightarrow\; \text{apply \eqref{eq:weight} with }
   (\mathbf{p}_j, S_j),
   \label{eq:pf_fusion}

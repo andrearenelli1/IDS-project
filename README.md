@@ -137,12 +137,25 @@ Particles are drawn in polar coordinates from the ARTVA dipole model (distance f
 the signal inversion formula, azimuth and elevation uniform), then converted to
 Cartesian workspace coordinates.
 
+**LiDAR-bounded sampling.** The victim is buried, so every particle must lie *below*
+the ground surface. The LiDAR gives the terrain height under the drone,
+`z_ground = p_z − h_AGL`, and the constraint `ξ_z ≤ z_ground` is enforced at **both**
+sampling stages:
+- *Initialization*: the constraint becomes a cap on the elevation parameter `sinψ`.
+  The vertical depth below the drone is `d = r·cosψ` with `r = r(sinψ)` from the dipole
+  inversion; requiring `d ≥ p_z − z_ground` (= `h_AGL`) and exploiting that `d(sinψ)` is
+  monotonically decreasing yields `sinψ_max`, and particles are sampled `sinψ ~ U[0, sinψ_max]`.
+- *Resampling*: after the post-resample Gaussian jitter (which could otherwise push
+  particles above ground), any particle with `ξ_z > z_ground` is reflected back below
+  via `ξ_z ← 2·z_ground − ξ_z`, preserving particle density near the surface.
+
 At each step:
 1. Weights updated with Gaussian likelihood using adaptive sigma `sqrt(σ_n² + (0.20·S)²)`,
    which prevents weight collapse when fusing measurements from drones at very different ranges.
 2. Cooperative fusion: each drone also updates its PF with measurements from all neighbors
    within communication range that have an active PF.
-3. Systematic resampling only when effective particle count `N_eff < N_p/2`.
+3. Systematic resampling only when effective particle count `N_eff < N_p/2`, followed by
+   LiDAR-bounded jitter (see above).
 
 Final source estimate: `source_est = Σ w_k · ξ_k` (weighted mean of particles).
 

@@ -669,7 +669,10 @@ def plot_final_positions(
       segmenti ±σ  — incertezza PF sugli assi x e y
       ★            — posizione reale vittima
     """
-    drone_ids   = list(agents.keys())
+    all_ids   = list(agents.keys())
+    drone_ids = [i for i in all_ids if agents[i].pf is not None]
+    if not drone_ids:
+        drone_ids = all_ids   # fallback: nessun PF attivo
     victim_xy   = artva._theta[:2]
     finals_real = {i: agents[i].history[-1][:2]     for i in drone_ids}
     finals_est  = {i: agents[i].est_history[-1][:2] for i in drone_ids}
@@ -749,6 +752,123 @@ def plot_final_positions(
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="best", framealpha=0.85, fontsize=9)
         fig.tight_layout()
+    return fig
+
+
+# ============================================================================
+# Evoluzione nuvola di particelle PF (per il report)
+# ============================================================================
+
+def plot_pf_evolution(
+    terrain:  Terrain,
+    artva:    ARTVASource,
+    agents:   Dict[int, DroneAgent],
+    n_snaps:  int = 3,
+    drone_id: int = None,
+) -> plt.Figure:
+    """
+    Griglia n_snaps pannelli 3D con range assi fissi e patch di terreno,
+    per mostrare la concentrazione delle particelle nel tempo.
+    """
+    drone_ids = list(agents.keys())
+    if drone_id is None:
+        drone_id = max(
+            drone_ids,
+            key=lambda i: sum(1 for e in agents[i].pf_log if e is not None),
+        )
+
+    ag     = agents[drone_id]
+    victim = artva._theta
+
+    active = [k for k, e in enumerate(ag.pf_log) if e is not None]
+    if len(active) < 2:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "Nessun dato PF disponibile",
+                ha="center", va="center", transform=ax.transAxes)
+        return fig
+
+    if len(active) <= n_snaps:
+        snap_idx = active
+    else:
+        indices = np.round(np.linspace(0, len(active) - 1, n_snaps)).astype(int)
+        snap_idx = [active[i] for i in indices]
+
+    # ── Range fissi: bounding box di tutte le particelle + vittima ──────────
+    all_parts = np.vstack([ag.pf_log[k][0] for k in snap_idx])
+    margin = 5.0
+    xl = (all_parts[:, 0].min() - margin, all_parts[:, 0].max() + margin)
+    yl = (all_parts[:, 1].min() - margin, all_parts[:, 1].max() + margin)
+    zl = (min(all_parts[:, 2].min(), victim[2]) - margin,
+          max(all_parts[:, 2].max(), victim[2]) + margin)
+
+    # ── Superficie del terreno nella patch ──────────────────────────────────
+    res = 20
+    xs_t = np.linspace(max(xl[0], terrain.x_min), min(xl[1], terrain.x_max), res)
+    ys_t = np.linspace(max(yl[0], terrain.y_min), min(yl[1], terrain.y_max), res)
+    XT, YT = np.meshgrid(xs_t, ys_t)
+    ZT = terrain.z(XT.ravel(), YT.ravel()).reshape(res, res)
+
+    ncols = len(snap_idx)
+    with plt.rc_context(_LATEX_RC):
+        fig = plt.figure(figsize=(4.5 * ncols, 4.6))
+        fig.patch.set_facecolor("#ffffff")
+
+        for col, step in enumerate(snap_idx):
+            ax = fig.add_subplot(1, ncols, col + 1, projection="3d")
+            ax.set_facecolor("#f8f8f8")
+
+            # Terreno
+            ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.35,
+                            rcount=res, ccount=res, linewidth=0, zorder=1)
+
+            particles, weights = ag.pf_log[step]
+            w_norm = weights / (weights.max() + 1e-30)
+
+            sc = ax.scatter(
+                particles[:, 0], particles[:, 1], particles[:, 2],
+                c=w_norm, cmap="viridis", s=6, alpha=0.7,
+                vmin=0, vmax=1, zorder=4,
+            )
+
+            mean_est = np.average(particles, weights=weights, axis=0)
+            ax.scatter(*mean_est, color="orange", s=55, marker="D",
+                       edgecolors="black", linewidths=0.5, zorder=7,
+                       label=r"$\hat{\theta}$")
+
+            ax.scatter(*victim, color="crimson", s=70, marker="*",
+                       edgecolors="black", linewidths=0.4, zorder=8,
+                       label=r"$\theta$ (victim)")
+
+            if step < len(ag.history):
+                p_drone = ag.history[step][:3]
+                ax.scatter(*p_drone, color="royalblue", s=35, marker="^",
+                           edgecolors="white", linewidths=0.5, zorder=6,
+                           label="Drone")
+
+            ax.set_xlim(*xl); ax.set_ylim(*yl); ax.set_zlim(*zl)
+            ax.set_title(rf"step {step - active[0]}",
+                         fontsize=9, fontweight="bold")
+            ax.set_xlabel("x [m]", fontsize=7, labelpad=2)
+            ax.set_ylabel("y [m]", fontsize=7, labelpad=2)
+            ax.set_zlabel("z [m]", fontsize=7, labelpad=2)
+            ax.tick_params(labelsize=6)
+            ax.view_init(elev=20, azim=225)
+
+        # ── Colorbar orizzontale in basso ────────────────────────────────────
+        cax = fig.add_axes([0.15, 0.04, 0.50, 0.025])
+        cbar = fig.colorbar(sc, cax=cax, orientation="horizontal")
+        cbar.set_label("Normalized weight", fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+
+        # ── Legenda a destra della colorbar ─────────────────────────────────
+        handles, labels = fig.axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower right", ncol=1,
+                   fontsize=8, framealpha=0.85,
+                   bbox_to_anchor=(0.98, 0.01))
+
+        fig.suptitle(rf"PF particle cloud — Drone {drone_id}",
+                     fontsize=10, fontweight="bold")
+        fig.tight_layout(rect=[0, 0.12, 1, 0.97])
     return fig
 
 
