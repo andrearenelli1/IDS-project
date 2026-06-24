@@ -35,6 +35,8 @@ from matplotlib.patches import FancyArrowPatch
 from artva import ARTVASource
 from terrain import Terrain
 from drone_agent import DroneAgent, DroneState
+from pf import (weighted_mean_cov_xy, ellipse_axes_angle,
+               run_ellipse_metrics)
 import config as _cfg
 from config import (
     AGL_HEIGHT, DT_SIM, N_MPC, DT_MPC, A_MAX, V_MAX,
@@ -666,8 +668,11 @@ def plot_final_positions(
       ▲ (bordo)    — posizione stimata IMDCL del drone
       ◆            — stima PF della sorgente (senza correzione drift;
                      il drone atterrerà qui secondo il suo piano di volo)
-      segmenti ±σ  — incertezza PF sugli assi x e y
+      ellisse 95%  — regione di confidenza PF (covarianza 2×2 delle particelle)
       ★            — posizione reale vittima
+
+    In alto a sinistra: area media dell'ellisse di confidenza e IoU media a
+    coppie tra droni (consenso inter-drone), coerenti con lo sweep parametrico.
     """
     all_ids   = list(agents.keys())
     drone_ids = [i for i in all_ids if agents[i].pf is not None]
@@ -678,19 +683,38 @@ def plot_final_positions(
     finals_est  = {i: agents[i].est_history[-1][:2] for i in drone_ids}
 
     source_ests: Dict[int, np.ndarray] = {}
-    source_stds: Dict[int, np.ndarray] = {}
+    source_covs: Dict[int, np.ndarray] = {}
     for i in drone_ids:
         ag = agents[i]
         if ag.source_est is not None:
             source_ests[i] = ag.source_est[:2]
-        if ag.source_est_std is not None:
-            source_stds[i] = ag.source_est_std[:2]
+            if ag.pf is not None:
+                m_xy, cov_xy = weighted_mean_cov_xy(ag.pf.particles, ag.pf.weights)
+                source_covs[i] = cov_xy
+
+    # Metriche aggregate coerenti con lo sweep (area media ellisse 95% + IoU media)
+    _ids_cov  = [i for i in drone_ids if i in source_covs]
+    mean_area, mean_iou = run_ellipse_metrics(
+        [source_ests[i] for i in _ids_cov],
+        [source_covs[i] for i in _ids_cov],
+    )
+
+    # estensione delle ellissi per non tagliarle dai limiti degli assi
+    ell_extents = []
+    for i in _ids_cov:
+        a, b, ang = ellipse_axes_angle(source_covs[i], conf=0.95)
+        # semi-bounding-box dell'ellisse ruotata
+        hx = np.hypot(a * np.cos(ang), b * np.sin(ang))
+        hy = np.hypot(a * np.sin(ang), b * np.cos(ang))
+        c0 = source_ests[i]
+        ell_extents += [c0 + [hx, hy], c0 - [hx, hy]]
 
     all_pts_list = (
         list(finals_real.values())
         + list(finals_est.values())
         + [victim_xy]
         + list(source_ests.values())
+        + ell_extents
     )
     all_pts = np.vstack(all_pts_list)
     span   = max(all_pts[:, 0].max() - all_pts[:, 0].min(),
@@ -724,30 +748,41 @@ def plot_final_positions(
                 ax.plot(*src, "D", color=c, ms=10, mec=c, mew=1.5,
                         zorder=8, label=f"$\\hat{{\\theta}}^{{\\mathrm{{PF}}}}_{{{i}}}$")
 
-                # bounding box ±σ_x × ±σ_y
-                if i in source_stds:
-                    sx, sy = source_stds[i]
-                    rect = mpatches.Rectangle(
-                        (src[0] - sx, src[1] - sy), 2 * sx, 2 * sy,
+                # ellisse di confidenza 95% (covarianza 2×2 delle particelle)
+                if i in source_covs:
+                    a, b, ang = ellipse_axes_angle(source_covs[i], conf=0.95)
+                    ell = mpatches.Ellipse(
+                        (src[0], src[1]), width=2 * a, height=2 * b,
+                        angle=np.degrees(ang),
                         linewidth=1.5, edgecolor=c, facecolor=c,
                         alpha=0.18, zorder=6,
                     )
-                    ax.add_patch(rect)
-                    # bordo solido sopra il fill
-                    rect_edge = mpatches.Rectangle(
-                        (src[0] - sx, src[1] - sy), 2 * sx, 2 * sy,
+                    ax.add_patch(ell)
+                    ell_edge = mpatches.Ellipse(
+                        (src[0], src[1]), width=2 * a, height=2 * b,
+                        angle=np.degrees(ang),
                         linewidth=1.5, edgecolor=c, facecolor="none",
                         alpha=0.75, zorder=7,
                     )
-                    ax.add_patch(rect_edge)
+                    ax.add_patch(ell_edge)
 
         # ── posizione reale vittima ────────────────────────────────────────
         ax.plot(*victim_xy, "*", color="crimson", ms=16,
                 mec="black", mew=0.6, zorder=9, label=r"$\theta$ (vittima)")
 
+        # ── annotazione metriche aggregate (coerenti con lo sweep) ──────────
+        if not np.isnan(mean_area):
+            txt = rf"$\bar A_{{95\%}}$ = {mean_area:.1f} m$^2$"
+            if not np.isnan(mean_iou):
+                txt += "\n" + rf"$\overline{{\mathrm{{IoU}}}}$ = {100*mean_iou:.0f}\%"
+            ax.text(0.02, 0.98, txt, transform=ax.transAxes,
+                    va="top", ha="left", fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                              ec="#999999", alpha=0.85), zorder=10)
+
         ax.set_xlim(*xlim); ax.set_ylim(*ylim)
         ax.set_xlabel(r"$x$ [m]"); ax.set_ylabel(r"$y$ [m]")
-        ax.set_title(r"Final positions — PF source estimate ($\pm\sigma$ box)",
+        ax.set_title(r"Final positions — PF source estimate (95\% confidence ellipse)",
                      fontweight="bold")
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="best", framealpha=0.85, fontsize=9)

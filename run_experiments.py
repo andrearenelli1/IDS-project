@@ -60,6 +60,8 @@ from contextlib import redirect_stdout
 
 import numpy as np
 
+from pf import weighted_mean_cov_xy, run_ellipse_metrics
+
 try:
     from tqdm import tqdm as _tqdm
     _HAS_TQDM = True
@@ -142,6 +144,8 @@ CSV_FIELDS = [
     "dcgd_err_final_mean_m",
     "landing_err_mean_m",
     "pf_std_xy_mean_m",
+    "pf_ellipse_area_mean_m2",
+    "pf_iou_mean",
     "note",
 ]
 
@@ -307,9 +311,18 @@ def run_one(
                 if ag.source_est_std is not None
             ]
             pf_std_xy_mean = float(np.mean(pf_stds)) if pf_stds else float("nan")
+            # Ellisse di confidenza 95% per drone: area media + IoU media a coppie
+            ell_means, ell_covs = [], []
+            for ag in agents.values():
+                if ag.pf is not None and ag.source_est is not None:
+                    m_xy, cov_xy = weighted_mean_cov_xy(ag.pf.particles, ag.pf.weights)
+                    ell_means.append(m_xy)
+                    ell_covs.append(cov_xy)
+            pf_ellipse_area_mean, pf_iou_mean = run_ellipse_metrics(ell_means, ell_covs)
         else:
             est_error = est_error_3d = est_depth = est_depth_err = float("nan")
             dcgd_err_mean = landing_err_mean = pf_std_xy_mean = float("nan")
+            pf_ellipse_area_mean = pf_iou_mean = float("nan")
 
         # Criterio found: ≥3 droni in STOP E stima entro FOUND_RADIUS dalla
         # vittima reale. Evita falsi positivi in cui i droni si fermano lontano
@@ -347,6 +360,8 @@ def run_one(
             "dcgd_err_final_mean_m": round(dcgd_err_mean, 3) if not math.isnan(dcgd_err_mean) else float("nan"),
             "landing_err_mean_m":    round(landing_err_mean, 3) if not math.isnan(landing_err_mean) else float("nan"),
             "pf_std_xy_mean_m":      round(pf_std_xy_mean, 3) if not math.isnan(pf_std_xy_mean) else float("nan"),
+            "pf_ellipse_area_mean_m2": round(pf_ellipse_area_mean, 3) if not math.isnan(pf_ellipse_area_mean) else float("nan"),
+            "pf_iou_mean":             round(pf_iou_mean, 4) if not math.isnan(pf_iou_mean) else float("nan"),
             "note":                  note,
         }
 

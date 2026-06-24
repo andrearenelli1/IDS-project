@@ -736,7 +736,7 @@ Parameter & Values \\
 Fleet size $N$           & $\{3, 4\}$ drones \\
 ARTVA noise $\sigma_n$   & $\{10^{-7}, 10^{-6}, 10^{-5}\}$ \\
 Process noise $\sigma_a$ & $\{0.05, 0.10\}$\,m/s$^2$ \\
-Comm.\ radius $r_c$      & $\{25, 50, 80, 120\}$\,m \\
+Comm.\ radius $r_c$      & $\{25, 60, 120\}$\,m \\
 Terrain patches          & 5 distinct DEM tiles \\
 Victim positions         & 10 random per combination \\
 \bottomrule
@@ -804,10 +804,9 @@ mission performance from noise level.
     \toprule
     $r_c$ [m] & Runs & Success \\
     \midrule
-    25  & 537 & 79.5\,\% \\
-    50  & 540 & 84.1\,\% \\
-    80  & 538 & 88.8\,\% \\
-    120 & 538 & 90.1\,\% \\
+    25  & 540 & 75.9\,\% \\
+    60  & 540 & 88.7\,\% \\
+    120 & 540 & 92.0\,\% \\
     \bottomrule
   \end{tabular}
 \end{table}

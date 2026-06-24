@@ -202,3 +202,167 @@ if __name__ == "__main__":
 
     ani = FuncAnimation(fig, update, frames=len(snapshots), interval=800, repeat=True)
     plt.show()
+
+# ════════════════════════════════════════════════════════════════════════════
+# Metriche di incertezza basate sull'ellisse di confidenza (2D)
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Geometria condivisa usata in modo coerente da run_experiments.py (sweep), da
+# visualization.py (plot del main) e da plot_results.py (analisi sweep):
+#
+#   - ellisse di confidenza al livello `conf` (default 95%) della stima PF di un
+#     drone, ricavata dalla covarianza 2×2 pesata delle particelle;
+#   - area dell'ellisse  = π · k² · sqrt(det Σ)   con k² = quantile χ²(2 d.o.f.);
+#   - IoU (intersection-over-union) tra le ellissi di due droni, calcolata in
+#     modo esatto su poligoni convessi (Sutherland–Hodgman + shoelace).
+#
+# Per 2 gradi di libertà il quantile χ² ha forma chiusa: k² = -2·ln(1 - conf)
+# (es. conf = 0.95  →  k² ≈ 5.991).
+
+
+# ─────────────────────────── Covarianza / ellisse ───────────────────────────
+
+def chi2_quantile_2dof(conf=0.95):
+    """Quantile della χ² a 2 gradi di libertà (forma chiusa)."""
+    return -2.0 * np.log(1.0 - conf)
+
+
+def weighted_mean_cov_xy(particles, weights):
+    """
+    Media e covarianza 2×2 pesate delle particelle sul piano xy.
+
+    particles : (M, >=2)   nuvola di particelle
+    weights   : (M,)       pesi (non necessariamente normalizzati)
+    returns   : (mean_xy (2,), cov_xy (2, 2))
+    """
+    xy = np.asarray(particles)[:, :2]
+    w  = np.asarray(weights, dtype=float)
+    s  = w.sum()
+    w  = w / s if s > 0 else np.full(len(w), 1.0 / len(w))
+    mean = np.average(xy, weights=w, axis=0)
+    d    = xy - mean
+    cov  = (w[:, None] * d).T @ d            # Σ = Σ_i w_i (x_i-μ)(x_i-μ)^T
+    return mean, cov
+
+
+def ellipse_area(cov, conf=0.95):
+    """Area dell'ellisse di confidenza: π · k² · sqrt(det Σ) [m²]."""
+    det = float(np.linalg.det(cov))
+    if det <= 0.0:
+        return 0.0
+    return float(np.pi * chi2_quantile_2dof(conf) * np.sqrt(det))
+
+
+def ellipse_axes_angle(cov, conf=0.95):
+    """
+    Semiassi (a, b) e angolo [rad] dell'ellisse di confidenza, per il disegno.
+    a, b sono i semiassi lungo gli autovettori di Σ.
+    """
+    k2 = chi2_quantile_2dof(conf)
+    vals, vecs = np.linalg.eigh(cov)
+    vals = np.clip(vals, 0.0, None)
+    a, b = np.sqrt(k2 * vals)                # semiassi
+    major = vecs[:, int(np.argmax(vals))]    # autovettore dell'autovalore maggiore
+    angle = float(np.arctan2(major[1], major[0]))
+    return float(a), float(b), angle
+
+
+def ellipse_polygon(mean, cov, conf=0.95, n=72):
+    """Approssima l'ellisse di confidenza con un poligono convesso di n vertici."""
+    k2 = chi2_quantile_2dof(conf)
+    vals, vecs = np.linalg.eigh(cov)
+    vals = np.clip(vals, 0.0, None)
+    semi = np.sqrt(k2 * vals)                # semiassi nello spazio autovettori
+    t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    unit = np.stack([np.cos(t), np.sin(t)], axis=1)   # cerchio unitario
+    pts  = (unit * semi) @ vecs.T            # scala e ruota nello spazio dati
+    return pts + np.asarray(mean)[:2]
+
+
+# ─────────────────────────── Geometria poligoni ─────────────────────────────
+
+def _signed_area(poly):
+    x, y = poly[:, 0], poly[:, 1]
+    return 0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def _polygon_area(poly):
+    return abs(_signed_area(poly))
+
+
+def _ensure_ccw(poly):
+    return poly if _signed_area(poly) > 0 else poly[::-1]
+
+
+def _convex_intersection(subject, clip):
+    """
+    Intersezione di due poligoni convessi (Sutherland–Hodgman).
+    Entrambi devono essere orientati CCW. Ritorna (K, 2) oppure None se vuota.
+    """
+    def inside(p, a, b):
+        return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0.0
+
+    def seg_intersect(p1, p2, a, b):
+        x1, y1 = p1; x2, y2 = p2; x3, y3 = a; x4, y4 = b
+        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(den) < 1e-12:
+            return p2
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+        return np.array([x1 + t * (x2 - x1), y1 + t * (y2 - y1)])
+
+    output = [np.asarray(p, dtype=float) for p in subject]
+    cl     = [np.asarray(p, dtype=float) for p in clip]
+    for i in range(len(cl)):
+        a = cl[i]
+        b = cl[(i + 1) % len(cl)]
+        if not output:
+            return None
+        inp, output = output, []
+        s = inp[-1]
+        for e in inp:
+            if inside(e, a, b):
+                if not inside(s, a, b):
+                    output.append(seg_intersect(s, e, a, b))
+                output.append(e)
+            elif inside(s, a, b):
+                output.append(seg_intersect(s, e, a, b))
+            s = e
+    if len(output) < 3:
+        return None
+    return np.array(output)
+
+
+def ellipse_iou(mean_i, cov_i, mean_j, cov_j, conf=0.95, n=72):
+    """IoU (∈ [0, 1]) tra le ellissi di confidenza di due droni."""
+    pi = _ensure_ccw(ellipse_polygon(mean_i, cov_i, conf, n))
+    pj = _ensure_ccw(ellipse_polygon(mean_j, cov_j, conf, n))
+    inter = _convex_intersection(pi, pj)
+    a_inter = _polygon_area(inter) if inter is not None else 0.0
+    union   = _polygon_area(pi) + _polygon_area(pj) - a_inter
+    return float(a_inter / union) if union > 0 else 0.0
+
+
+# ─────────────────────────── Metriche aggregate run ─────────────────────────
+
+def run_ellipse_metrics(means, covs, conf=0.95):
+    """
+    Metriche per-run sulle ellissi PF dei droni con PF attivo.
+
+    means : lista di array (2,)     centri stima PF
+    covs  : lista di array (2, 2)    covarianze pesate xy
+    returns:
+        mean_area_m2 : area media dell'ellisse di confidenza [m²]
+        mean_iou     : IoU media a coppie tra droni (consenso inter-drone)
+    """
+    if not covs:
+        return float("nan"), float("nan")
+
+    areas = [ellipse_area(c, conf) for c in covs]
+    mean_area = float(np.mean(areas))
+
+    ious = [
+        ellipse_iou(means[a], covs[a], means[b], covs[b], conf)
+        for a in range(len(means)) for b in range(a + 1, len(means))
+    ]
+    mean_iou = float(np.mean(ious)) if ious else float("nan")
+    return mean_area, mean_iou

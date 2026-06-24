@@ -27,8 +27,9 @@ FIELDS = [
     "artva_noise_std", "comm_radius_m",
     "workspace_frac_r", "workspace_frac_c",
     "found", "time_found_s", "n_drones_stopped",
-    "pos_variance_m2", "pos_std_m", "est_error_2d_m",
-    "landing_err_mean_m", "est_error_depth_m", "pf_std_xy_mean_m", "note",
+    "pos_variance_m2", "pos_std_m",
+    "landing_err_mean_m", "est_error_depth_m", "pf_std_xy_mean_m",
+    "pf_ellipse_area_mean_m2", "pf_iou_mean", "note",
 ]
 
 
@@ -67,11 +68,12 @@ def load(path: str) -> list[dict]:
                 "found":     r["found"].strip() == "True",
                 "time":      _flt(r["time_found_s"]),
                 "dist":      _flt(r.get("victim_dist_m", "nan")),
-                "err2d":       _flt(r["est_error_2d_m"]),
                 "pos_std":     _flt(r["pos_std_m"]),
                 "landing_err":   _flt(r.get("landing_err_mean_m",  "nan")),
                 "depth_err":     _flt(r.get("est_error_depth_m",   "nan")),
                 "pf_std_xy":     _flt(r.get("pf_std_xy_mean_m",    "nan")),
+                "pf_area":       _flt(r.get("pf_ellipse_area_mean_m2", "nan")),
+                "pf_iou":        _flt(r.get("pf_iou_mean",         "nan")),
                 "note":          r["note"].strip(),
             })
     return rows
@@ -108,7 +110,7 @@ AREA_COLORS      = {100: "#5778a4", 200: "#e49444"}
 NOISE_LABELS     = {1e-7: r"$10^{-7}$", 1e-6: r"$10^{-6}$", 1e-5: r"$10^{-5}$"}
 N_DRONES_LIST    = [3, 4, 5]
 AREAS            = [100, 200]
-COMM_RADII       = [25, 50, 80, 120]
+COMM_RADII       = [25, 60, 120]
 NOISE_STDS       = [1e-7, 1e-6, 1e-5]
 DEPTHS           = [1.0, 3.0, 5.0]
 DEPTH_BIN_EDGES  = [1.0, 2.0, 3.0, 4.0, 5.01]
@@ -745,6 +747,67 @@ def fig_pf_uncertainty(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fig 13 — Consenso PF: IoU media inter-drone vs area media ellisse 95%
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
+    """
+    Una metrica di consenso inter-drone più informativa di pos_std_m.
+
+    Per ogni run (con ≥2 droni a PF attivo):
+      - asse x: IoU media a coppie tra le ellissi di confidenza 95% dei droni
+                (consenso: 100% = stime perfettamente sovrapposte);
+      - asse y: area media dell'ellisse di confidenza 95% [m²]
+                (incertezza intra-drone: più piccola = più confidente).
+
+    Il regime ideale è in basso-a-destra (confidenti E d'accordo). La IoU evita
+    il confondente geometrico dell'intersezione grezza (box grandi → più overlap).
+    Colore = rumore ARTVA; marker pieno = run riuscito, vuoto = fallito.
+    """
+    valid = [r for r in rows
+             if not math.isnan(r["pf_iou"]) and not math.isnan(r["pf_area"])
+             and r["pf_area"] > 0]
+    if not valid:
+        return None
+
+    noise_sorted = sorted(NOISE_STDS)
+    noise_colors = {1e-7: "#4e79a7", 1e-6: "#f28e2b", 1e-5: "#e15759"}
+
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.6),
+                             constrained_layout=True, sharey=True)
+    fig.suptitle(
+        r"Inter-drone PF consensus --- mean pairwise IoU vs.\ mean 95\% ellipse area",
+        fontsize=10, fontweight="bold")
+
+    for ax, area in zip(axes, AREAS):
+        sub = [r for r in valid if r["area"] == area]
+        for noise in noise_sorted:
+            pts_f = [r for r in sub if r["noise"] == noise and r["found"]]
+            pts_n = [r for r in sub if r["noise"] == noise and not r["found"]]
+            color = noise_colors.get(noise, "#777777")
+            if pts_f:
+                ax.scatter([100 * r["pf_iou"] for r in pts_f],
+                           [r["pf_area"] for r in pts_f],
+                           c=color, s=16, alpha=0.55, edgecolors="none",
+                           label=rf"{NOISE_LABELS[noise]} (found)")
+            if pts_n:
+                ax.scatter([100 * r["pf_iou"] for r in pts_n],
+                           [r["pf_area"] for r in pts_n],
+                           facecolors="none", edgecolors=color, s=16,
+                           linewidths=0.8, alpha=0.7,
+                           label=rf"{NOISE_LABELS[noise]} (timeout)")
+
+        ax.set_yscale("log")
+        ax.set_xlim(-3, 103)
+        ax.set_xlabel(r"Mean pairwise IoU [\%]")
+        ax.set_ylabel(r"Mean 95\% ellipse area [m$^2$]")
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
+        ax.legend(fontsize=6, loc="upper right", ncol=1)
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -779,6 +842,7 @@ def main() -> None:
     fig_victim_map(rows)
     fig_localization_errors(rows)
     fig_pf_uncertainty(rows)
+    fig_pf_ellipse_consensus(rows)
     plt.show()
 
 
