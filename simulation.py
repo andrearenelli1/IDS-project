@@ -56,6 +56,7 @@ from config import (
     SUPPORT_CIRCLE_N, TRIANGULATE_N_PARTNERS,
     SUPPORT_SEARCH_TIMEOUT, CONSENSUS_K_MAX,
     N_STOP,
+    FINAL_ORBIT_RADIUS, FINAL_ORBIT_N_WAYPOINTS,
 )
 
 
@@ -289,6 +290,40 @@ def _retry_support_search(
         stop_ag.support_pending = False
 
 
+def _start_final_orbit(
+    agents:    Dict[int, DroneAgent],
+    drone_ids: list,
+    terrain:   Terrain,
+    agl:       float,
+) -> list:
+    """
+    Avvia l'orbita finale di raffinamento: tutti i droni con PF attivo orbitano
+    attorno a un centro statico (media delle stime PF nel frame stimato) per
+    raccogliere viste diverse e affinare il PF prima dell'arresto.
+
+    Restituisce la lista degli id dei droni messi in orbita (vuota se nessun PF
+    è attivo, nel qual caso la simulazione può fermarsi subito).
+    """
+    pf_ids = [i for i in drone_ids
+              if agents[i].pf is not None and agents[i].source_est is not None]
+    if not pf_ids:
+        return []
+
+    center = np.mean([agents[i].source_est[:3] for i in pf_ids], axis=0)
+    n = len(pf_ids)
+    for k, i in enumerate(pf_ids):
+        ag = agents[i]
+        cw          = (k % 2 == 0)
+        start_angle = 2.0 * np.pi * k / n
+        ag.waypoints = circle_waypoints(center, FINAL_ORBIT_RADIUS,
+                                        start_angle, cw, terrain,
+                                        n_pts=FINAL_ORBIT_N_WAYPOINTS, agl=agl)
+        ag.wp_idx           = 0
+        ag.final_orbit_done = False
+        ag.state            = DroneState.FINAL_ORBIT
+    return pf_ids
+
+
 # ============================================================================
 # Extremum Seeking — TRACK mode  [Azzollini et al. 2021]
 # ============================================================================
@@ -386,6 +421,10 @@ def _on_wp_reached(
     elif ag.state == DroneState.SUPPORT:
         if not ag.advance_waypoint():
             ag.wp_idx = 0   # cicla la circonferenza
+
+    elif ag.state == DroneState.FINAL_ORBIT:
+        if not ag.advance_waypoint():
+            ag.final_orbit_done = True   # ultimo waypoint del cerchio raggiunto
 
     elif ag.state == DroneState.STOP:
         pass  # hovering
@@ -576,14 +615,28 @@ def simulate(
         DroneState.TRACK:   "TRCK",
         DroneState.STOP:    "STOP",
         DroneState.SUPPORT: "SUPP",
+        DroneState.FINAL_ORBIT: "ORBT",
     }
+
+    # Stato dell'orbita finale di raffinamento (vedi sezione Terminazione)
+    final_orbit_active   = False
+    final_orbit_start    = 0
+    orbit_ids: list      = []
+    # Tetto di sicurezza per l'orbita (anti-stallo): largo, NON è il criterio di
+    # fine — l'orbita termina quando tutti raggiungono l'ultimo waypoint.
+    orbit_safety_steps   = int(
+        FINAL_ORBIT_N_WAYPOINTS * (2.0 * np.pi * FINAL_ORBIT_RADIUS
+                                   / max(FINAL_ORBIT_N_WAYPOINTS, 1)) / V_MAX / dt * 6
+    ) + 200
 
     print(
         f"\n{'Step':>5}  {'t[s]':>6}  "
         + "  ".join(f"D{i}:st/wp/dist/Δest" for i in drone_ids)
     )
 
-    for step in range(n_steps):
+    # Il loop prosegue oltre n_steps solo per completare l'orbita finale.
+    step = 0
+    while step < n_steps or final_orbit_active:
         t = step * dt
 
         # ── 1. Misura ARTVA ──────────────────────────────────────────────
@@ -598,42 +651,44 @@ def simulate(
             ag.signal_log.append((ag.x[:3].copy(), sig_filt))
             signals[i] = sig_filt
 
-        # ── 2. Transizioni di stato ──────────────────────────────────────
-        for i in drone_ids:
-            ag  = agents[i]
-            sig = signals[i]
+        # ── 2. FSM (sospesa durante l'orbita finale di raffinamento) ──────
+        if not final_orbit_active:
+            # ── 2. Transizioni di stato ──────────────────────────────────
+            for i in drone_ids:
+                ag  = agents[i]
+                sig = signals[i]
 
-            if ag.state == DroneState.SEARCH and sig >= artva_detect_thr:
-                _transition_search_to_track(ag, i, sig, sigma_noise, step, t, terrain, agl)
+                if ag.state == DroneState.SEARCH and sig >= artva_detect_thr:
+                    _transition_search_to_track(ag, i, sig, sigma_noise, step, t, terrain, agl)
 
-            elif ag.state == DroneState.TRACK and sig >= track_stop_thr:
-                _transition_to_stop(ag, i, sig, step, t)
-                if not consensus_done[0]:
-                    _assign_support_partners(
-                        agents, drone_ids, i, sig, sigma_noise, step, terrain, agl, consensus_done,
+                elif ag.state == DroneState.TRACK and sig >= track_stop_thr:
+                    _transition_to_stop(ag, i, sig, step, t)
+                    if not consensus_done[0]:
+                        _assign_support_partners(
+                            agents, drone_ids, i, sig, sigma_noise, step, terrain, agl, consensus_done,
+                        )
+
+                elif ag.state == DroneState.SUPPORT and sig >= track_stop_thr:
+                    ag.state     = DroneState.STOP
+                    hover_wp     = ag.x_est[:3].copy()
+                    ag.waypoints = [hover_wp]
+                    ag.wp_idx    = 0
+                    print(
+                        f"\n  ⬛ Drone {i} STOP (SUPPORT→STOP, S={sig:.2e}) "
+                        f"al passo {step} (t={t:.2f}s)"
                     )
 
-            elif ag.state == DroneState.SUPPORT and sig >= track_stop_thr:
-                ag.state     = DroneState.STOP
-                hover_wp     = ag.x_est[:3].copy()
-                ag.waypoints = [hover_wp]
-                ag.wp_idx    = 0
-                print(
-                    f"\n  ⬛ Drone {i} STOP (SUPPORT→STOP, S={sig:.2e}) "
-                    f"al passo {step} (t={t:.2f}s)"
-                )
+            # ── 2b. Retry SUPPORT search per droni STOP in attesa ────────
+            for i in drone_ids:
+                if agents[i].state == DroneState.STOP and agents[i].support_pending:
+                    _retry_support_search(agents, drone_ids, i, sigma_noise, step, terrain, agl)
 
-        # ── 2b. Retry SUPPORT search per droni STOP in attesa ────────────
-        for i in drone_ids:
-            if agents[i].state == DroneState.STOP and agents[i].support_pending:
-                _retry_support_search(agents, drone_ids, i, sigma_noise, step, terrain, agl)
-
-        # ── 2c. ES update per droni in TRACK ────────────────────────────
-        for i in drone_ids:
-            ag = agents[i]
-            if ag.state == DroneState.TRACK:
-                yt = _es_condition_signal(signals[i])
-                _es_update(ag, yt, dt, terrain, agl)
+            # ── 2c. ES update per droni in TRACK ─────────────────────────
+            for i in drone_ids:
+                ag = agents[i]
+                if ag.state == DroneState.TRACK:
+                    yt = _es_condition_signal(signals[i])
+                    _es_update(ag, yt, dt, terrain, agl)
 
         # Log waypoint corrente
         for i in drone_ids:
@@ -755,26 +810,61 @@ def simulate(
                 row    += f"  {_STATE_LABEL[ag.state]}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m"
             print(row)
 
-        # ── 9. Terminazione ──────────────────────────────────────────────
-        n_stopped = sum(1 for i in drone_ids if agents[i].state == DroneState.STOP)
-        if n_stopped >= N_STOP:
-            print(
-                f"\n  {N_STOP} droni in STOP al passo {step} (t={t:.2f}s) — "
-                "simulazione terminata"
-            )
-            break
+        # ── 9. Terminazione / orbita finale di raffinamento ──────────────
+        if final_orbit_active:
+            # L'orbita finisce quando ogni drone ha raggiunto l'ultimo waypoint
+            # del cerchio (non c'è limite di tempo). Tetto di sicurezza anti-stallo.
+            if all(agents[i].final_orbit_done for i in orbit_ids):
+                print(
+                    f"\n  Orbita finale completata (ultimo waypoint raggiunto) "
+                    f"al passo {step} (t={t:.2f}s) — simulazione terminata"
+                )
+                break
+            if step - final_orbit_start >= orbit_safety_steps:
+                print(
+                    f"\n  Orbita finale: tetto di sicurezza raggiunto al passo "
+                    f"{step} (t={t:.2f}s) — simulazione terminata"
+                )
+                break
+        else:
+            n_stopped = sum(1 for i in drone_ids if agents[i].state == DroneState.STOP)
 
-        # Un solo drone basta per stimare la sorgente (PF). Se un drone in STOP
-        # ha esaurito la finestra di chiamata SUPPORT senza trovare partner
-        # vicini, è inutile attendere oltre: si chiude subito per dare prima una
-        # posizione ai soccorritori.
-        if any(agents[i].state == DroneState.STOP and agents[i].support_failed
-               for i in drone_ids):
-            print(
-                f"\n  Chiamata SUPPORT scaduta senza partner al passo {step} "
-                f"(t={t:.2f}s) — stima PF disponibile, simulazione terminata"
-            )
-            break
+            # Condizioni di stop (→ orbita finale):
+            #   1. l'intero team è in STOP (N_STOP droni);
+            #   2. la chiamata SUPPORT di un drone in STOP è scaduta: il timeout
+            #      va SEMPRE atteso, anche se nel frattempo qualche partner si è
+            #      già fermato (team < N_STOP), così da dare tempo di reclutare
+            #      altri droni prima di rinunciare;
+            #   3. timeout globale (ultimo passo).
+            reason = None
+            if n_stopped >= N_STOP:
+                reason = f"{N_STOP} droni in STOP"
+            elif any(agents[i].state == DroneState.STOP and agents[i].support_failed
+                     for i in drone_ids):
+                reason = "chiamata SUPPORT scaduta"
+            elif step >= n_steps - 1:
+                reason = "timeout"
+
+            if reason is not None:
+                # Comunque venga fermata, prima dello stop i droni con PF attivo
+                # orbitano attorno alla stima (centro statico) per affinare il PF.
+                orbit_ids = _start_final_orbit(agents, drone_ids, terrain, agl)
+                if orbit_ids:
+                    final_orbit_active = True
+                    final_orbit_start  = step
+                    print(
+                        f"\n  Stop ({reason}) al passo {step} (t={t:.2f}s) — "
+                        f"orbita finale di raffinamento ({FINAL_ORBIT_N_WAYPOINTS} "
+                        f"waypoint): droni {orbit_ids} attorno alla stima"
+                    )
+                else:
+                    print(
+                        f"\n  Stop ({reason}) al passo {step} (t={t:.2f}s) — "
+                        "nessun PF attivo, simulazione terminata"
+                    )
+                    break
+
+        step += 1
 
 
     # ── Stima finale PF: media pesata + deviazione standard ───────────────

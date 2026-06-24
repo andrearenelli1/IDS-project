@@ -192,7 +192,8 @@ def plot_mission(
         state_seq = _reconstruct_state_sequence(ag)
         n         = min(len(traj), len(state_seq))
         s_idx = [k for k in range(n) if state_seq[k] == DroneState.SEARCH]
-        t_idx = [k for k in range(n) if state_seq[k] in (DroneState.TRACK, DroneState.SUPPORT)]
+        t_idx = [k for k in range(n) if state_seq[k] in (
+            DroneState.TRACK, DroneState.SUPPORT, DroneState.FINAL_ORBIT)]
         p_idx = [k for k in range(n) if state_seq[k] == DroneState.STOP]
         if s_idx:
             ax_a.plot(traj[s_idx, 0], traj[s_idx, 1], color=c, lw=1.0, alpha=0.45, ls="--")
@@ -1211,6 +1212,8 @@ def animate_mission(
                     st = "TRCK"
                 elif _s == DroneState.STOP:
                     st = "STOP"
+                elif _s == DroneState.FINAL_ORBIT:
+                    st = "ORBT"
                 else:
                     st = "SUPP"
             elif sig < ARTVA_DETECT_THR:

@@ -35,10 +35,11 @@ from pf import ParticleFilter
 # ============================================================================
 
 class DroneState(IntEnum):
-    SEARCH  = 0   # lawnmower, ricerca attiva
-    TRACK   = 1   # esplorazione 3 punti, convergenza sulla sorgente
-    STOP    = 2   # hovering, ha raggiunto la soglia TRACK_STOP_THR
-    SUPPORT = 3   # si posiziona a 120° attorno alla stima della sorgente per triangolazione
+    SEARCH      = 0   # lawnmower, ricerca attiva
+    TRACK       = 1   # esplorazione 3 punti, convergenza sulla sorgente
+    STOP        = 2   # hovering, ha raggiunto la soglia TRACK_STOP_THR
+    SUPPORT     = 3   # si posiziona a 120° attorno alla stima della sorgente per triangolazione
+    FINAL_ORBIT = 4   # orbita finale di raffinamento attorno alla stima, prima dell'arresto
 
 
 # ============================================================================
@@ -202,6 +203,7 @@ class DroneAgent:
     support_deadline:     int   = 0       # step oltre cui si rinuncia
     support_n_needed:     int   = 0       # partner ancora mancanti
     support_failed:       bool  = False   # True se la chiamata di supporto è scaduta senza partner
+    final_orbit_done:     bool  = False   # True quando il drone ha raggiunto l'ultimo waypoint dell'orbita finale
 
 
     # ARTVA signal

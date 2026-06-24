@@ -133,8 +133,19 @@ PF_N_PARTICLES = 300   # numero di particelle per drone
 # ============================================================================
 SUPPORT_CIRCLE_N       = 9     # waypoint sulla circonferenza percorsa dai droni SUPPORT
 TRIANGULATE_N_PARTNERS = 2     # droni chiamati in supporto al primo STOP
-SUPPORT_SEARCH_TIMEOUT = 500  # [steps] attesa max per trovare partner SUPPORT mancanti
+SUPPORT_SEARCH_TIMEOUT = 300  # [steps] attesa max per trovare partner SUPPORT mancanti
 CONSENSUS_K_MAX        = 10    # iterazioni max min-consensus (≥ diametro stimato della rete)
+
+# ============================================================================
+# Orbita finale di raffinamento
+# ============================================================================
+# Comunque la simulazione venga fermata (N_STOP, SUPPORT scaduto, o timeout),
+# prima di arrestarsi tutti i droni con PF attivo compiono una rapida orbita
+# attorno alla posizione stimata (centro statico catturato all'istante di stop)
+# per raccogliere viste diverse e affinare il PF prima di consegnare la stima.
+FINAL_ORBIT_RADIUS  = 10.0   # [m]  raggio dell'orbita finale
+FINAL_ORBIT_N_WAYPOINTS = 12  # waypoint sul cerchio: l'orbita finisce quando
+                              # ogni drone ha raggiunto l'ultimo waypoint
 
 # ============================================================================
 # Visualizzazione

@@ -270,7 +270,10 @@ def run_one(
         steps_run = len(next(iter(agents.values())).history) - 1
         time_s    = steps_run * DT_SIM
 
-        n_stopped  = sum(1 for ag in agents.values() if ag.state == DroneState.STOP)
+        # STOP o FINAL_ORBIT: i droni che hanno raggiunto la sorgente (a fine run
+        # quelli con PF attivo sono in FINAL_ORBIT per l'orbita di raffinamento).
+        n_stopped  = sum(1 for ag in agents.values()
+                         if ag.state in (DroneState.STOP, DroneState.FINAL_ORBIT))
 
         n_tracked  = sum(1 for ag in agents.values() if ag.detected)
 
