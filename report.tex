@@ -57,10 +57,11 @@ controller, with Extremum Seeking guiding it up the signal gradient and
 a distributed Particle Filter fusing every nearby measurement into a
 sharp 3-D victim estimate.
 %
-Validated over [XXXX] experiments on real alpine terrain, spanning fleet
-size, ARTVA noise, communication radius, and burial depth, the system
-delivers reliable sub-metre localization—proving that coordinated
-autonomous rescue is achievable under the harshest realistic conditions.
+The system is evaluated through a parametric sweep on real alpine
+terrain, spanning fleet size, ARTVA noise, communication radius, and
+burial depth, assessing not only the localization error but also the
+inter-drone consistency of the distributed estimate via confidence-ellipse
+metrics.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -275,17 +276,21 @@ Each drone cycles through four states (Fig.~\ref{fig:topview}):
         counter-clockwise; transitions to \textsc{Stop} when its own
         signal exceeds $\tau_{\text{stop}}$.
 \end{list}
-The mission terminates when $N_{\text{stop}} \geq 3$ drones are in
-\textsc{Stop} state and the particle filter estimate lies within 10\,m
-of the true victim.
+The mission stops as soon as the team reaches the \textsc{Stop}
+configuration, or as soon as a \textsc{Stop} drone's support call expires
+without any reachable partner: since a single active Particle Filter
+already suffices to localize the source, waiting longer would only delay
+the estimate handed to rescuers.  Success is assessed a posteriori on the
+PF estimate rather than on the number of stopped drones
+(Sec.~\ref{sec:pf}).
 
 \begin{figure}[tb]
   \centering
   \includegraphics[width=\columnwidth]{figures/trajectories_top_view}
-  \caption{Top-view trajectory of a 3-drone mission on a real
-  alpine DEM patch.  Colors encode FSM state: blue = Search, orange =
-  Track, red = Stop/Support.  Victim position marked with a star;
-  final PF estimate shown as a cross.}
+  \caption{Top-view trajectories of a multi-drone mission on a real
+  alpine DEM patch.  Colors distinguish drones; line style encodes the FSM
+  state (dashed = Search, solid = Track/Support, dotted = Stop), with the
+  IMDCL self-estimate also dotted.  The victim is marked with a star.}
   \label{fig:topview}
 \end{figure}
 
@@ -587,6 +592,29 @@ trivially overlap more.  The ideal operating regime is therefore
 \emph{small} $\bar{A}$ together with \emph{high} $\overline{\mathrm{IoU}}$:
 drones that are individually confident and mutually in agreement.
 
+\paragraph{Success criterion}
+Under GPS denial the filter operates entirely in the drone's
+\emph{estimated} frame: every particle and the resulting estimate
+$\hat{\bm{\theta}}_i$ are expressed relative to the IMDCL self-position
+$\hat{\mathbf{p}}_i$, not the (unknown) true position $\mathbf{p}_i$.  To
+compare against the real victim, the estimate is corrected for the IMDCL
+self-localization drift,
+\begin{equation}
+  \hat{\bm{\theta}}_i^{\,\mathrm{w}} =
+  \hat{\bm{\theta}}_i - (\hat{\mathbf{p}}_i - \mathbf{p}_i),
+  \label{eq:drift_correct}
+\end{equation}
+which maps the estimate (and its ellipse) back into the world frame.  A
+run is declared \emph{successful} when at least one drone with an active
+PF has a drift-corrected confidence ellipse that (i) \emph{contains} the
+true victim, $(\bm{\theta}-\hat{\bm{\theta}}_i^{\,\mathrm{w}})^{\!\top}
+\bm{\Sigma}_i^{-1}(\bm{\theta}-\hat{\bm{\theta}}_i^{\,\mathrm{w}}) \le k^2$,
+and (ii) is sufficiently concentrated, $A_i \le A_{\max}$.  A single drone
+is therefore enough to localize the source.  We set the confidence level
+to $95\%$ and $A_{\max} = \pi\,(5\,\mathrm{m})^2 \approx 78.5\,\mathrm{m}^2$
+(a circle of radius $\approx 5$\,m), consistent with the practical search
+box of~\cite{Azzollini2021}.
+
 % ============================================================
 \section{Implementation Details}
 \label{sec:impl}
@@ -781,8 +809,8 @@ The CLI in \texttt{main.py} exposes all parameters for batch sweeps.
 
 \subsection{Experimental Setup}
 
-Five 100\,m\,$\times$\,100\,m patches were extracted from the TINItaly
-tile.  The parametric grid covers:
+Distinct patches were extracted from the TINItaly tile over two workspace
+sizes.  The parametric grid covers:
 
 \begin{center}
 \small
@@ -790,19 +818,23 @@ tile.  The parametric grid covers:
 \toprule
 Parameter & Values \\
 \midrule
-Fleet size $N$           & $\{3, 4\}$ drones \\
+Workspace size           & $\{100, 200\}$\,m squares \\
+Fleet size $N$           & $\{3, 4, 5\}$ drones \\
 ARTVA noise $\sigma_n$   & $\{10^{-7}, 10^{-6}, 10^{-5}\}$ \\
 Process noise $\sigma_a$ & $\{0.05, 0.10\}$\,m/s$^2$ \\
 Comm.\ radius $r_c$      & $\{25, 60, 120\}$\,m \\
 Terrain patches          & 5 distinct DEM tiles \\
-Victim positions         & 10 random per combination \\
+Victim positions         & 3 random per combination \\
+Burial depth             & random, $\mathcal{U}[1, 5]$\,m \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Each run terminates at success ($\geq 3$ drones in \textsc{Stop}
-\emph{and} estimate within 10\,m) or after a 900\,s timeout.
-The total sweep comprised 2\,153 completed experiments.
+Each run ends when the team reaches the \textsc{Stop} configuration (or a
+\textsc{Stop} drone's support call expires with no reachable partner), or
+after a 900\,s timeout.  A run is counted as a success according to the
+drift-corrected confidence-ellipse criterion of Sec.~\ref{sec:pf}
+(victim contained in the $95\%$ ellipse with area $\le A_{\max}$).
 
 \subsection{Mission Success Rate}
 
@@ -815,18 +847,19 @@ The total sweep comprised 2\,153 completed experiments.
     \toprule
     $N$ & Runs & Success \\
     \midrule
-    3   & 1200 & 80.4\,\% \\
-    4   &  953 & 92.2\,\% \\
+    3   & --- & --- \\
+    4   & --- & --- \\
+    5   & --- & --- \\
     \midrule
-    All & 2153 & 85.6\,\% \\
+    All & --- & --- \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Table~\ref{tab:success} reports success rates by fleet size.
-The fourth drone provides a meaningful gain (80.4\,\% $\to$ 92.2\,\%),
-increasing the probability that at least one drone reaches the victim
-and two others can be recruited as \textsc{Support}.
+Table~\ref{tab:success} will report success rates by fleet size, isolating
+the effect of adding drones on the probability that at least one reaches
+the victim and others can be recruited as \textsc{Support}.
+\emph{(Results pending the updated parametric sweep.)}
 
 \subsection{Effect of Noise Level}
 
@@ -839,16 +872,17 @@ and two others can be recruited as \textsc{Support}.
     \toprule
     $\sigma_n$ & Runs & Success \\
     \midrule
-    $10^{-7}$ & 720 & 87.1\,\% \\
-    $10^{-6}$ & 715 & 84.3\,\% \\
-    $10^{-5}$ & 718 & 85.5\,\% \\
+    $10^{-7}$ & --- & --- \\
+    $10^{-6}$ & --- & --- \\
+    $10^{-5}$ & --- & --- \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Table~\ref{tab:noise} shows nearly uniform success across three decades
-of noise, confirming that the adaptive thresholds effectively decouple
-mission performance from noise level.
+Table~\ref{tab:noise} will report success rate across three decades of
+noise, to verify whether the adaptive thresholds decouple mission
+performance from the noise level.
+\emph{(Results pending the updated parametric sweep.)}
 
 \subsection{Effect of Communication Radius}
 
@@ -861,18 +895,20 @@ mission performance from noise level.
     \toprule
     $r_c$ [m] & Runs & Success \\
     \midrule
-    25  & 540 & 75.9\,\% \\
-    60  & 540 & 88.7\,\% \\
-    120 & 540 & 92.0\,\% \\
+    25  & --- & --- \\
+    60  & --- & --- \\
+    120 & --- & --- \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Table~\ref{tab:rc} shows the expected trend: a larger communication
-radius enables cooperative PF updates from more diverse viewpoints,
-improving both IMDCL accuracy and particle filter convergence.
-At $r_c = 25$\,m some missions fail because no neighbor is reachable
-for UWB cooperative updates during the lawnmower phase.
+Table~\ref{tab:rc} will quantify the effect of the communication radius:
+a larger $r_c$ is expected to enable cooperative PF updates from more
+diverse viewpoints, improving both IMDCL accuracy and particle-filter
+convergence, whereas at $r_c = 25$\,m some missions may fail because no
+neighbor is reachable for UWB cooperative updates during the lawnmower
+phase.
+\emph{(Results pending the updated parametric sweep.)}
 
 \begin{figure}[tb]
   \centering
@@ -898,10 +934,10 @@ for UWB cooperative updates during the lawnmower phase.
 
 \subsection{Localization Accuracy and Search Time}
 
-Among successful runs, the median search time is \textbf{105.5\,s}
-with a median 2-D position error of \textbf{1.76\,m}, well within the
-10\,m operational requirement for rescuers to probe the exact burial
-point.
+Among successful runs we report the median search time and the median
+2-D localization error of the drift-corrected PF estimate, against the
+operational requirement for rescuers to probe the exact burial point.
+\emph{(Quantitative values pending the updated parametric sweep.)}
 
 Beyond the point-estimate error, we assess the \emph{consistency} of the
 distributed estimate through the confidence-ellipse metrics of
@@ -921,20 +957,23 @@ estimate rather than merely toward coincidentally close centroids.
 In this report we presented a fully distributed multi-drone ARTVA
 search system operating over real alpine terrain, without any central
 coordinator.
-The combination of dynamic thresholds with a physics-based floor,
+The system combines dynamic thresholds with a physics-based floor,
 Extremum Seeking for gradient-free convergence, a cooperative 3-D
 Particle Filter with adaptive likelihood, and IMDCL for GPS-free
-localization achieves an 85.6\,\% mission success rate with a median
-localization error of 1.76\,m across 2\,153 randomized experiments.
+localization.  Success is assessed on the distributed PF estimate
+itself---through the drift-corrected confidence ellipse---so that a
+single drone suffices to localize the victim, and the inter-drone
+consistency of the estimate is quantified via the ellipse area and the
+pairwise IoU.  Quantitative success rates and localization accuracy will
+be reported from the updated parametric sweep.
 
-The main failure mode (19.6\,\% with $N=3$) is the inability to
-recruit two \textsc{Support} partners when the fleet is small and
-drones scatter.  Adding a fourth drone reduces this to 7.8\,\%.
-The adaptive lawnmower and dynamic thresholds make the system robust
-to noise over three decades with negligible performance variation.
+A known failure mode is the inability to recruit \textsc{Support}
+partners when the fleet is small and the drones scatter; a larger fleet
+is expected to mitigate it.
 
-Future directions include: extending the sweep to 200\,m tiles and
-five drones; studying victim depth estimation accuracy; and replacing
+Future directions include: studying victim depth estimation accuracy;
+modelling the cooperative fusion with each drone's \emph{estimate} of its
+neighbors' positions rather than their self-estimates; and replacing
 simulated UWB/LiDAR with realistic sensor noise models including
 multipath and terrain occlusion.
 
