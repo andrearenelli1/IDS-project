@@ -10,6 +10,7 @@
 \usepackage{multirow}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{subcaption}
 \usepackage{hyperref}
 \usepackage{cite}
 
@@ -85,11 +86,15 @@ transmits a 457\,kHz magnetic field; a drone fleet equipped with
 receiving antennas can sweep the burial zone far faster than human
 searchers.
 
-The core challenge is to coordinate multiple UAVs
-without a central server, localize a buried beacon from its weak
-magnetic dipole signal, and deliver a precise 3-D position estimate
-to ground rescuers—all under GPS denial (avalanche terrain may block
-satellite signals) and tight real-time constraints.
+The core challenge is to coordinate multiple UAVs without a central
+server, localize a buried beacon from its weak magnetic dipole signal,
+and deliver a precise 3-D position estimate to ground rescuers—all
+under GPS denial (avalanche terrain may block satellite signals) and
+tight real-time constraints.  Once the fleet localizes the source, a
+drone lands on the estimated burial point and rescuers begin excavation
+at the touchdown location; the operationally relevant error is
+therefore the distance between that actual touchdown point and the true
+victim.
 
 We deliberately design and evaluate the system for the
 \emph{worst-case} scenario, full GPS denial, in which no agent has
@@ -301,14 +306,22 @@ to rescuers.  Because a single active PF already suffices to localize the
 source, success is assessed a posteriori on the PF estimate rather than on
 the number of stopped drones (Sec.~\ref{sec:pf}).
 
-\begin{figure}[tb]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{figures/trajectories_top_view}
-  \caption{Top-view trajectories of a multi-drone mission on a real
-  alpine DEM patch.  Colors distinguish drones; line style encodes the FSM
-  state (dashed = Search, solid = Track/Support/Final-orbit, dotted = Stop),
-  with the IMDCL self-estimate also dotted.  The victim is marked with a star.}
-  \label{fig:topview}
+  \begin{subfigure}[t]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/trajectories_top_view}
+    \caption{Top view --- line style encodes FSM state.}
+    \label{fig:topview}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/trajectories_3d_view}
+    \caption{3-D over DEM --- solid = real, dashed = est.}
+    \label{fig:traj3d}
+  \end{subfigure}
+  \caption{Mission trajectories. Victim marked with a star.}
+  \label{fig:traj}
 \end{figure}
 
 \subsection{Dynamic Detection Thresholds}
@@ -613,18 +626,24 @@ drones that are individually confident and mutually in agreement.
 Under GPS denial the filter operates entirely in the drone's
 \emph{estimated} frame: every particle and the resulting estimate
 $\hat{\bm{\theta}}_i$ are expressed relative to the IMDCL self-position
-$\hat{\mathbf{p}}_i$, not the (unknown) true position $\mathbf{p}_i$.  To
-compare against the real victim, the estimate is corrected for the IMDCL
-self-localization drift,
+$\hat{\mathbf{p}}_i$, not the (unknown) true position $\mathbf{p}_i$.
+This distinction has a direct operational meaning: when drone $i$ is
+commanded to land on $\hat{\bm{\theta}}_i$, it navigates relative to
+its own believed position $\hat{\mathbf{p}}_i$, so the actual touchdown
+point in world coordinates is $\hat{\bm{\theta}}_i -
+(\hat{\mathbf{p}}_i - \mathbf{p}_i)$---the estimate shifted by the
+IMDCL drift.  It is at this point that rescuers begin excavation, so
+this drift-corrected quantity is what must be accurate.  Formally:
 \begin{equation}
   \hat{\bm{\theta}}_i^{\,\mathrm{w}} =
   \hat{\bm{\theta}}_i - (\hat{\mathbf{p}}_i - \mathbf{p}_i),
   \label{eq:drift_correct}
 \end{equation}
-which maps the estimate (and its ellipse) back into the world frame.  A
-run is declared \emph{successful} when at least one drone with an active
-PF has a drift-corrected confidence ellipse that (i) \emph{contains} the
-true victim, $(\bm{\theta}-\hat{\bm{\theta}}_i^{\,\mathrm{w}})^{\!\top}
+and it is $\hat{\bm{\theta}}_i^{\,\mathrm{w}}$ against which success is
+assessed.  A run is declared \emph{successful} when at least one drone
+with an active PF has a drift-corrected confidence ellipse that
+(i) \emph{contains} the true victim,
+$(\bm{\theta}-\hat{\bm{\theta}}_i^{\,\mathrm{w}})^{\!\top}
 \bm{\Sigma}_i^{-1}(\bm{\theta}-\hat{\bm{\theta}}_i^{\,\mathrm{w}}) \le k^2$,
 and (ii) is sufficiently concentrated, $A_i \le A_{\max}$.  A single drone
 is therefore enough to localize the source.  We set the confidence level
@@ -803,7 +822,7 @@ cross-covariance pairs, and $\Phi_i$ is reset to $I$ after the update.
 
 \begin{figure}[tb]
   \centering
-  \includegraphics[width=\columnwidth]{figures/imdcl_error}
+  \includegraphics[width=0.8\columnwidth]{figures/imdcl_error}
   \caption{IMDCL localization error over time for a 3-drone mission.
   Cooperative inter-drone updates (steps with neighbor in range)
   produce visible error reductions.}
@@ -864,12 +883,7 @@ located too late offers little survival benefit).
 Before the aggregate statistics, we walk through a single representative
 mission to illustrate the full pipeline end to end.  The run uses a
 deliberately demanding configuration:
-\begin{center}\small\ttfamily
--{}-n 4 -{}-area 200 -{}-noise 1e-5 -{}-rc 50\\
--{}-victim-x 180 -{}-victim-y 110 -{}-victim-depth 4.2\\
--{}-ws 0.7,0.7 -{}-acc-noise 0.1
-\end{center}
-i.e.\ four drones over a $200\times200$\,m alpine patch, the victim buried
+four drones over a $200\times200$\,m alpine patch, the victim buried
 $4.2$\,m deep near a corner of the workspace, the \emph{highest} ARTVA noise
 level ($\sigma_n = 10^{-5}$), a short communication radius ($r_c = 50$\,m),
 and elevated motion noise ($\sigma_a = 0.1$\,m/s$^2$, ``windy''), over a
@@ -885,15 +899,6 @@ source (solid), and the recruited partners converge on the burial area.
 In 3-D the real trajectory (solid) and the IMDCL self-estimate (dashed)
 remain close, confirming that cooperative localization keeps the fleet
 geometry coherent despite GPS denial.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.7\columnwidth]{figures/trajectories_3d_view}
-  \caption{3-D trajectories over the DEM patch for the example mission:
-  real path (solid) vs.\ IMDCL self-estimate (dashed), victim marked with a
-  star.}
-  \label{fig:traj3d}
-\end{figure}
 
 \paragraph{Signal and state transitions}
 Fig.~\ref{fig:signal} plots the (smoothed) ARTVA signal of each drone
@@ -911,20 +916,22 @@ $v_{\max}=3$\,m/s bounds, while Fig.~\ref{fig:altitude} shows the height
 above ground held near the $1.5$\,m AGL set-point as the drones fly over
 the uneven terrain.
 
-\begin{figure}[h]
+\begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{figures/mpc_ci_vp}
-  \caption{MPC control inputs (accelerations) and velocity profiles for the
-  example mission; both remain within the actuation and speed bounds.}
-  \label{fig:mpcinputs}
-\end{figure}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/altitude_agl}
-  \caption{Height above ground over time: the controller keeps each drone
-  near the $1.5$\,m AGL set-point while following the terrain profile.}
-  \label{fig:altitude}
+  \begin{subfigure}[t]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/mpc_ci_vp}
+    \caption{Accelerations and velocity profiles; within bounds.}
+    \label{fig:mpcinputs}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/altitude_agl}
+    \caption{Height AGL; held near $1.5$\,m set-point.}
+    \label{fig:altitude}
+  \end{subfigure}
+  \caption{Flight controller performance for the example mission.}
+  \label{fig:control}
 \end{figure}
 
 \paragraph{Cooperative localization}
@@ -934,10 +941,12 @@ cooperative update, i.e.\ whenever a neighbour comes within $r_c$ and a UWB
 relative measurement is fused, keeping the drift bounded throughout.
 
 \paragraph{Source estimation}
-Fig.~\ref{fig:pfevo} shows the particle cloud of the tracking drone at three
-instants: starting from the wide polar shell consistent with the first
+Fig.~\ref{fig:pfevo} shows the particle cloud of the tracking drone at four
+snapshots: starting from the wide polar shell consistent with the first
 measurement, it collapses onto the burial point as own and cooperative
-measurements accumulate (particle opacity grows with weight).  The final
+measurements accumulate (opacity grows with particle weight).  At each
+snapshot the fitted $95\%$ confidence ellipsoid and its semi-axes
+$a_1 \ge a_2 \ge a_3$ quantify the 3-D uncertainty of the estimate.  The final
 outcome is summarised in Fig.~\ref{fig:final}: the drift-corrected source
 estimates and their $95\%$ confidence ellipses, with the inset reporting the
 mean ellipse area $\bar{A}$ and the mean pairwise IoU.  Tightly overlapping
@@ -945,20 +954,23 @@ ellipses around the true victim indicate that the team reaches a confident,
 mutually consistent estimate even in this high-noise, windy, short-range
 configuration.
 
-\begin{figure*}[h]
+\begin{figure}[h]
   \centering
-  \includegraphics[width=\textwidth]{figures/pf_evolution}
+  \includegraphics[width=\columnwidth]{figures/pf_evolution}
   \caption{Particle-cloud evolution of the tracking drone (drift-corrected
-  to the world frame) at three snapshots.  Colour and opacity encode the
-  normalized particle weight; the cloud contracts from the initial polar
-  shell onto the burial point.  $\hat{\theta}$ = weighted-mean estimate,
-  $\theta$ = true victim.}
+  to the world frame) at four snapshots (2$\times$2 grid).  Opacity alone
+  encodes the normalized particle weight.  The orange semi-transparent surface
+  is the $95\%$ confidence ellipsoid ($\chi^2_3 \approx 7.81$) fitted to the
+  weighted cloud; its three semi-axes $a_1 \ge a_2 \ge a_3$ are annotated
+  above each panel.  The cloud contracts from the initial polar shell onto the
+  burial point as measurements accumulate.  $\hat{\theta}$~=~weighted-mean
+  estimate, $\theta$~=~true victim.}
   \label{fig:pfevo}
-\end{figure*}
+\end{figure}
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=\columnwidth]{figures/artva_signal}
+  \includegraphics[width=0.8\columnwidth]{figures/artva_signal}
   \caption{ARTVA signal (smoothed) over time for each drone.
   Horizontal dashed lines mark $\tau_{\text{detect}}$ and
   $\tau_{\text{stop}}$.  State transitions coincide with signal
@@ -968,13 +980,17 @@ configuration.
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=\columnwidth]{figures/final_positions}
-  \caption{Final drone positions and PF source estimate (diamond) vs.\
-  true victim (star).  Each drone's shaded $95\%$ confidence ellipse
-  (\eqref{eq:pf_ellipse}) visualises its planar uncertainty; the inset
-  reports the mean ellipse area $\bar{A}$~\eqref{eq:pf_area} and the mean
-  pairwise IoU $\overline{\mathrm{IoU}}$~\eqref{eq:pf_iou_mean}.  Tightly
-  overlapping ellipses near the victim indicate inter-drone consensus.}
+  \includegraphics[width=0.8\columnwidth]{figures/final_positions}
+  \caption{Final positions for the example mission.
+  $\blacktriangle$ (filled, black border) = true GPS position;
+  $\triangle$ (hollow) = estimated position;
+  $\lozenge$ = drift-corrected PF source estimate;
+  $\bigstar$ = true victim.
+  Each drone's shaded $95\%$ confidence ellipse
+  (\eqref{eq:pf_ellipse}) visualises its planar uncertainty; the upper-left
+  inset reports the mean ellipse area $\bar{A}$~\eqref{eq:pf_area} and the
+  mean pairwise IoU $\overline{\mathrm{IoU}}$~\eqref{eq:pf_iou_mean}.
+  Tightly overlapping ellipses near the victim indicate inter-drone consensus.}
   \label{fig:final}
 \end{figure}
 
@@ -1047,14 +1063,14 @@ radius is shown as a heat-map in Fig.~\ref{fig:heatmap}, which exposes the
 interaction between the two and confirms that the short-$r_c$ regime is the
 main failure mode.
 
-\begin{figure*}[tb]
+\begin{figure}[tb]
   \centering
-  \includegraphics[width=\textwidth]{figures_sweep/success_heatmap}
-  \caption{Mission success rate [\%] as a function of ARTVA noise
-  $\sigma_n$ (columns) and communication radius $r_c$ (rows), per fleet size
-  and workspace size.}
+  \includegraphics[width=\columnwidth]{figures_sweep/success_heatmap}
+  \caption{Mission success rate [\%] as a function of ARTVA noise $\sigma_n$
+  ($x$-axis) and communication radius $r_c$ ($y$-axis), for each fleet size
+  $N$ and workspace area.  Values are annotated inside each cell.}
   \label{fig:heatmap}
-\end{figure*}
+\end{figure}
 
 \subsubsection{Localization Accuracy and Estimate Consistency}
 
@@ -1132,11 +1148,13 @@ recruit \textsc{Support} partners or keep neighbours in range for
 cooperative updates when the team is sparse.  Adding drones mitigates it
 ($85.0\%\!\to\!94.2\%$ from three to five).
 
-Future directions include: studying victim depth estimation accuracy;
-modelling the cooperative fusion with each drone's \emph{estimate} of its
-neighbors' positions rather than their self-estimates; and replacing
-simulated UWB/LiDAR with realistic sensor noise models including
-multipath and terrain occlusion.
+Future directions include: analyzing how burial depth affects success rate
+and depth estimation accuracy (a swept factor not broken out in the
+marginal analysis of Table~\ref{tab:success}, whose calibration is shown
+in Fig.~\ref{fig:depth}); modelling the cooperative fusion with each
+drone's \emph{estimate} of its neighbors' positions rather than their
+self-estimates; and replacing simulated UWB/LiDAR with realistic sensor
+noise models including multipath and terrain occlusion.
 
 % ============================================================
 \begin{thebibliography}{9}

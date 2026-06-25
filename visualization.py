@@ -26,6 +26,7 @@ from typing import Dict, List
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 from matplotlib.colors import LightSource
 from mpl_toolkits.mplot3d import Axes3D          # noqa: F401
 from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
@@ -52,6 +53,9 @@ _BG_COLOR   = BG_DARK
 _GRID_COLOR = "#1e2730"
 _TEXT_COLOR = "#c9d1d9"
 _TRAIL_LEN  = 50
+
+# chi²(0.95, df=3) — soglia per l'ellissoide di confidenza 3D al 95%
+_K2_3DOF = 7.8147
 
 # RC params per i plot MPC — Computer Modern via LaTeX
 _LATEX_RC: dict = {
@@ -729,7 +733,7 @@ def plot_final_positions(
     ylim   = (all_pts[:, 1].min() - margin, all_pts[:, 1].max() + margin)
 
     with plt.rc_context(_LATEX_RC):
-        fig, ax = plt.subplots(figsize=(6, 6))
+        fig, ax = plt.subplots(figsize=(5.5, 5.0))
         fig.patch.set_facecolor("#ffffff")
         _mpc_style(ax)
 
@@ -737,10 +741,12 @@ def plot_final_positions(
             c  = COLORS.get(i, "#aaaaaa")
 
             # ── posizione reale e stimata IMDCL ───────────────────────────
-            ax.plot(*finals_real[i], "^", color=c, ms=11, mec="white", mew=0.9,
-                    zorder=7, label=f"$p_{{{i}}}$ reale")
-            ax.plot(*finals_est[i], "^", color=c, ms=11, mec="black", mew=1.0,
-                    zorder=6, label=f"$\\hat{{p}}_{{{i}}}$ IMDCL")
+            # reale: triangolo pieno con bordo nero
+            ax.plot(*finals_real[i], "^", color=c, ms=12,
+                    mec="black", mew=1.2, zorder=7)
+            # stimata: triangolo trasparente (solo bordo, colore drone)
+            ax.plot(*finals_est[i], "^", ms=12,
+                    mfc="none", mec=c, mew=1.8, zorder=6)
             ax.plot(
                 [finals_real[i][0], finals_est[i][0]],
                 [finals_real[i][1], finals_est[i][1]],
@@ -750,8 +756,7 @@ def plot_final_positions(
             # ── stima PF sorgente (senza correzione drift) ────────────────
             if i in source_ests:
                 src = source_ests[i]
-                ax.plot(*src, "D", color=c, ms=10, mec=c, mew=1.5,
-                        zorder=8, label=f"$\\hat{{\\theta}}^{{\\mathrm{{PF}}}}_{{{i}}}$")
+                ax.plot(*src, "D", color=c, ms=10, mec=c, mew=1.5, zorder=8)
 
                 # ellisse di confidenza 95% (covarianza 2×2 delle particelle)
                 if i in source_covs:
@@ -773,7 +778,7 @@ def plot_final_positions(
 
         # ── posizione reale vittima ────────────────────────────────────────
         ax.plot(*victim_xy, "*", color="crimson", ms=16,
-                mec="black", mew=0.6, zorder=9, label=r"$\theta$ (vittima)")
+                mec="black", mew=0.6, zorder=9)
 
         # ── annotazione metriche aggregate (coerenti con lo sweep) ──────────
         if not np.isnan(mean_area):
@@ -790,7 +795,25 @@ def plot_final_positions(
         ax.set_title(r"Final positions — PF source estimate (95\% confidence ellipse)",
                      fontweight="bold")
         ax.set_aspect("equal", adjustable="box")
-        ax.legend(loc="best", framealpha=0.85, fontsize=9)
+        _lkw = dict(linestyle="none", markersize=7)
+        leg_handles = [
+            mlines.Line2D([], [], marker="^", color="#888888",
+                          markeredgecolor="black", markeredgewidth=1.0,
+                          label=r"$p_i$ real", **_lkw),
+            mlines.Line2D([], [], marker="^", markerfacecolor="none",
+                          markeredgecolor="#888888", markeredgewidth=1.5,
+                          label=r"$\hat{p}_i$ est", **_lkw),
+            mlines.Line2D([], [], marker="D", color="#888888",
+                          markeredgecolor="#888888", markeredgewidth=1.2,
+                          label=r"$\hat{\theta}^\mathrm{PF}_i$", **_lkw),
+            mlines.Line2D([], [], marker="*", color="crimson",
+                          markeredgecolor="black", markeredgewidth=0.5,
+                          label=r"$\theta$ (victim)", **_lkw),
+        ]
+        ax.legend(handles=leg_handles, loc="best", framealpha=0.85,
+                  fontsize=8, ncol=2,
+                  handlelength=0.8, handletextpad=0.4,
+                  columnspacing=0.7, borderpad=0.4, labelspacing=0.25)
         fig.tight_layout()
     return fig
 
@@ -803,14 +826,16 @@ def plot_pf_evolution(
     terrain:  Terrain,
     artva:    ARTVASource,
     agents:   Dict[int, DroneAgent],
-    n_snaps:  int = 3,
+    n_snaps:  int = 4,
     drone_id: int = None,
 ) -> plt.Figure:
     """
     Griglia n_snaps pannelli 3D con patch di terreno, per mostrare la
-    concentrazione delle particelle nel tempo. Ogni pannello usa il volume
-    minimo che contiene il drone e la sua nuvola di particelle; l'opacità di
-    ogni particella cresce col suo peso.
+    concentrazione delle particelle nel tempo. Per n_snaps=4 usa layout 2×2;
+    altrimenti 1×n_snaps. Ogni pannello mostra:
+      - nuvola particelle (opacità ∝ peso)
+      - ellissoide di confidenza 3D al 95% (superficie semitrasparente + wireframe)
+      - annotazione delle 3 semi-quote dell'ellissoide
     """
     drone_ids = list(agents.keys())
     if drone_id is None:
@@ -845,28 +870,47 @@ def plot_pf_evolution(
         return parts[:, :3] - drift, w
 
     def _axis_limits(vals, margin=2.0, min_span=4.0):
-        """Range minimo che contiene `vals`, con margine e span minimo."""
         lo, hi = float(vals.min()), float(vals.max())
-        if hi - lo < min_span:                       # evita box degenere
+        if hi - lo < min_span:
             pad = (min_span - (hi - lo)) / 2.0
             lo, hi = lo - pad, hi + pad
         return lo - margin, hi + margin
 
-    cmap = plt.get_cmap("viridis")
-    ncols = len(snap_idx)
+    # Layout: 2×2 per n_snaps=4, altrimenti 1×n
+    nrows = 2 if n_snaps >= 4 else 1
+    ncols = 2 if n_snaps >= 4 else len(snap_idx)
+
     with plt.rc_context(_LATEX_RC):
-        fig = plt.figure(figsize=(4.7 * ncols, 5.0))
+        fig = plt.figure(figsize=(5.2 * ncols, 5.6 * nrows))
         fig.patch.set_facecolor("#ffffff")
 
         for col, step in enumerate(snap_idx):
-            ax = fig.add_subplot(1, ncols, col + 1, projection="3d")
+            ax = fig.add_subplot(nrows, ncols, col + 1, projection="3d")
             ax.set_facecolor("#f8f8f8")
 
             particles, weights = _world_particles(step)
             p_drone = ag.history[step][:3] if step < len(ag.history) else None
 
-            # ── Volume minimo: solo drone + nuvola di particelle (per pannello) ─
+            # ── Covarianza 3D pesata per l'ellissoide ─────────────────────
+            w_sum = weights / (weights.sum() + 1e-30)
+            mean_3d = np.average(particles, weights=w_sum, axis=0)
+            diff3    = particles - mean_3d
+            cov3     = (diff3 * w_sum[:, None]).T @ diff3
+            # Semi-assi dell'ellissoide di confidenza al 95% (chi²₃ = 7.8147)
+            try:
+                eigvals, eigvecs = np.linalg.eigh(cov3)
+                eigvals  = np.maximum(eigvals, 0.0)
+                semi_axes = np.sqrt(_K2_3DOF * eigvals)   # ordinati crescenti
+                ell_half  = np.sqrt(_K2_3DOF * np.maximum(np.diag(cov3), 0.0))
+                ell_ok    = True
+            except np.linalg.LinAlgError:
+                ell_ok = False
+                ell_half = np.zeros(3)
+
+            # ── Volume minimo: drone + particelle + bbox ellissoide + vittima ─
             box_pts = particles if p_drone is None else np.vstack([particles, p_drone])
+            box_pts = np.vstack([box_pts, mean_3d + ell_half, mean_3d - ell_half,
+                                 victim[:3].reshape(1, 3)])
             xl = _axis_limits(box_pts[:, 0])
             yl = _axis_limits(box_pts[:, 1])
             zl = _axis_limits(box_pts[:, 2])
@@ -877,56 +921,85 @@ def plot_pf_evolution(
             ys_t = np.linspace(max(yl[0], terrain.y_min), min(yl[1], terrain.y_max), res)
             XT, YT = np.meshgrid(xs_t, ys_t)
             ZT = terrain.z(XT.ravel(), YT.ravel()).reshape(res, res)
-            ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.30,
+            ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.25,
                             rcount=res, ccount=res, linewidth=0, zorder=1)
 
-            # Particelle: colore = peso normalizzato, opacità crescente col peso
+            # Particelle: colore fisso, solo opacità ∝ peso
             w_norm = weights / (weights.max() + 1e-30)
-            rgba = cmap(w_norm)
-            rgba[:, 3] = 0.12 + 0.88 * w_norm        # poco peso → più trasparente
+            rgba = np.ones((len(w_norm), 4)) * np.array([0.25, 0.55, 0.95, 1.0])
+            rgba[:, 3] = 0.08 + 0.82 * w_norm
             ax.scatter(particles[:, 0], particles[:, 1], particles[:, 2],
                        c=rgba, s=8, zorder=4, edgecolors="none", depthshade=False)
 
-            mean_est = np.average(particles, weights=weights, axis=0)
-            ax.scatter(*mean_est, color="orange", s=70, marker="D",
+            # ── Ellissoide 3D di confidenza 95% ───────────────────────────
+            if ell_ok:
+                nu, nv = 18, 26
+                u_ = np.linspace(0, np.pi, nu)
+                v_ = np.linspace(0, 2 * np.pi, nv)
+                U, V = np.meshgrid(u_, v_, indexing="ij")
+                sphere = np.stack([
+                    np.sin(U) * np.cos(V),
+                    np.sin(U) * np.sin(V),
+                    np.cos(U),
+                ], axis=-1)                                   # (nu, nv, 3)
+                # scala per semi-assi e ruota con gli autovettori
+                scaled = sphere * semi_axes[None, None, :]    # (nu, nv, 3)
+                pts = (scaled.reshape(-1, 3) @ eigvecs.T).reshape(nu, nv, 3)
+                Xe = mean_3d[0] + pts[:, :, 0]
+                Ye = mean_3d[1] + pts[:, :, 1]
+                Ze = mean_3d[2] + pts[:, :, 2]
+                ax.plot_surface(Xe, Ye, Ze, color="orange",
+                                alpha=0.12, linewidth=0, zorder=3)
+                ax.plot_wireframe(Xe, Ye, Ze, color="darkorange",
+                                  alpha=0.25, linewidth=0.5,
+                                  rstride=3, cstride=3, zorder=3)
+            # Stima media, vittima, drone
+            ax.scatter(*mean_3d, color="orange", s=80, marker="D",
                        edgecolors="black", linewidths=0.6, zorder=7,
                        label=r"$\hat{\theta}$")
-
-            ax.scatter(*victim, color="crimson", s=90, marker="*",
+            ax.scatter(*victim, color="crimson", s=100, marker="*",
                        edgecolors="black", linewidths=0.5, zorder=8,
                        label=r"$\theta$ (victim)")
-
             if p_drone is not None:
-                ax.scatter(*p_drone, color="royalblue", s=45, marker="^",
+                ax.scatter(*p_drone, color="royalblue", s=50, marker="^",
                            edgecolors="white", linewidths=0.6, zorder=6,
                            label="Drone")
 
             ax.set_xlim(*xl); ax.set_ylim(*yl); ax.set_zlim(*zl)
-            ax.set_title(rf"step {step - active[0]}",
-                         fontsize=12, fontweight="bold")
-            ax.set_xlabel("x [m]", fontsize=11, labelpad=6)
-            ax.set_ylabel("y [m]", fontsize=11, labelpad=6)
-            ax.set_zlabel("z [m]", fontsize=11, labelpad=6)
+
+            # Semi-quote ellissoide sopra il cubo, su una riga, font grande
+            # Testo in sovraimpressione nello spazio grigio in alto
+            ax.text2D(0.5, 0.97, rf"step {step - active[0]}",
+                      transform=ax.transAxes, ha="center", va="top",
+                      fontsize=22, fontweight="bold",
+                      bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                ec="none", alpha=0.6))
+            if ell_ok:
+                sa = semi_axes[::-1]
+                sa_line = (rf"$a_1$={sa[0]:.1f}  $a_2$={sa[1]:.1f}"
+                           rf"  $a_3$={sa[2]:.1f} m")
+                ax.text2D(0.5, 0.89, sa_line,
+                          transform=ax.transAxes, ha="center", va="top",
+                          fontsize=17,
+                          bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                    ec="none", alpha=0.6))
+
+            ax.set_xlabel("x [m]", fontsize=12, labelpad=6)
+            ax.set_ylabel("y [m]", fontsize=12, labelpad=6)
+            ax.set_zlabel("z [m]", fontsize=12, labelpad=6)
+            ax.xaxis.set_major_locator(plt.MaxNLocator(4))
+            ax.yaxis.set_major_locator(plt.MaxNLocator(4))
+            ax.zaxis.set_major_locator(plt.MaxNLocator(4))
             ax.tick_params(labelsize=9)
             ax.view_init(elev=20, azim=225)
 
-        # ── Colorbar orizzontale in basso ────────────────────────────────────
-        sm = plt.cm.ScalarMappable(norm=plt.Normalize(0, 1), cmap="viridis")
-        sm.set_array([])
-        cax = fig.add_axes([0.15, 0.05, 0.50, 0.028])
-        cbar = fig.colorbar(sm, cax=cax, orientation="horizontal")
-        cbar.set_label("Normalized weight", fontsize=11)
-        cbar.ax.tick_params(labelsize=9)
-
-        # ── Legenda a destra della colorbar ─────────────────────────────────
+        # ── Legenda ─────────────────────────────────────────────────────────
         handles, labels = fig.axes[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="lower right", ncol=1,
                    fontsize=11, framealpha=0.85,
                    bbox_to_anchor=(0.98, 0.02))
 
-        fig.suptitle(rf"PF particle cloud — Drone {drone_id}",
-                     fontsize=10, fontweight="bold")
-        fig.tight_layout(rect=[0, 0.12, 1, 0.97])
+        fig.tight_layout(rect=[0, 0.02, 1, 1.0])
     return fig
 
 

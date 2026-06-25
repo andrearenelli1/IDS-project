@@ -167,7 +167,7 @@ _setup_ieee_style()
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
-    fig, axes = plt.subplots(2, 3, figsize=(7.16, 4.8),
+    fig, axes = plt.subplots(2, 3, figsize=(6.0, 3.8),
                              constrained_layout=True)
     fig.suptitle(
         r"Success rate [\%] --- ARTVA noise $\sigma$ $\times$ comm.\ radius",
@@ -192,8 +192,10 @@ def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
             ax.set_xticklabels([NOISE_LABELS[n_] for n_ in sorted(NOISE_STDS)])
             ax.set_yticks(range(len(COMM_RADII)))
             ax.set_yticklabels([rf"{r}\,m" for r in sorted(COMM_RADII)])
-            ax.set_xlabel(r"Noise $\sigma$")
-            ax.set_ylabel(r"Comm.\ radius")
+            if row_i == len(AREAS) - 1:
+                ax.set_xlabel(r"ARTVA noise $\sigma_n$")
+            if col == 0:
+                ax.set_ylabel(r"Comm.\ radius")
             ax.set_title(rf"{n} drones --- {area}\,m", fontsize=9, fontweight="bold")
             ax.grid(False)
 
@@ -206,7 +208,6 @@ def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
                                 color="black" if v > 45 else "white",
                                 fontweight="bold")
 
-        plt.colorbar(im, ax=axes[:, col], shrink=0.6, label=r"Success [\%]")
 
     return fig
 
@@ -794,10 +795,10 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
     fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.6),
                              constrained_layout=True, sharey=True)
     fig.suptitle(
-        r"Inter-drone PF consensus --- mean pairwise IoU vs.\ mean 95\% ellipse area",
-        fontsize=10, fontweight="bold")
+        r"Inter-drone PF agreement --- mean pairwise IoU vs.\ mean 95\% ellipse area",
+        fontsize=13, fontweight="bold")
 
-    for ax, area in zip(axes, AREAS):
+    for idx, (ax, area) in enumerate(zip(axes, AREAS)):
         sub   = [r for r in valid if r["area"] == area]
         pts_f = [r for r in sub if r["found"]]
         pts_n = [r for r in sub if not r["found"]]
@@ -814,10 +815,83 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
 
         ax.set_yscale("log")
         ax.set_xlim(-3, 103)
-        ax.set_xlabel(r"Mean pairwise IoU [\%]")
-        ax.set_ylabel(r"Mean 95\% ellipse area [m$^2$]")
-        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
-        ax.legend(fontsize=6, loc="upper right", ncol=1)
+        ax.set_xlabel(r"Mean pairwise IoU [\%]", fontsize=11)
+        if idx == 0:
+            ax.set_ylabel(r"Mean 95\% ellipse area [m$^2$]", fontsize=11)
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=11, fontweight="bold")
+        ax.tick_params(labelsize=10)
+        ax.legend(fontsize=9, loc="upper right", ncol=1)
+
+    return fig
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Fig — Depth calibration: estimated depth vs true depth
+# ════════════════════════════════════════════════════════════════════════════
+
+def fig_depth_calibration(rows: list[dict]) -> plt.Figure:
+    """
+    Scatter estimated depth vs true burial depth (successful runs only).
+    Each panel is one workspace size. Includes identity line, per-bin median,
+    and marginal error distribution.
+    """
+    found = [r for r in rows
+             if r["found"]
+             and not math.isnan(r["depth_err"])
+             and not math.isnan(r["depth"])]
+    if not found:
+        return None
+
+    n_colors = {3: "#4e79a7", 4: "#59a14f", 5: "#e15759"}
+
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.4),
+                             constrained_layout=True, sharey=True)
+    fig.suptitle(
+        r"Depth estimation: estimated vs.\ true burial depth (successful runs)",
+        fontsize=10, fontweight="bold")
+
+    for ax, area in zip(axes, AREAS):
+        sub = [r for r in found if r["area"] == area]
+        if not sub:
+            continue
+
+        true_d = np.array([r["depth"] for r in sub])
+        est_d  = np.array([r["depth"] + r["depth_err"] for r in sub])
+
+        # scatter colored by fleet size
+        for n in sorted(n_colors):
+            mask = np.array([r["n"] == n for r in sub])
+            if mask.any():
+                ax.scatter(true_d[mask], est_d[mask],
+                           c=n_colors[n], s=8, alpha=0.35,
+                           edgecolors="none", label=rf"$N={n}$")
+
+        # identity line (perfect estimation)
+        lim = (0.5, 5.5)
+        ax.plot(lim, lim, "k--", lw=1.0, alpha=0.6, label="ideal")
+
+        # per-bin median line
+        bin_meds_x, bin_meds_y = [], []
+        for lo, hi, label in zip(DEPTH_BIN_EDGES, DEPTH_BIN_EDGES[1:],
+                                  DEPTH_BIN_LABELS):
+            pts = [(r["depth"], r["depth"] + r["depth_err"])
+                   for r in sub if lo <= r["depth"] < hi]
+            if pts:
+                bin_meds_x.append(median([p[0] for p in pts]))
+                bin_meds_y.append(median([p[1] for p in pts]))
+        if bin_meds_x:
+            ax.plot(bin_meds_x, bin_meds_y, "o-",
+                    color="black", ms=5, lw=1.2, label="bin median")
+
+        ax.set_xlim(*lim); ax.set_ylim(*lim)
+        ax.set_xlabel(r"True burial depth [m]", fontsize=10)
+        if area == AREAS[0]:
+            ax.set_ylabel(r"Estimated depth [m]", fontsize=10)
+        ax.set_title(rf"Workspace ${area}\times{area}$\,m",
+                     fontsize=10, fontweight="bold")
+        ax.tick_params(labelsize=9)
+        ax.legend(fontsize=8, loc="upper left", ncol=1)
+        ax.set_aspect("equal", adjustable="box")
 
     return fig
 
@@ -875,6 +949,7 @@ def main() -> None:
         "localization_errors":  fig_localization_errors(rows),
         "pf_uncertainty":       fig_pf_uncertainty(rows),
         "pf_ellipse_consensus": fig_pf_ellipse_consensus(rows),
+        "depth_calibration":    fig_depth_calibration(rows),
     }
 
     if args.save_figs:
