@@ -29,6 +29,7 @@ Uso
 ---
     python level_dataset.py              # esegue il top-up su results.csv
     python level_dataset.py --dry-run    # mostra solo quante run aggiungerebbe
+    python level_dataset.py --workers 8  # più paralleli
 Fai un backup prima (lo script lo fa in automatico in results.csv.bak).
 """
 
@@ -37,23 +38,43 @@ from __future__ import annotations
 import argparse
 import csv
 import itertools
+import multiprocessing as mp
 import shutil
+import traceback
 from collections import Counter
+
+from tqdm import tqdm
 
 import run_experiments as R
 
 OUT    = "results.csv"
-TARGET = 13                       # vittime/combinazione obiettivo per ogni cella
+TARGET = 13
 
 
 def _key(area, n, noise, acc, rc, ws_r, ws_c):
     return (int(area), int(n), float(noise), float(acc), int(rc), ws_r, ws_c)
 
 
+def _worker(job: tuple) -> tuple:
+    import matplotlib.pyplot as _plt
+    _plt.switch_backend("agg")
+    area, n, noise, acc, rc, ws = job
+    try:
+        metrics = R.run_one(area_size=area, n_drones=n, noise_std=noise,
+                            comm_radius=rc, acc_sim=acc, center_frac=ws)
+        return area, n, noise, acc, rc, ws, metrics, None
+    except Exception:
+        return area, n, noise, acc, rc, ws, None, traceback.format_exc()
+
+
 def main() -> None:
+    default_workers = min(mp.cpu_count() or 1, 4)
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--workers", type=int, default=default_workers,
+                    help="Processi paralleli (1 = sequenziale)")
     args = ap.parse_args()
 
     rows = list(csv.DictReader(open(args.out)))
@@ -65,29 +86,28 @@ def main() -> None:
     )
     max_id = max(int(r["run_id"]) for r in rows)
 
-    # Celle e combinazioni (90 = noise × acc × rc × ws)
     cells  = sorted({(int(float(r["area_size_m"])), int(r["n_drones"])) for r in rows})
     combos = list(itertools.product(
         R.ARTVA_NOISE_STDS, R.ACC_SIM_LIST, R.COMM_RADII, R.WORKSPACE_CENTERS))
 
-    # Calcola il piano (deficit per combinazione)
-    plan = []  # (area, n, noise, acc, rc, ws, ws_r, ws_c, deficit)
+    # Costruisce lista piatta di job (uno per run da aggiungere)
+    jobs = []
+    by_cell: Counter = Counter()
     for area, n in cells:
         for noise, acc, rc, ws in combos:
             ws_r, ws_c = R._ws_label(ws)
             k = _key(area, n, noise, acc, rc, ws_r, ws_c)
             deficit = max(0, TARGET - have.get(k, 0))
+            for _ in range(deficit):
+                jobs.append((area, n, noise, acc, rc, ws))
             if deficit:
-                plan.append((area, n, noise, acc, rc, ws, ws_r, ws_c, deficit))
+                by_cell[(area, n)] += deficit
 
-    total_new = sum(p[-1] for p in plan)
-    by_cell = Counter()
-    for area, n, *_, deficit in plan:
-        by_cell[(area, n)] += deficit
+    total_new = len(jobs)
     print(f"Run da aggiungere per cella (target {TARGET}/combo):")
     for (area, n), c in sorted(by_cell.items()):
         print(f"  area={area} n={n}: +{c}")
-    print(f"Totale nuove run: {total_new}")
+    print(f"Totale nuove run: {total_new}  |  workers: {args.workers}")
 
     if args.dry_run or total_new == 0:
         return
@@ -95,13 +115,23 @@ def main() -> None:
     shutil.copy(args.out, args.out + ".bak")
     print(f"Backup: {args.out}.bak")
 
+    # Pre-carica terreni nel processo principale (su Linux i fork ereditano la cache)
+    unique_terrain_keys = {(j[0], j[5]) for j in jobs}
+    print(f"Pre-caricamento {len(unique_terrain_keys)} configurazioni terreno...")
+    for area, ws in sorted(unique_terrain_keys, key=lambda x: (x[0], str(x[1]))):
+        R._load_terrain(area, center_frac=ws)
+
     done = 0
     with open(args.out, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=R.CSV_FIELDS)
-        for area, n, noise, acc, rc, ws, ws_r, ws_c, deficit in plan:
-            for _ in range(deficit):
-                metrics = R.run_one(area_size=area, n_drones=n, noise_std=noise,
-                                    comm_radius=rc, acc_sim=acc, center_frac=ws)
+        with tqdm(total=total_new, unit="run", dynamic_ncols=True) as bar:
+
+            def _record(area, n, noise, acc, rc, ws, metrics, tb) -> None:
+                nonlocal max_id, done
+                ws_r, ws_c = R._ws_label(ws)
+                if tb is not None:
+                    tqdm.write(f"ERRORE area={area} n={n}: {tb.splitlines()[-1]}")
+                    return
                 max_id += 1
                 w.writerow({
                     "run_id":           max_id,
@@ -116,8 +146,15 @@ def main() -> None:
                 })
                 f.flush()
                 done += 1
-                if done % 25 == 0:
-                    print(f"  {done}/{total_new} ...", flush=True)
+                bar.update(1)
+
+            if args.workers == 1:
+                for job in jobs:
+                    _record(*_worker(job))
+            else:
+                with mp.Pool(processes=args.workers) as pool:
+                    for result in pool.imap_unordered(_worker, jobs):
+                        _record(*result)
 
     print(f"Fatto: aggiunte {done} run a {args.out}")
 
