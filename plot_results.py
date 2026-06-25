@@ -119,9 +119,9 @@ DEPTH_BIN_COLORS = ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]
 DETECT_FACTORS   = [50.0, 100.0]
 DETECT_COLORS    = {50.0: "#e15759", 100.0: "#4e79a7"}
 DETECT_LABELS    = {50.0: "factor = 50", 100.0: "factor = 100"}
-ACC_SIM_LIST     = [0.05, 0.20]
-ACC_SIM_LABELS   = {0.05: r"$0.05\,\mathrm{m/s^2}$ (calm)", 0.20: r"$0.20\,\mathrm{m/s^2}$ (wind)"}
-ACC_SIM_COLORS   = {0.05: "#4e79a7", 0.20: "#e15759"}
+ACC_SIM_LIST     = [0.05, 0.10]
+ACC_SIM_LABELS   = {0.05: r"$0.05\,\mathrm{m/s^2}$ (calm)", 0.10: r"$0.10\,\mathrm{m/s^2}$ (windy)"}
+ACC_SIM_COLORS   = {0.05: "#4e79a7", 0.10: "#e15759"}
 
 
 def _setup_ieee_style() -> None:
