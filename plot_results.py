@@ -89,6 +89,20 @@ def groupby(rows: list[dict], *keys: str) -> dict:
     return dict(out)
 
 
+def apply_time_cutoff(rows: list[dict], timeout: float) -> int:
+    """
+    Riclassifica come fallite (found=False) le run trovate ma con tempo oltre
+    `timeout` [s]. Taglia gli outlier (es. soglia a 600 s invece dei 900 s).
+    Mutazione in-place; restituisce il numero di run riclassificate.
+    """
+    n = 0
+    for r in rows:
+        if r["found"] and not math.isnan(r["time"]) and r["time"] > timeout:
+            r["found"] = False
+            n += 1
+    return n
+
+
 def success_rate(rows: list[dict]) -> float:
     if not rows:
         return float("nan")
@@ -347,7 +361,10 @@ def fig_cdf(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 6 — Consenso: dispersione stime tra droni (pos_std_m)
+# Fig 6 — Dispersione inter-drone della stima a media ponderata (pos_std_m)
+#   pos_std_m = deviazione standard planimetrica, TRA i droni, delle loro stime
+#   PF a media ponderata θ̂ (drift-corrette). Misura quanto i droni sono in
+#   disaccordo sulla posizione della sorgente. Solo run riuscite.
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
@@ -362,7 +379,8 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
         gridspec_kw={"width_ratios": [2, 1]},
     )
     fig.suptitle(
-        r"Inter-drone estimate spread ($\sigma$ position) --- effect of noise",
+        r"Inter-drone std.\ of the weighted-mean estimate $\hat{\theta}$ "
+        r"(successful runs) --- effect of noise",
         fontsize=10, fontweight="bold")
 
     bp_kw = dict(patch_artist=True, notch=False, widths=0.55,
@@ -392,7 +410,7 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
         ax_bp.set_xticks(range(len(noise_sorted)))
         ax_bp.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted])
         ax_bp.set_xlabel(r"ARTVA noise $\sigma$")
-        ax_bp.set_ylabel(r"$\sigma$ position [m]")
+        ax_bp.set_ylabel(r"std.\ of $\hat{\theta}$ across drones [m]")
         ax_bp.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
 
         for pos, d in enumerate(data):
@@ -815,32 +833,64 @@ def main() -> None:
     )
     parser.add_argument("csv", nargs="?", default="results.csv",
                         help="File CSV prodotto da run_experiments.py")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="Soglia di tempo [s]: le run trovate ma con tempo "
+                             "superiore vengono considerate fallite (taglia gli "
+                             "outlier, es. 600). Default: nessun taglio (900 s).")
+    parser.add_argument("--save-figs", action="store_true",
+                        help="Salva le figure dello sweep come PNG in --fig-dir "
+                             "invece (oltre) a mostrarle.")
+    parser.add_argument("--fig-dir", default="figures_sweep",
+                        help="Cartella di output per --save-figs.")
+    parser.add_argument("--no-show", action="store_true",
+                        help="Non aprire le finestre (utile con --save-figs).")
     args = parser.parse_args()
 
     print(f"Caricamento {args.csv} ...")
     rows = load(args.csv)
     _noise_set = set(NOISE_STDS)
     rows    = [r for r in rows if r["noise"] in _noise_set]
+
+    if args.timeout is not None:
+        n_cut = apply_time_cutoff(rows, args.timeout)
+        print(f"  taglio a {args.timeout:.0f}s: {n_cut} run riclassificate come fallite")
+
     total   = len(rows)
     n_found = sum(r["found"] for r in rows)
     n_fail  = total - n_found
     print(f"  {total} run totali -- {n_found} successi ({100*n_found/total:.1f}pct) "
-          f"-- {n_fail} timeout")
+          f"-- {n_fail} falliti")
 
-    fig_success_heatmap(rows)
-    fig_time_boxplot(rows)
-    fig_comm_radius(rows)
-    fig_noise_success(rows)
-    fig_cdf(rows)
-    fig_consensus_spread(rows)
-    fig_time_vs_distance(rows)
-    fig_time_histograms(rows)
-    fig_acc_sim(rows)
-    fig_victim_map(rows)
-    fig_localization_errors(rows)
-    fig_pf_uncertainty(rows)
-    fig_pf_ellipse_consensus(rows)
-    plt.show()
+    figs = {
+        "success_heatmap":      fig_success_heatmap(rows),
+        "time_boxplot":         fig_time_boxplot(rows),
+        "comm_radius":          fig_comm_radius(rows),
+        "noise_success":        fig_noise_success(rows),
+        "cdf":                  fig_cdf(rows),
+        "consensus_spread":     fig_consensus_spread(rows),
+        "time_vs_distance":     fig_time_vs_distance(rows),
+        "time_histograms":      fig_time_histograms(rows),
+        "acc_sim":              fig_acc_sim(rows),
+        "victim_map":           fig_victim_map(rows),
+        "localization_errors":  fig_localization_errors(rows),
+        "pf_uncertainty":       fig_pf_uncertainty(rows),
+        "pf_ellipse_consensus": fig_pf_ellipse_consensus(rows),
+    }
+
+    if args.save_figs:
+        from pathlib import Path
+        fig_dir = Path(args.fig_dir)
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        for name, fig in figs.items():
+            if fig is None:
+                continue
+            out = fig_dir / f"{name}.png"
+            fig.savefig(out, dpi=200, bbox_inches="tight")
+            print(f"  Saved: {out}")
+        print(f"Figure salvate in: {fig_dir}")
+
+    if not args.no_show:
+        plt.show()
 
 
 if __name__ == "__main__":

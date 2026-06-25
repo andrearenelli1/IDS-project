@@ -488,7 +488,7 @@ def plot_mpc_trajectories_3d(
         ax.scatter(*artva._theta, marker="*", color="crimson", s=220,
                    zorder=9, edgecolors="black", linewidths=0.4, label="Victim")
 
-        ax.view_init(elev=25, azim=225)
+        ax.view_init(elev=25, azim=45)
         ax.set_xlabel(r"$x$ [m]", labelpad=6, fontsize=17)
         ax.set_ylabel(r"$y$ [m]", labelpad=6, fontsize=17)
         ax.set_zlabel(r"$z$ [m]", labelpad=6, fontsize=17)
@@ -740,7 +740,7 @@ def plot_final_positions(
             ax.plot(*finals_real[i], "^", color=c, ms=11, mec="white", mew=0.9,
                     zorder=7, label=f"$p_{{{i}}}$ reale")
             ax.plot(*finals_est[i], "^", color=c, ms=11, mec="black", mew=1.0,
-                    alpha=0.55, zorder=6, label=f"$\\hat{{p}}_{{{i}}}$ IMDCL")
+                    zorder=6, label=f"$\\hat{{p}}_{{{i}}}$ IMDCL")
             ax.plot(
                 [finals_real[i][0], finals_est[i][0]],
                 [finals_real[i][1], finals_est[i][1]],
@@ -807,8 +807,10 @@ def plot_pf_evolution(
     drone_id: int = None,
 ) -> plt.Figure:
     """
-    Griglia n_snaps pannelli 3D con range assi fissi e patch di terreno,
-    per mostrare la concentrazione delle particelle nel tempo.
+    Griglia n_snaps pannelli 3D con patch di terreno, per mostrare la
+    concentrazione delle particelle nel tempo. Ogni pannello usa il volume
+    minimo che contiene il drone e la sua nuvola di particelle; l'opacità di
+    ogni particella cresce col suo peso.
     """
     drone_ids = list(agents.keys())
     if drone_id is None:
@@ -842,78 +844,85 @@ def plot_pf_evolution(
             drift = ag.est_history[step][:3] - ag.history[step][:3]
         return parts[:, :3] - drift, w
 
-    # ── Range fissi: bounding box di tutte le particelle + vittima ──────────
-    all_parts = np.vstack([_world_particles(k)[0] for k in snap_idx])
-    margin = 5.0
-    xl = (all_parts[:, 0].min() - margin, all_parts[:, 0].max() + margin)
-    yl = (all_parts[:, 1].min() - margin, all_parts[:, 1].max() + margin)
-    zl = (min(all_parts[:, 2].min(), victim[2]) - margin,
-          max(all_parts[:, 2].max(), victim[2]) + margin)
+    def _axis_limits(vals, margin=2.0, min_span=4.0):
+        """Range minimo che contiene `vals`, con margine e span minimo."""
+        lo, hi = float(vals.min()), float(vals.max())
+        if hi - lo < min_span:                       # evita box degenere
+            pad = (min_span - (hi - lo)) / 2.0
+            lo, hi = lo - pad, hi + pad
+        return lo - margin, hi + margin
 
-    # ── Superficie del terreno nella patch ──────────────────────────────────
-    res = 20
-    xs_t = np.linspace(max(xl[0], terrain.x_min), min(xl[1], terrain.x_max), res)
-    ys_t = np.linspace(max(yl[0], terrain.y_min), min(yl[1], terrain.y_max), res)
-    XT, YT = np.meshgrid(xs_t, ys_t)
-    ZT = terrain.z(XT.ravel(), YT.ravel()).reshape(res, res)
-
+    cmap = plt.get_cmap("viridis")
     ncols = len(snap_idx)
     with plt.rc_context(_LATEX_RC):
-        fig = plt.figure(figsize=(4.5 * ncols, 4.6))
+        fig = plt.figure(figsize=(4.7 * ncols, 5.0))
         fig.patch.set_facecolor("#ffffff")
 
         for col, step in enumerate(snap_idx):
             ax = fig.add_subplot(1, ncols, col + 1, projection="3d")
             ax.set_facecolor("#f8f8f8")
 
-            # Terreno
-            ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.35,
+            particles, weights = _world_particles(step)
+            p_drone = ag.history[step][:3] if step < len(ag.history) else None
+
+            # ── Volume minimo: solo drone + nuvola di particelle (per pannello) ─
+            box_pts = particles if p_drone is None else np.vstack([particles, p_drone])
+            xl = _axis_limits(box_pts[:, 0])
+            yl = _axis_limits(box_pts[:, 1])
+            zl = _axis_limits(box_pts[:, 2])
+
+            # Terreno entro il box del pannello
+            res  = 20
+            xs_t = np.linspace(max(xl[0], terrain.x_min), min(xl[1], terrain.x_max), res)
+            ys_t = np.linspace(max(yl[0], terrain.y_min), min(yl[1], terrain.y_max), res)
+            XT, YT = np.meshgrid(xs_t, ys_t)
+            ZT = terrain.z(XT.ravel(), YT.ravel()).reshape(res, res)
+            ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.30,
                             rcount=res, ccount=res, linewidth=0, zorder=1)
 
-            particles, weights = _world_particles(step)
+            # Particelle: colore = peso normalizzato, opacità crescente col peso
             w_norm = weights / (weights.max() + 1e-30)
-
-            sc = ax.scatter(
-                particles[:, 0], particles[:, 1], particles[:, 2],
-                c=w_norm, cmap="viridis", s=6, alpha=0.7,
-                vmin=0, vmax=1, zorder=4,
-            )
+            rgba = cmap(w_norm)
+            rgba[:, 3] = 0.12 + 0.88 * w_norm        # poco peso → più trasparente
+            ax.scatter(particles[:, 0], particles[:, 1], particles[:, 2],
+                       c=rgba, s=8, zorder=4, edgecolors="none", depthshade=False)
 
             mean_est = np.average(particles, weights=weights, axis=0)
-            ax.scatter(*mean_est, color="orange", s=55, marker="D",
-                       edgecolors="black", linewidths=0.5, zorder=7,
+            ax.scatter(*mean_est, color="orange", s=70, marker="D",
+                       edgecolors="black", linewidths=0.6, zorder=7,
                        label=r"$\hat{\theta}$")
 
-            ax.scatter(*victim, color="crimson", s=70, marker="*",
-                       edgecolors="black", linewidths=0.4, zorder=8,
+            ax.scatter(*victim, color="crimson", s=90, marker="*",
+                       edgecolors="black", linewidths=0.5, zorder=8,
                        label=r"$\theta$ (victim)")
 
-            if step < len(ag.history):
-                p_drone = ag.history[step][:3]
-                ax.scatter(*p_drone, color="royalblue", s=35, marker="^",
-                           edgecolors="white", linewidths=0.5, zorder=6,
+            if p_drone is not None:
+                ax.scatter(*p_drone, color="royalblue", s=45, marker="^",
+                           edgecolors="white", linewidths=0.6, zorder=6,
                            label="Drone")
 
             ax.set_xlim(*xl); ax.set_ylim(*yl); ax.set_zlim(*zl)
             ax.set_title(rf"step {step - active[0]}",
-                         fontsize=9, fontweight="bold")
-            ax.set_xlabel("x [m]", fontsize=7, labelpad=2)
-            ax.set_ylabel("y [m]", fontsize=7, labelpad=2)
-            ax.set_zlabel("z [m]", fontsize=7, labelpad=2)
-            ax.tick_params(labelsize=6)
+                         fontsize=12, fontweight="bold")
+            ax.set_xlabel("x [m]", fontsize=11, labelpad=6)
+            ax.set_ylabel("y [m]", fontsize=11, labelpad=6)
+            ax.set_zlabel("z [m]", fontsize=11, labelpad=6)
+            ax.tick_params(labelsize=9)
             ax.view_init(elev=20, azim=225)
 
         # ── Colorbar orizzontale in basso ────────────────────────────────────
-        cax = fig.add_axes([0.15, 0.04, 0.50, 0.025])
-        cbar = fig.colorbar(sc, cax=cax, orientation="horizontal")
-        cbar.set_label("Normalized weight", fontsize=8)
-        cbar.ax.tick_params(labelsize=7)
+        sm = plt.cm.ScalarMappable(norm=plt.Normalize(0, 1), cmap="viridis")
+        sm.set_array([])
+        cax = fig.add_axes([0.15, 0.05, 0.50, 0.028])
+        cbar = fig.colorbar(sm, cax=cax, orientation="horizontal")
+        cbar.set_label("Normalized weight", fontsize=11)
+        cbar.ax.tick_params(labelsize=9)
 
         # ── Legenda a destra della colorbar ─────────────────────────────────
         handles, labels = fig.axes[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="lower right", ncol=1,
-                   fontsize=8, framealpha=0.85,
-                   bbox_to_anchor=(0.98, 0.01))
+                   fontsize=11, framealpha=0.85,
+                   bbox_to_anchor=(0.98, 0.02))
 
         fig.suptitle(rf"PF particle cloud — Drone {drone_id}",
                      fontsize=10, fontweight="bold")

@@ -57,11 +57,14 @@ controller, with Extremum Seeking guiding it up the signal gradient and
 a distributed Particle Filter fusing every nearby measurement into a
 sharp 3-D victim estimate.
 %
-The system is evaluated through a parametric sweep on real alpine
-terrain, spanning fleet size, ARTVA noise, communication radius, and
+The system is evaluated through a parametric sweep of $7020$ runs on real
+alpine terrain, spanning fleet size, ARTVA noise, communication radius, and
 burial depth, assessing not only the localization error but also the
 inter-drone consistency of the distributed estimate via confidence-ellipse
-metrics.
+metrics.  It attains a $90.3\%$ mission success rate with a median planar
+localization error of $0.63$\,m, and---thanks to adaptive thresholds---its
+performance is essentially invariant to the ARTVA noise level across three
+decades.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -838,7 +841,7 @@ ARTVA noise $\sigma_n$   & $\{10^{-7}, 10^{-6}, 10^{-5}\}$ \\
 Process noise $\sigma_a$ & $\{0.05, 0.10\}$\,m/s$^2$ \\
 Comm.\ radius $r_c$      & $\{25, 60, 120\}$\,m \\
 Terrain patches          & 5 distinct DEM tiles \\
-Victim positions         & 3 random per combination \\
+Victim positions         & 13 random per combination \\
 Burial depth             & random, $\mathcal{U}[1, 5]$\,m \\
 \bottomrule
 \end{tabular}
@@ -846,87 +849,114 @@ Burial depth             & random, $\mathcal{U}[1, 5]$\,m \\
 
 Each run ends when the team reaches the \textsc{Stop} configuration, when a
 \textsc{Stop} drone's support call expires (the recruitment timeout being
-always awaited), or after a 900\,s timeout; in every case a final
+always awaited), or after a 900\,s simulation budget; in every case a final
 refinement orbit (Sec.~\ref{sec:fsm}) precedes the halt.  A run is counted
-as a success according to the drift-corrected confidence-ellipse criterion
-of Sec.~\ref{sec:pf} (victim contained in the $95\%$ ellipse with area
-$\le A_{\max}$).
+as a success when it satisfies the drift-corrected confidence-ellipse
+criterion of Sec.~\ref{sec:pf} (victim contained in the $95\%$ ellipse with
+area $\le A_{\max}$) \emph{and} delivers it within $600$\,s.  We adopt this
+$600$\,s analysis cutoff---well below the $900$\,s simulation budget---to be
+conservative, discarding slow outliers as operational failures (a victim
+located too late offers little survival benefit).
 
-\subsection{Mission Success Rate}
+\subsection{Qualitative Behaviour on an Example Mission}
+\label{sec:example}
 
-\begin{table}[tb]
-  \caption{Overall mission success rate by fleet size}
-  \label{tab:success}
+Before the aggregate statistics, we walk through a single representative
+mission to illustrate the full pipeline end to end.  The run uses a
+deliberately demanding configuration:
+\begin{center}\small\ttfamily
+-{}-n 4 -{}-area 200 -{}-noise 1e-5 -{}-rc 50\\
+-{}-victim-x 180 -{}-victim-y 110 -{}-victim-depth 4.2\\
+-{}-ws 0.7,0.7 -{}-acc-noise 0.1
+\end{center}
+i.e.\ four drones over a $200\times200$\,m alpine patch, the victim buried
+$4.2$\,m deep near a corner of the workspace, the \emph{highest} ARTVA noise
+level ($\sigma_n = 10^{-5}$), a short communication radius ($r_c = 50$\,m),
+and elevated motion noise ($\sigma_a = 0.1$\,m/s$^2$, ``windy''), over a
+$300$\,s horizon.
+
+\paragraph{Search and tracking}
+The top-view trajectories (Fig.~\ref{fig:topview}) and their 3-D rendering
+over the DEM (Fig.~\ref{fig:traj3d}) show the three mission phases: the
+drones first sweep their assigned vertical strips with the adaptive
+lawnmower (dashed), the first to cross $\tau_{\text{detect}}$ switches to
+the Extremum-Seeking spiral that climbs the signal gradient toward the
+source (solid), and the recruited partners converge on the burial area.
+In 3-D the real trajectory (solid) and the IMDCL self-estimate (dashed)
+remain close, confirming that cooperative localization keeps the fleet
+geometry coherent despite GPS denial.
+
+\begin{figure}[h]
   \centering
-  \small
-  \begin{tabular}{ccc}
-    \toprule
-    $N$ & Runs & Success \\
-    \midrule
-    3   & --- & --- \\
-    4   & --- & --- \\
-    5   & --- & --- \\
-    \midrule
-    All & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+  \includegraphics[width=0.7\columnwidth]{figures/trajectories_3d_view}
+  \caption{3-D trajectories over the DEM patch for the example mission:
+  real path (solid) vs.\ IMDCL self-estimate (dashed), victim marked with a
+  star.}
+  \label{fig:traj3d}
+\end{figure}
 
-Table~\ref{tab:success} will report success rates by fleet size, isolating
-the effect of adding drones on the probability that at least one reaches
-the victim and others can be recruited as \textsc{Support}.
-\emph{(Results pending the updated parametric sweep.)}
+\paragraph{Signal and state transitions}
+Fig.~\ref{fig:signal} plots the (smoothed) ARTVA signal of each drone
+against the dynamic thresholds.  Each FSM transition coincides with a
+threshold crossing: \textsc{Search}$\to$\textsc{Track} at
+$\tau_{\text{detect}}$ and \textsc{Track}/\textsc{Support}$\to$\textsc{Stop}
+at $\tau_{\text{stop}}$.  Even at the highest noise level the smoothing
+window and the physics-based floor keep the transitions clean.
 
-\subsection{Effect of Noise Level}
+\paragraph{Flight control}
+The MPC tracks the mission waypoints within the actuation limits:
+Fig.~\ref{fig:mpcinputs} shows the commanded accelerations and the
+resulting speed profiles staying inside the $a_{\max}=6$\,m/s$^2$ and
+$v_{\max}=3$\,m/s bounds, while Fig.~\ref{fig:altitude} shows the height
+above ground held near the $1.5$\,m AGL set-point as the drones fly over
+the uneven terrain.
 
-\begin{table}[tb]
-  \caption{Success rate by noise level}
-  \label{tab:noise}
+\begin{figure}[h]
   \centering
-  \small
-  \begin{tabular}{ccc}
-    \toprule
-    $\sigma_n$ & Runs & Success \\
-    \midrule
-    $10^{-7}$ & --- & --- \\
-    $10^{-6}$ & --- & --- \\
-    $10^{-5}$ & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+  \includegraphics[width=\columnwidth]{figures/mpc_ci_vp}
+  \caption{MPC control inputs (accelerations) and velocity profiles for the
+  example mission; both remain within the actuation and speed bounds.}
+  \label{fig:mpcinputs}
+\end{figure}
 
-Table~\ref{tab:noise} will report success rate across three decades of
-noise, to verify whether the adaptive thresholds decouple mission
-performance from the noise level.
-\emph{(Results pending the updated parametric sweep.)}
-
-\subsection{Effect of Communication Radius}
-
-\begin{table}[tb]
-  \caption{Success rate by communication radius}
-  \label{tab:rc}
+\begin{figure}[h]
   \centering
-  \small
-  \begin{tabular}{ccc}
-    \toprule
-    $r_c$ [m] & Runs & Success \\
-    \midrule
-    25  & --- & --- \\
-    60  & --- & --- \\
-    120 & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+  \includegraphics[width=\columnwidth]{figures/altitude_agl}
+  \caption{Height above ground over time: the controller keeps each drone
+  near the $1.5$\,m AGL set-point while following the terrain profile.}
+  \label{fig:altitude}
+\end{figure}
 
-Table~\ref{tab:rc} will quantify the effect of the communication radius:
-a larger $r_c$ is expected to enable cooperative PF updates from more
-diverse viewpoints, improving both IMDCL accuracy and particle-filter
-convergence, whereas at $r_c = 25$\,m some missions may fail because no
-neighbor is reachable for UWB cooperative updates during the lawnmower
-phase.
-\emph{(Results pending the updated parametric sweep.)}
+\paragraph{Cooperative localization}
+Fig.~\ref{fig:imdcl} reports the IMDCL self-localization error over time:
+the error grows during open-loop inertial integration and drops at each
+cooperative update, i.e.\ whenever a neighbour comes within $r_c$ and a UWB
+relative measurement is fused, keeping the drift bounded throughout.
 
-\begin{figure}[tb]
+\paragraph{Source estimation}
+Fig.~\ref{fig:pfevo} shows the particle cloud of the tracking drone at three
+instants: starting from the wide polar shell consistent with the first
+measurement, it collapses onto the burial point as own and cooperative
+measurements accumulate (particle opacity grows with weight).  The final
+outcome is summarised in Fig.~\ref{fig:final}: the drift-corrected source
+estimates and their $95\%$ confidence ellipses, with the inset reporting the
+mean ellipse area $\bar{A}$ and the mean pairwise IoU.  Tightly overlapping
+ellipses around the true victim indicate that the team reaches a confident,
+mutually consistent estimate even in this high-noise, windy, short-range
+configuration.
+
+\begin{figure*}[h]
+  \centering
+  \includegraphics[width=\textwidth]{figures/pf_evolution}
+  \caption{Particle-cloud evolution of the tracking drone (drift-corrected
+  to the world frame) at three snapshots.  Colour and opacity encode the
+  normalized particle weight; the cloud contracts from the initial polar
+  shell onto the burial point.  $\hat{\theta}$ = weighted-mean estimate,
+  $\theta$ = true victim.}
+  \label{fig:pfevo}
+\end{figure*}
+
+\begin{figure}[h]
   \centering
   \includegraphics[width=\columnwidth]{figures/artva_signal}
   \caption{ARTVA signal (smoothed) over time for each drone.
@@ -936,7 +966,7 @@ phase.
   \label{fig:signal}
 \end{figure}
 
-\begin{figure}[tb]
+\begin{figure}[h]
   \centering
   \includegraphics[width=\columnwidth]{figures/final_positions}
   \caption{Final drone positions and PF source estimate (diamond) vs.\
@@ -948,23 +978,133 @@ phase.
   \label{fig:final}
 \end{figure}
 
-\subsection{Localization Accuracy and Search Time}
+\subsection{Parametric Sweep}
+\label{sec:sweep}
 
-Among successful runs we report the median search time and the median
-2-D localization error of the drift-corrected PF estimate, against the
-operational requirement for rescuers to probe the exact burial point.
-\emph{(Quantitative values pending the updated parametric sweep.)}
+We now turn to the aggregate behaviour over the full parametric sweep of
+Sec.~\ref{sec:results} (Experimental Setup), comprising $7020$ runs
+balanced across all factors.
 
-Beyond the point-estimate error, we assess the \emph{consistency} of the
-distributed estimate through the confidence-ellipse metrics of
-Section~\ref{sec:pf}.  The mean ellipse area $\bar{A}$~\eqref{eq:pf_area}
-quantifies how concentrated each drone's particle cloud is, while the
-mean pairwise Intersection over Union $\overline{\mathrm{IoU}}$~\eqref{eq:pf_iou_mean}
-quantifies inter-drone agreement.  As illustrated in
-Fig.~\ref{fig:final}, the drones recruited near the victim produce
-tightly overlapping ellipses (high IoU), confirming that cooperative
-fusion~\eqref{eq:pf_fusion} drives the team toward a shared, confident
-estimate rather than merely toward coincidentally close centroids.
+\subsubsection{Mission Success Rate}
+
+Rather than one table per factor, we report the marginal success rate for
+every swept parameter in a single compact table (Table~\ref{tab:success}),
+each level marginalized over all other factors.  Over the $7020$ runs the
+overall success rate is $90.3\%$.  The main drivers are clearly readable:
+adding drones helps ($85.0\%\!\to\!94.2\%$ from $N=3$ to $N=5$, as more
+agents raise the chance that at least one detects the beacon and that two
+\textsc{Support} partners can be recruited); a larger communication radius
+helps the most ($81.0\%$ at $r_c=25$\,m vs.\ $96.1\%$ at $120$\,m, since
+short range starves the cooperative IMDCL/PF updates); and the larger
+$200$\,m workspace ($83.9\%$ vs.\ $96.7\%$ at $100$\,m) and the higher
+motion noise $\sigma_a=0.10$\,m/s$^2$ ($85.7\%$ vs.\ $94.9\%$) are the two
+adverse factors.  Crucially, performance is \emph{near-invariant to the
+ARTVA noise level} ($90.0\!-\!90.7\%$ across three decades), confirming that
+the adaptive thresholds with the physics-based floor decouple mission
+success from sensor noise.
+
+\begin{table}[h]
+  \caption{Marginal mission success rate by swept parameter
+  (success $=$ drift-corrected $95\%$ ellipse contains the victim with area
+  $\le A_{\max}$, within the $600$\,s cutoff).}
+  \label{tab:success}
+  \centering
+  \small
+  \begin{tabular}{llcc}
+    \toprule
+    Factor & Level & Runs & Success [\%] \\
+    \midrule
+    \multirow{3}{*}{Fleet size $N$}
+        & 3        & 2340 & 85.0 \\
+        & 4        & 2340 & 91.7 \\
+        & 5        & 2340 & 94.2 \\
+    \midrule
+    \multirow{2}{*}{Workspace}
+        & $100$\,m & 3510 & 96.7 \\
+        & $200$\,m & 3510 & 83.9 \\
+    \midrule
+    \multirow{3}{*}{ARTVA noise $\sigma_n$}
+        & $10^{-7}$ & 2340 & 90.1 \\
+        & $10^{-6}$ & 2340 & 90.7 \\
+        & $10^{-5}$ & 2340 & 90.0 \\
+    \midrule
+    \multirow{2}{*}{Motion noise $\sigma_a$}
+        & $0.05$ & 3510 & 94.9 \\
+        & $0.10$ & 3510 & 85.7 \\
+    \midrule
+    \multirow{3}{*}{Comm.\ radius $r_c$}
+        & $25$\,m  & 2340 & 81.0 \\
+        & $60$\,m  & 2340 & 93.8 \\
+        & $120$\,m & 2340 & 96.1 \\
+    \midrule
+    Overall & & 7020 & 90.3 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The success rate as a joint function of ARTVA noise and communication
+radius is shown as a heat-map in Fig.~\ref{fig:heatmap}, which exposes the
+interaction between the two and confirms that the short-$r_c$ regime is the
+main failure mode.
+
+\begin{figure*}[tb]
+  \centering
+  \includegraphics[width=\textwidth]{figures_sweep/success_heatmap}
+  \caption{Mission success rate [\%] as a function of ARTVA noise
+  $\sigma_n$ (columns) and communication radius $r_c$ (rows), per fleet size
+  and workspace size.}
+  \label{fig:heatmap}
+\end{figure*}
+
+\subsubsection{Localization Accuracy and Estimate Consistency}
+
+Table~\ref{tab:accuracy} summarises, over the successful runs, both the
+\emph{accuracy} of the delivered estimate (median 2-D and depth error of the
+drift-corrected estimate, and median search time) and its \emph{consistency}
+through the confidence-ellipse metrics of Sec.~\ref{sec:pf}: the mean $95\%$
+ellipse area $\bar{A}$~\eqref{eq:pf_area} (intra-drone confidence) and the
+mean pairwise IoU $\overline{\mathrm{IoU}}$~\eqref{eq:pf_iou_mean}
+(inter-drone agreement).  The median planar error is $0.63$\,m---well within
+the operational requirement and far below the $A_{\max}$ acceptance
+radius---with a median depth error of $1.18$\,m (depth being the
+hardest-observed component) and a median search time of $148$\,s.  The PF is
+both confident and consistent: a median ellipse area of $27.7$\,m$^2$
+(equivalent radius $\approx 3$\,m) and a median pairwise IoU of $80\%$.
+
+\begin{table}[h]
+  \caption{Localization accuracy and estimate consistency over successful
+  runs (median unless noted).}
+  \label{tab:accuracy}
+  \centering
+  \small
+  \begin{tabular}{lc}
+    \toprule
+    Metric & Value \\
+    \midrule
+    2-D localization error [m]            & 0.63 \\
+    Depth error [m]                       & 1.18 \\
+    Search time [s]                       & 148 \\
+    Mean $95\%$ ellipse area $\bar{A}$ [m$^2$] & 27.7 \\
+    Mean pairwise IoU $\overline{\mathrm{IoU}}$ [\%] & 80 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The accuracy/consistency trade-off across runs is best seen in
+Fig.~\ref{fig:consensus}, which plots, for each run, the mean pairwise IoU
+against the mean ellipse area: the desirable regime is the bottom-right
+(small, mutually overlapping ellipses), where successful runs cluster, while
+failures spread toward large, disjoint ellipses.  This confirms that
+cooperative fusion~\eqref{eq:pf_fusion} drives the team toward a shared,
+confident estimate rather than toward coincidentally close centroids.
+
+\begin{figure}[tb]
+  \centering
+  \includegraphics[width=\columnwidth]{figures_sweep/pf_ellipse_consensus}
+  \caption{Inter-drone PF consensus: mean pairwise IoU vs.\ mean $95\%$
+  ellipse area, one point per run (filled $=$ success, hollow $=$ failure).}
+  \label{fig:consensus}
+\end{figure}
 
 % ============================================================
 \section{Conclusions}
@@ -980,12 +1120,17 @@ localization.  Success is assessed on the distributed PF estimate
 itself---through the drift-corrected confidence ellipse---so that a
 single drone suffices to localize the victim, and the inter-drone
 consistency of the estimate is quantified via the ellipse area and the
-pairwise IoU.  Quantitative success rates and localization accuracy will
-be reported from the updated parametric sweep.
+pairwise IoU.  Over a $7020$-run parametric sweep the system achieves a
+$90.3\%$ success rate with a median planar localization error of
+$0.63$\,m, while being essentially invariant to the ARTVA noise level
+across three decades.
 
-A known failure mode is the inability to recruit \textsc{Support}
-partners when the fleet is small and the drones scatter; a larger fleet
-is expected to mitigate it.
+The dominant adverse factors are a short communication radius
+($81.0\%$ at $r_c=25$\,m vs.\ $96.1\%$ at $120$\,m) and the larger
+$200$\,m workspace, both traceable to the same cause: the inability to
+recruit \textsc{Support} partners or keep neighbours in range for
+cooperative updates when the team is sparse.  Adding drones mitigates it
+($85.0\%\!\to\!94.2\%$ from three to five).
 
 Future directions include: studying victim depth estimation accuracy;
 modelling the cooperative fusion with each drone's \emph{estimate} of its
