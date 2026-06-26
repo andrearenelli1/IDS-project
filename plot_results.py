@@ -336,7 +336,7 @@ def fig_cdf(rows: list[dict]) -> plt.Figure:
     fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
                              constrained_layout=True, sharey=True)
     fig.suptitle(r"CDF of search time --- cumulative distribution",
-                 fontsize=10, fontweight="bold")
+                 fontsize=13, fontweight="bold")
 
     for ax, area in zip(axes, AREAS):
         for n, color in zip(N_DRONES_LIST, PALETTE):
@@ -350,12 +350,13 @@ def fig_cdf(rows: list[dict]) -> plt.Figure:
 
         ax.axhline(90, color="grey", lw=0.8, ls="--", alpha=0.6)
         ax.text(ax.get_xlim()[1] if ax.get_xlim()[1] < 900 else 860,
-                91, r"90\%", fontsize=7, color="grey")
+                91, r"90\%", fontsize=10, color="grey")
 
-        ax.set_xlabel(r"Search time [s]")
-        ax.set_ylabel(r"CDF [\%]")
-        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=9, fontweight="bold")
-        ax.legend()
+        ax.set_xlabel(r"Search time [s]", fontsize=11)
+        ax.set_ylabel(r"CDF [\%]", fontsize=11)
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=12, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=10)
+        ax.legend(fontsize=9)
         ax.set_ylim(0, 105)
 
     return fig
@@ -940,7 +941,7 @@ def main() -> None:
         "time_boxplot":         fig_time_boxplot(rows),
         "comm_radius":          fig_comm_radius(rows),
         "noise_success":        fig_noise_success(rows),
-        "cdf":                  fig_cdf(rows),
+        "search_time_cdf":      fig_cdf(rows),
         "consensus_spread":     fig_consensus_spread(rows),
         "time_vs_distance":     fig_time_vs_distance(rows),
         "time_histograms":      fig_time_histograms(rows),

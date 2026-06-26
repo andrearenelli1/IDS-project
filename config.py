@@ -150,7 +150,7 @@ FINAL_ORBIT_N_WAYPOINTS = 6  # waypoint sul cerchio: l'orbita finisce quando
 # ============================================================================
 # Visualizzazione
 # ============================================================================
-ANIM_SPEED = 10.0   # fattore di accelerazione animazione (1.0 = tempo reale)
+ANIM_SPEED = 5.0   # fattore di accelerazione animazione (1.0 = tempo reale)
 COLORS = {i: c for i, c in enumerate([
     "#e63946", "#2a9d8f", "#e9c46a", "#a8dadc",
     "#f4a261", "#6a4c93", "#1982c4", "#8ac926",

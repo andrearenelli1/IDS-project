@@ -87,6 +87,14 @@ def main() -> None:
                         help="Workspace center: 'center' oppure 'r,c' (es: 0.60,0.45)")
     parser.add_argument("--save-figs",    action="store_true",
                         help="Salva le figure PNG in ./figures/")
+    parser.add_argument("--no-rotate",    action="store_true",
+                        help="Disabilita la rotazione automatica del pannello 3D")
+    parser.add_argument("--rotate-speed", type=float, default=0.15,
+                        help="Gradi di rotazione per step (default 0.15)")
+    parser.add_argument("--zoom-pf",      action="store_true",
+                        help="Zoom dinamico 3D centrato sul centroide PF")
+    parser.add_argument("--zoom-alpha",   type=float, default=0.08,
+                        help="Smoothing EMA zoom (0=fermo, 1=snap; default 0.08)")
     args = parser.parse_args()
 
     # — Patch parametri sui moduli (prima di qualsiasi import lazy) —
@@ -204,6 +212,10 @@ def main() -> None:
             fps=args.fps,
             interval=args.interval,
             save=args.save,
+            rotate_3d=not args.no_rotate,
+            rotate_speed=args.rotate_speed,
+            zoom_particles=args.zoom_pf,
+            zoom_alpha=args.zoom_alpha,
         )
 
     plt.show()

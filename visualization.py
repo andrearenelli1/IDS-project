@@ -1008,15 +1008,19 @@ def plot_pf_evolution(
 # ============================================================================
 
 def animate_mission(
-    terrain:   Terrain,
-    artva:     ARTVASource,
-    agents:    Dict[int, DroneAgent],
-    dt:        float = DT_SIM,
-    fps:       int   = 30,
-    speed:     float = 2.0,
-    interval:  int   = None,
-    save:      bool  = False,
-    save_path: str   = "mission_animation",
+    terrain:      Terrain,
+    artva:        ARTVASource,
+    agents:       Dict[int, DroneAgent],
+    dt:           float = DT_SIM,
+    fps:          int   = 30,
+    speed:        float = 2.0,
+    interval:     int   = None,
+    save:         bool  = False,
+    save_path:    str   = "mission_animation",
+    rotate_3d:    bool  = True,
+    rotate_speed: float = 0.15,   # gradi per step simulazione
+    zoom_particles: bool  = False,  # zoom dinamico centrato sul centroide PF
+    zoom_alpha:     float = 0.08,   # EMA: 0=immobile, 1=snap immediato
 ) -> FuncAnimation:
     """
     Animazione 3-D (sinistra) + vista overhead 2-D (destra).
@@ -1060,6 +1064,16 @@ def animate_mission(
     ax.set_ylabel("y [m]", fontsize=8, labelpad=4)
     ax.set_zlabel("z [m]", fontsize=8, labelpad=4)
     ax.tick_params(colors=_TEXT_COLOR, labelsize=7)
+    if zoom_particles:
+        _z_lo_zoom = min(float(Z3.min()), float(artva._theta[2])) - 5.0
+        _z_hi_zoom = float(Z3.max()) + AGL_HEIGHT * 2 + 5.0
+        ax.set_xlim3d(terrain.x_min, terrain.x_max)
+        ax.set_ylim3d(terrain.y_min, terrain.y_max)
+        ax.set_zlim3d(_z_lo_zoom, _z_hi_zoom)
+        ax.set_autoscale_on(False)
+        # stato corrente limiti XY per EMA — [x_lo, x_hi, y_lo, y_hi]
+        _zoom_cur = [terrain.x_min, terrain.x_max,
+                     terrain.y_min, terrain.y_max]
 
     # — 2-D setup: sfondo statico (terreno + sorgente) —
     ax2.set_facecolor(_BG_COLOR)
@@ -1308,6 +1322,49 @@ def animate_mission(
             lines.append(f"D{i}: {st}  z={traj[ti, 2]:.1f}m  Δ={err:.2f}m")
 
         info.set_text("\n".join(lines))
+
+        # ── Rotazione 3-D ────────────────────────────────────────────────
+        if rotate_3d:
+            azim = 45 + t_step * rotate_speed
+            ax.view_init(elev=12, azim=azim)
+
+        # ── Zoom dinamico XY sul bounding box PF; Z fisso alla sorgente ──
+        if zoom_particles:
+            all_pw = []
+            for i in drone_ids:
+                pf_entry = _pf_at[i][t_step]
+                if pf_entry is not None:
+                    parts, _ = pf_entry
+                    ag_  = agents[i]
+                    ti_  = min(t_step, len(ag_.history) - 1)
+                    if ag_.est_history:
+                        ti_e_ = min(t_step, len(ag_.est_history) - 1)
+                        drift = (np.array(ag_.est_history[ti_e_][:3]) -
+                                 np.array(ag_.history[ti_][:3]))
+                    else:
+                        drift = np.zeros(3)
+                    all_pw.append(parts[:, :3] - drift)
+            if all_pw:
+                pw_cat = np.vstack(all_pw)
+                cx   = (pw_cat[:, 0].min() + pw_cat[:, 0].max()) / 2
+                cy   = (pw_cat[:, 1].min() + pw_cat[:, 1].max()) / 2
+                half = max(20.0,
+                           (pw_cat[:, 0].max() - pw_cat[:, 0].min()) / 2 + 10,
+                           (pw_cat[:, 1].max() - pw_cat[:, 1].min()) / 2 + 10)
+                tgt = [cx - half, cx + half, cy - half, cy + half]
+            else:
+                tgt = [terrain.x_min, terrain.x_max,
+                       terrain.y_min, terrain.y_max]
+            # EMA verso il target
+            a = zoom_alpha
+            _zoom_cur[0] = a * tgt[0] + (1 - a) * _zoom_cur[0]
+            _zoom_cur[1] = a * tgt[1] + (1 - a) * _zoom_cur[1]
+            _zoom_cur[2] = a * tgt[2] + (1 - a) * _zoom_cur[2]
+            _zoom_cur[3] = a * tgt[3] + (1 - a) * _zoom_cur[3]
+            ax.set_xlim3d(_zoom_cur[0], _zoom_cur[1])
+            ax.set_ylim3d(_zoom_cur[2], _zoom_cur[3])
+            ax.set_zlim3d(_z_lo_zoom, _z_hi_zoom)
+
         return all_artists
 
     # ── Slider temporale ─────────────────────────────────────────────────
