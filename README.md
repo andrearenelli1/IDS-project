@@ -47,11 +47,7 @@ Python 3.10+, plus:
 pip install numpy scipy matplotlib casadi tifffile tqdm pillow
 ```
 
-The DEM tile **`w51065_s10.tif`** (TINItaly, 10 m resolution) must be placed in the project root. Download from the TINItaly portal:
-
-> <https://tinitaly.pi.ingv.it/Download_Area1_1.html>
-
-Search for tile **W51065** and download the GeoTIFF. The file is ~200 MB and is not versioned in this repository.
+The DEM tile **`w51065_s10.tif`** (TINItaly, 10 m resolution) is included in the repository root.
 
 ---
 
@@ -128,9 +124,9 @@ The sweep grid is defined at the top of `run_experiments.py`:
 | Odometry noise | 0.05 m/s², 0.10 m/s² |
 | UWB comm. radius | 25 m, 60 m, 120 m |
 | Terrain patches | 5 distinct DEM sub-areas |
-| Victim positions | 10 random per combination |
+| Victim positions | 23 random per combination |
 
-Total: 2 × 3 × 3 × 2 × 3 × 5 × 10 = **5 400 base combinations** × replications = **12 420 runs**.
+Total: 2 × 3 × 3 × 2 × 3 × 5 × 23 = **12 420 runs**.
 
 After the sweep completes, generate figures:
 
@@ -145,9 +141,32 @@ python plot_results.py results.csv
 ### Five-state FSM (per drone)
 
 ```
-SEARCH ──→ TRACK ──→ STOP ──→ FINAL_ORBIT
-              │                ↑
-              └──→ SUPPORT ────┘
+                     ┌────────────────────────────┐
+       start ───────►│         1. SEARCH          │
+                     │     adaptive lawnmower     │
+                     └──────────┬──────┬──────────┘
+                  S≥τ_detect    │      │    recruited
+                                │      │
+               ┌────────────────┘      └─────────────────┐
+               ▼                                          ▼
+  ┌────────────────────────┐    recruited    ┌────────────────────────┐
+  │       2. TRACK         │────────────────►│       4. SUPPORT       │
+  │   extremum seeking     │                 │     circular orbit     │
+  │       · PF active      │                 │       · PF active      │
+  └───────────┬────────────┘                 └────────────┬───────────┘
+              │ S≥τ_stop                        S≥τ_stop │
+              └──────────────────┐  ┌───────────────────┘
+                                 ▼  ▼
+                        ┌────────────────────┐
+                        │      3. STOP       │
+                        │    hover · PF      │
+                        └─────────┬──────────┘
+             all PF-active        │
+             drones stopped       ▼
+                        ┌────────────────────┐
+                        │   5. FINAL ORBIT   │
+                        │  multi-view · PF   │
+                        └────────────────────┘
 ```
 
 1. **SEARCH** — adaptive lawnmower pattern. Lane spacing derived at runtime from the detection threshold so full area coverage is guaranteed.
