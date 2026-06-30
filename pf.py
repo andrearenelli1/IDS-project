@@ -29,23 +29,23 @@ class ParticleFilter:
         self.measurement_dim = measurement_dim
         self.particles = np.random.rand(n_particles, state_dim)  # Initialize particles randomly
         self.weights = np.ones(n_particles) / n_particles  # Initialize weights uniformly
-    
+
     def _sinpsi_max(self, p, S, z_ground, grid=512):
-        # Tetto su sinpsi imposto dalla quota del terreno (misura LiDAR).
-        # La vittima è sepolta, quindi ogni particella deve stare sotto la
-        # superficie: ξz ≤ z_ground. In polari questo vincolo si traduce in
-        # una profondità verticale minima sotto il drone d = r·cosψ ≥ d_min,
-        # con d_min = p_z − z_ground (≈ quota AGL letta dal LiDAR).
+        # LiDAR-imposed ceiling on sinpsi.
+        # The victim is buried, so each particle must stay below the
+        # surface: ξz ≤ z_ground. In polar coordinates this constraint translates
+        # into a minimum vertical depth below the drone d = r·cosψ ≥ d_min,
+        # with d_min = p_z − z_ground (≈ AGL altitude read from LiDAR).
         d_min = p[2] - z_ground
         if d_min <= 0.0:
             return 1.0
         sp    = np.linspace(0.0, 1.0, grid)
-        depth = measurement_model(S, sp) * np.sqrt(1.0 - sp ** 2)  # r·cosψ, decrescente in sinpsi
+        depth = measurement_model(S, sp) * np.sqrt(1.0 - sp ** 2)  # r·cosψ, decreasing in sinpsi
         valid = depth >= d_min
         if not valid[0]:
-            # nemmeno lo straight-down (sinpsi=0) raggiunge il terreno: il drone
-            # è praticamente sopra la sorgente. Campiona quasi verticale; lo z
-            # viene comunque riportato sotto z_ground dal clamp finale.
+            # even straight-down (sinpsi=0) doesn't reach the ground: the drone
+            # is practically above the source. Sample nearly vertical; z
+            # is still clamped below z_ground by the final clamp.
             return 0.0
         return float(sp[valid][-1])
 
@@ -63,7 +63,7 @@ class ParticleFilter:
         self.particles[:, 0] = measurement_model(S, self.particles[:, 2])
         self.particles = self.polar_to_world(p, self.particles)
         if z_ground is not None:
-            # clamp di sicurezza per il caso degenere (sinpsi_max=0)
+            # safety clamp for the degenerate case (sinpsi_max=0)
             np.minimum(self.particles[:, 2], z_ground, out=self.particles[:, 2])
 
     def update_weights(self, p, S, m, sigma):
@@ -72,13 +72,13 @@ class ParticleFilter:
         cos_psi = -r_vecs[:, 2] / r_norms
         S_pred  = m * np.sqrt(1.0 + 3.0 * cos_psi**2) / r_norms**3
 
-        # Sigma adattiva: combina rumore additivo calibrato e rumore moltiplicativo (5% del segnale).
-        # Indispensabile per gli update cooperativi: droni vicini alla sorgente hanno segnali
-        # ordini di grandezza più alti e renderebbero tutti i pesi zero con sigma fisso.
+        # Adaptive sigma: combines calibrated additive noise and multiplicative noise (5% of signal).
+        # Essential for cooperative updates: drones close to the source have signals
+        # orders of magnitude higher, which would drive all weights to zero with fixed sigma.
         effective_sigma = np.sqrt(sigma**2 + (0.20 * S)**2)
 
         log_like = -0.5 * ((S - S_pred) / effective_sigma) ** 2
-        log_like -= log_like.max()   # shift per prevenire underflow
+        log_like -= log_like.max()   # shift to prevent underflow
 
         self.weights *= np.exp(log_like)
         total = np.sum(self.weights)
@@ -88,9 +88,9 @@ class ParticleFilter:
             self.weights[:] = 1.0 / self.n_particles
 
     def resample_particles(self, z_ground=None, jitter_std=None):
-        # Resample solo quando il filtro è degenerato (N_eff < N/2).
-        # Quando i pesi sono ancora diversificati non serve: evita la perdita prematura
-        # di diversità che causa il collasso della stima di profondità.
+        # Resample only when the filter is degenerate (N_eff < N/2).
+        # When weights are still diverse it is not needed: avoids premature loss
+        # of diversity that causes depth estimate collapse.
         N_eff = 1.0 / np.sum(self.weights ** 2)
         if N_eff > self.n_particles / 2:
             return
@@ -103,8 +103,8 @@ class ParticleFilter:
         self.particles = self.particles[indexes]
         self.weights   = np.ones(self.n_particles) / self.n_particles
 
-        # Jitter con floor minimo assoluto: impedisce il collasso totale delle particelle
-        # vicino alla sorgente, dove std sarebbe ~0 e la profondità risulta bloccata.
+        # Jitter with absolute minimum floor: prevents total particle collapse
+        # near the source, where std would be ~0 and depth becomes stuck.
         if jitter_std is not None:
             std = jitter_std
         else:
@@ -114,10 +114,10 @@ class ParticleFilter:
             )
         self.particles += np.random.normal(0, std, self.particles.shape)
 
-        # Mantieni le particelle entro il limite imposto dal LiDAR: il jitter
-        # può spingerle sopra la superficie (impossibile per una vittima
-        # sepolta). Quelle sopra z_ground vengono riflesse sotto, preservando
-        # la densità a ridosso del terreno.
+        # Keep particles within the LiDAR-imposed bound: jitter
+        # may push them above the surface (impossible for a buried victim).
+        # Those above z_ground are reflected below, preserving
+        # density near the ground.
         if z_ground is not None:
             above = self.particles[:, 2] > z_ground
             self.particles[above, 2] = 2.0 * z_ground - self.particles[above, 2]
@@ -132,7 +132,7 @@ class ParticleFilter:
         z = -r * np.sqrt(1 - sinpsi**2)
         res = p + np.column_stack((x, y, z))
         return res
-    
+
     def world_to_polar(self, world_coords):
         # Convert world coordinates to polar coordinates
         x = world_coords[:, 0]
@@ -204,35 +204,35 @@ if __name__ == "__main__":
     plt.show()
 
 # ════════════════════════════════════════════════════════════════════════════
-# Metriche di incertezza basate sull'ellisse di confidenza (2D)
+# Uncertainty metrics based on the 2D confidence ellipse
 # ════════════════════════════════════════════════════════════════════════════
 #
-# Geometria condivisa usata in modo coerente da run_experiments.py (sweep), da
-# visualization.py (plot del main) e da plot_results.py (analisi sweep):
+# Shared geometry used consistently by run_experiments.py (sweep), by
+# visualization.py (main plots) and by plot_results.py (sweep analysis):
 #
-#   - ellisse di confidenza al livello `conf` (default 95%) della stima PF di un
-#     drone, ricavata dalla covarianza 2×2 pesata delle particelle;
-#   - area dell'ellisse  = π · k² · sqrt(det Σ)   con k² = quantile χ²(2 d.o.f.);
-#   - IoU (intersection-over-union) tra le ellissi di due droni, calcolata in
-#     modo esatto su poligoni convessi (Sutherland–Hodgman + shoelace).
+#   - confidence ellipse at level `conf` (default 95%) of a drone's PF estimate,
+#     derived from the 2×2 weighted covariance of the particles;
+#   - ellipse area = π · k² · sqrt(det Σ)   with k² = χ²(2 d.o.f.) quantile;
+#   - IoU (intersection-over-union) between the ellipses of two drones, computed
+#     exactly on convex polygons (Sutherland–Hodgman + shoelace).
 #
-# Per 2 gradi di libertà il quantile χ² ha forma chiusa: k² = -2·ln(1 - conf)
-# (es. conf = 0.95  →  k² ≈ 5.991).
+# For 2 degrees of freedom the χ² quantile has closed form: k² = -2·ln(1 - conf)
+# (e.g. conf = 0.95  →  k² ≈ 5.991).
 
 
-# ─────────────────────────── Covarianza / ellisse ───────────────────────────
+# ─────────────────────────── Covariance / ellipse ───────────────────────────
 
 def chi2_quantile_2dof(conf=0.95):
-    """Quantile della χ² a 2 gradi di libertà (forma chiusa)."""
+    """χ² quantile for 2 degrees of freedom (closed form)."""
     return -2.0 * np.log(1.0 - conf)
 
 
 def weighted_mean_cov_xy(particles, weights):
     """
-    Media e covarianza 2×2 pesate delle particelle sul piano xy.
+    Weighted mean and 2×2 covariance of particles in the xy plane.
 
-    particles : (M, >=2)   nuvola di particelle
-    weights   : (M,)       pesi (non necessariamente normalizzati)
+    particles : (M, >=2)   particle cloud
+    weights   : (M,)       weights (not necessarily normalised)
     returns   : (mean_xy (2,), cov_xy (2, 2))
     """
     xy = np.asarray(particles)[:, :2]
@@ -246,7 +246,7 @@ def weighted_mean_cov_xy(particles, weights):
 
 
 def ellipse_area(cov, conf=0.95):
-    """Area dell'ellisse di confidenza: π · k² · sqrt(det Σ) [m²]."""
+    """Confidence ellipse area: π · k² · sqrt(det Σ) [m²]."""
     det = float(np.linalg.det(cov))
     if det <= 0.0:
         return 0.0
@@ -255,8 +255,8 @@ def ellipse_area(cov, conf=0.95):
 
 def ellipse_contains(point, mean, cov, conf=0.95):
     """
-    True se `point` cade dentro l'ellisse di confidenza di livello `conf`
-    centrata in `mean` con covarianza `cov` (test di Mahalanobis):
+    True if `point` falls inside the confidence ellipse at level `conf`
+    centred at `mean` with covariance `cov` (Mahalanobis test):
         (x-μ)^T Σ^{-1} (x-μ) ≤ k²,   k² = χ²₂(conf).
     """
     d = np.asarray(point, dtype=float)[:2] - np.asarray(mean, dtype=float)[:2]
@@ -269,31 +269,31 @@ def ellipse_contains(point, mean, cov, conf=0.95):
 
 def ellipse_axes_angle(cov, conf=0.95):
     """
-    Semiassi (a, b) e angolo [rad] dell'ellisse di confidenza, per il disegno.
-    a, b sono i semiassi lungo gli autovettori di Σ.
+    Semi-axes (a, b) and angle [rad] of the confidence ellipse, for drawing.
+    a, b are the semi-axes along the eigenvectors of Σ.
     """
     k2 = chi2_quantile_2dof(conf)
     vals, vecs = np.linalg.eigh(cov)
     vals = np.clip(vals, 0.0, None)
-    a, b = np.sqrt(k2 * vals)                # semiassi
-    major = vecs[:, int(np.argmax(vals))]    # autovettore dell'autovalore maggiore
+    a, b = np.sqrt(k2 * vals)                # semi-axes
+    major = vecs[:, int(np.argmax(vals))]    # eigenvector of largest eigenvalue
     angle = float(np.arctan2(major[1], major[0]))
     return float(a), float(b), angle
 
 
 def ellipse_polygon(mean, cov, conf=0.95, n=72):
-    """Approssima l'ellisse di confidenza con un poligono convesso di n vertici."""
+    """Approximates the confidence ellipse with a convex polygon of n vertices."""
     k2 = chi2_quantile_2dof(conf)
     vals, vecs = np.linalg.eigh(cov)
     vals = np.clip(vals, 0.0, None)
-    semi = np.sqrt(k2 * vals)                # semiassi nello spazio autovettori
+    semi = np.sqrt(k2 * vals)                # semi-axes in eigenvector space
     t = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
-    unit = np.stack([np.cos(t), np.sin(t)], axis=1)   # cerchio unitario
-    pts  = (unit * semi) @ vecs.T            # scala e ruota nello spazio dati
+    unit = np.stack([np.cos(t), np.sin(t)], axis=1)   # unit circle
+    pts  = (unit * semi) @ vecs.T            # scale and rotate into data space
     return pts + np.asarray(mean)[:2]
 
 
-# ─────────────────────────── Geometria poligoni ─────────────────────────────
+# ─────────────────────────── Polygon geometry ───────────────────────────────
 
 def _signed_area(poly):
     x, y = poly[:, 0], poly[:, 1]
@@ -310,8 +310,8 @@ def _ensure_ccw(poly):
 
 def _convex_intersection(subject, clip):
     """
-    Intersezione di due poligoni convessi (Sutherland–Hodgman).
-    Entrambi devono essere orientati CCW. Ritorna (K, 2) oppure None se vuota.
+    Intersection of two convex polygons (Sutherland–Hodgman).
+    Both must be CCW-oriented. Returns (K, 2) or None if empty.
     """
     def inside(p, a, b):
         return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0.0
@@ -347,7 +347,7 @@ def _convex_intersection(subject, clip):
 
 
 def ellipse_iou(mean_i, cov_i, mean_j, cov_j, conf=0.95, n=72):
-    """IoU (∈ [0, 1]) tra le ellissi di confidenza di due droni."""
+    """IoU (∈ [0, 1]) between the confidence ellipses of two drones."""
     pi = _ensure_ccw(ellipse_polygon(mean_i, cov_i, conf, n))
     pj = _ensure_ccw(ellipse_polygon(mean_j, cov_j, conf, n))
     inter = _convex_intersection(pi, pj)
@@ -356,17 +356,17 @@ def ellipse_iou(mean_i, cov_i, mean_j, cov_j, conf=0.95, n=72):
     return float(a_inter / union) if union > 0 else 0.0
 
 
-# ─────────────────────────── Metriche aggregate run ─────────────────────────
+# ─────────────────────────── Per-run aggregate metrics ──────────────────────
 
 def run_ellipse_metrics(means, covs, conf=0.95):
     """
-    Metriche per-run sulle ellissi PF dei droni con PF attivo.
+    Per-run metrics on the PF ellipses of drones with active PF.
 
-    means : lista di array (2,)     centri stima PF
-    covs  : lista di array (2, 2)    covarianze pesate xy
+    means : list of (2,) arrays     PF estimate centres
+    covs  : list of (2, 2) arrays   weighted xy covariances
     returns:
-        mean_area_m2 : area media dell'ellisse di confidenza [m²]
-        mean_iou     : IoU media a coppie tra droni (consenso inter-drone)
+        mean_area_m2 : mean area of the confidence ellipse [m²]
+        mean_iou     : mean pairwise IoU between drones (inter-drone consensus)
     """
     if not covs:
         return float("nan"), float("nan")

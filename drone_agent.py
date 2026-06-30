@@ -1,14 +1,14 @@
 """
 drone_agent.py
 ==============
-Definizioni dell'agente drone e delle funzioni di navigazione locale.
+Drone agent definitions and local navigation functions.
 
-Contenuto
----------
-  DroneState           — FSM a 4 stati: SEARCH / TRACK / STOP / SUPPORT
-  DroneAgent           — dataclass con stato reale, filtro IMDCL, navigazione
-  lawnmower_waypoints  — pattern a greca per la fase SEARCH
-  rotate_2d            — utility: ruota vettore 2D
+Contents
+--------
+  DroneState           — 4-state FSM: SEARCH / TRACK / STOP / SUPPORT
+  DroneAgent           — dataclass with real state, IMDCL filter, navigation
+  lawnmower_waypoints  — lawnmower pattern for the SEARCH phase
+  rotate_2d            — utility: rotates a 2D vector
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ from pf import ParticleFilter
 # ============================================================================
 
 class DroneState(IntEnum):
-    SEARCH      = 0   # lawnmower, ricerca attiva
-    TRACK       = 1   # esplorazione 3 punti, convergenza sulla sorgente
-    STOP        = 2   # hovering, ha raggiunto la soglia TRACK_STOP_THR
-    SUPPORT     = 3   # si posiziona a 120° attorno alla stima della sorgente per triangolazione
-    FINAL_ORBIT = 4   # orbita finale di raffinamento attorno alla stima, prima dell'arresto
+    SEARCH      = 0   # lawnmower, active search
+    TRACK       = 1   # 3-point exploration, convergence towards source
+    STOP        = 2   # hovering, TRACK_STOP_THR threshold reached
+    SUPPORT     = 3   # positions at 120° around source estimate for triangulation
+    FINAL_ORBIT = 4   # final refinement orbit around estimate, before stop
 
 
 # ============================================================================
@@ -56,11 +56,11 @@ def lawnmower_waypoints(
     agl: float = AGL_HEIGHT,
 ) -> List[np.ndarray]:
     """
-    Genera la sequenza di waypoint della greca per il drone 'drone_id'.
+    Generates the lawnmower waypoint sequence for drone 'drone_id'.
 
-    Il workspace è diviso in N_DRONES strisce verticali (lungo x).
-    Ogni drone percorre le corsie orizzontali (lungo y) alternando il verso.
-    I waypoint includono la quota z = terrain(x, y) + agl.
+    The workspace is divided into N_DRONES vertical strips (along x).
+    Each drone traverses horizontal lanes (along y) alternating direction.
+    Waypoints include altitude z = terrain(x, y) + agl.
     """
     width      = (x_max - x_min) / n_drones
     x0_s       = x_min + drone_id * width
@@ -87,7 +87,7 @@ def single_lane_waypoints(
     terrain: Terrain,
     agl:     float = AGL_HEIGHT,
 ) -> List[np.ndarray]:
-    """Genera i 2 waypoint di una singola corsia verticale (y_min↔y_max a x fisso)."""
+    """Generates the 2 waypoints of a single vertical lane (y_min↔y_max at fixed x)."""
     y_start, y_end = (y_min, y_max) if go_up else (y_max, y_min)
     return [
         np.array([x, y_start, terrain.agl_z(x, y_start, agl)]),
@@ -100,7 +100,7 @@ def single_lane_waypoints(
 # ============================================================================
 
 def rotate_2d(v: np.ndarray, deg: float) -> np.ndarray:
-    """Ruota il vettore 2D v di 'deg' gradi in senso antiorario."""
+    """Rotates the 2D vector v by 'deg' degrees counter-clockwise."""
     rad = np.radians(deg)
     c, s = np.cos(rad), np.sin(rad)
     return np.array([c * v[0] - s * v[1], s * v[0] + c * v[1]])
@@ -116,8 +116,8 @@ def circle_waypoints(
     agl:         float = AGL_HEIGHT,
 ) -> List[np.ndarray]:
     """
-    Genera n_pts waypoint equidistanti su una circonferenza di dato raggio
-    attorno a center, a quota AGL costante.
+    Generates n_pts equally spaced waypoints on a circle of given radius
+    around center, at constant AGL altitude.
     """
     sign   = -1.0 if clockwise else +1.0
     angles = start_angle + sign * np.linspace(0.0, 2 * np.pi, n_pts, endpoint=False)
@@ -136,22 +136,22 @@ def circle_waypoints(
 @dataclass
 class DroneAgent:
     """
-    Drone con FSM a 4 stati, controllore MPC e filtro IMDCL.
+    Drone with a 4-state FSM, MPC controller and IMDCL filter.
 
     Waypoint management
     -------------------
-    Tutti gli stati sono arrival-gated: il prossimo waypoint viene calcolato
-    solo quando quello corrente è raggiunto (o su transizione di stato).
-    Il dispatch avviene in simulation.py tramite _on_wp_reached().
+    All states are arrival-gated: the next waypoint is computed
+    only when the current one is reached (or on state transition).
+    Dispatch happens in simulation.py via _on_wp_reached().
 
-    Stima sorgente: Particle Filter
-    --------------------------------
-    source_est : stima corrente della posizione della sorgente (media pesata PF)
+    Source estimation: Particle Filter
+    -----------------------------------
+    source_est : current estimate of source position (PF weighted mean)
     """
 
     id:           int
-    x:            np.ndarray          # stato reale (6,)
-    waypoints:    List[np.ndarray]    # waypoint correnti
+    x:            np.ndarray          # real state (6,)
+    waypoints:    List[np.ndarray]    # current waypoints
     ctrl:         DroneMPC
     imdcl:        AgentIMDCL
 
@@ -159,18 +159,18 @@ class DroneAgent:
     wp_idx:       int        = 0
     signal_log:   list       = field(default_factory=list)
     history:      list       = field(default_factory=list)
-    state_log:    list       = field(default_factory=list)   # DroneState ad ogni step (parallelo a history)
+    state_log:    list       = field(default_factory=list)   # DroneState at each step (parallel to history)
     est_history:  list       = field(default_factory=list)
     input_log:    list       = field(default_factory=list)
     solve_t_log:  list       = field(default_factory=list)
-    wp_target_log: list      = field(default_factory=list)   # current_target() ad ogni step
+    wp_target_log: list      = field(default_factory=list)   # current_target() at each step
     detected:     bool       = False
 
     # SOURCE ESTIMATION (particle filter)
     pf:                Optional[ParticleFilter] = None
     artva_sigma_noise: float                    = 0.0
     source_est:        Optional[np.ndarray]     = None
-    source_est_std:    Optional[np.ndarray]     = None  # deviazione std pesata su (x,y,z) alla fine
+    source_est_std:    Optional[np.ndarray]     = None  # weighted std dev on (x,y,z) at end
     source_est_log:    list                     = field(default_factory=list)
     pf_log:            list                     = field(default_factory=list)  # (particles, weights) per step
 
@@ -178,32 +178,32 @@ class DroneAgent:
     r:     Optional[float] = None
     r_log: list            = field(default_factory=list)
 
-    # SEARCH — stato lawnmower a corsie globali
+    # SEARCH — global lane lawnmower state
     lane_xs:          np.ndarray = field(default_factory=lambda: np.array([]))
     current_lane_idx: int        = 0
     n_drones_total:   int        = 1
     lane_go_up:       bool       = True
 
-    # TRACK-ES — stato interno Extremum Seeking  [Azzollini et al. 2021, eq. 11-13]
-    es_x_ref: float = 0.0   # riferimento x corrente generato dall'ES [m]
-    es_y_ref: float = 0.0   # riferimento y corrente generato dall'ES [m]
-    es_alpha: float = 0.0   # valore corrente di α (rampa 0 → ES_ALPHA_MAX)
-    es_time:  float = 0.0   # tempo interno ES [s]
+    # TRACK-ES — Extremum Seeking internal state  [Azzollini et al. 2021, eq. 11-13]
+    es_x_ref: float = 0.0   # current ES x reference [m]
+    es_y_ref: float = 0.0   # current ES y reference [m]
+    es_alpha: float = 0.0   # current α value (ramp 0 → ES_ALPHA_MAX)
+    es_time:  float = 0.0   # ES internal time [s]
 
-    # ES history — per calcolare la media su un ciclo completo (usata da step 2d)
+    # ES history — for computing average over a full cycle (used by step 2d)
     es_x_hist: list = field(default_factory=list)
     es_y_hist: list = field(default_factory=list)
-    es_active: bool = False   # True dopo init_es: ES gestisce i waypoint del drone
+    es_active: bool = False   # True after init_es: ES manages drone waypoints
 
-    # SUPPORT — orbita cooperativa
+    # SUPPORT — cooperative orbit
     support_center:       Optional[np.ndarray] = None
     support_orbit_radius: float = 0.0
     support_cw:           bool  = False
-    support_pending:      bool  = False   # True se aspetta ancora partner
-    support_deadline:     int   = 0       # step oltre cui si rinuncia
-    support_n_needed:     int   = 0       # partner ancora mancanti
-    support_failed:       bool  = False   # True se la chiamata di supporto è scaduta senza partner
-    final_orbit_done:     bool  = False   # True quando il drone ha raggiunto l'ultimo waypoint dell'orbita finale
+    support_pending:      bool  = False   # True while still waiting for partners
+    support_deadline:     int   = 0       # step beyond which we give up
+    support_n_needed:     int   = 0       # partners still missing
+    support_failed:       bool  = False   # True if SUPPORT call expired without partners
+    final_orbit_done:     bool  = False   # True when drone has reached last waypoint of final orbit
 
 
     # ARTVA signal
@@ -211,11 +211,11 @@ class DroneAgent:
     sig_raw_last: float = 0.0
     sig_batch:  deque = field(default_factory=lambda: deque(maxlen=N_SIGNAL_SAMPLES))
 
-    # ── Proprietà ──────────────────────────────────────────────────────────
+    # ── Properties ─────────────────────────────────────────────────────────
 
     @property
     def x_est(self) -> np.ndarray:
-        """Stima corrente dello stato da IMDCL (usata dal controllore MPC)."""
+        """Current state estimate from IMDCL (used by MPC controller)."""
         return self.imdcl.x_hat
 
     # ── Waypoint management ────────────────────────────────────────────────
@@ -225,7 +225,7 @@ class DroneAgent:
         return self.waypoints[idx]
 
     def advance_waypoint(self) -> bool:
-        """Avanza al prossimo waypoint. Restituisce True se ce ne sono altri."""
+        """Advances to next waypoint. Returns True if there are more."""
         if self.wp_idx < len(self.waypoints) - 1:
             self.wp_idx += 1
             return True
@@ -239,17 +239,17 @@ class DroneAgent:
 
     def update_signal_filter_batch(self, sig: float) -> float:
         """
-        Aggiorna sig_batch con il nuovo campione grezzo e restituisce
-        la media mobile sugli ultimi N_SIGNAL_SAMPLES valori.
+        Updates sig_batch with the new raw sample and returns
+        the moving average over the last N_SIGNAL_SAMPLES values.
         """
         self.sig_batch.append(sig)
         return float(np.mean(self.sig_batch))
 
     def init_es(self, terrain: Terrain, agl: float) -> None:
         """
-        Inizializza lo stato ES (TRACK o SUPPORT).
-        Il riferimento parte dalla posizione stimata corrente;
-        α parte da 0 e rampa verso ES_ALPHA_MAX secondo eq. 13.
+        Initialises ES state (TRACK or SUPPORT).
+        Reference starts from current estimated position;
+        α starts at 0 and ramps towards ES_ALPHA_MAX per eq. 13.
         """
         self.es_x_ref  = float(self.x_est[0])
         self.es_y_ref  = float(self.x_est[1])

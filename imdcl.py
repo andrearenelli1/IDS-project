@@ -1,12 +1,12 @@
 """
 Interim Master Decentralized Cooperative Localization (IMDCL)
 =============================================================
-Implementazione basata su:
+Implementation based on:
   Kia, Rounds, Martínez — "Cooperative Localization for Mobile Agents:
   A Recursive Decentralized Algorithm Based on Kalman-Filter Decoupling"
   IEEE Control Systems Magazine, April 2016.
 
-AgentIMDCL    – agente che esegue l'algoritmo IMDCL (Algorithm 2 del paper).
+AgentIMDCL    – agent that runs the IMDCL algorithm (Algorithm 2 of the paper).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from config import IMDCL_PI_MAX_NORM
 
 
 # ---------------------------------------------------------------------------
-# Tipi
+# Types
 # ---------------------------------------------------------------------------
 Vector = np.ndarray   # colonna (n,) o (n,1)
 Matrix = np.ndarray   # matrice 2-D
@@ -35,19 +35,19 @@ def relative_position_measurement_3d(
     x_a: Vector, x_b: Vector
 ) -> Tuple[Vector, Matrix, Matrix]:
     """
-    Misura della posizione relativa in 3-D (solo posizione, non velocità).
+    Relative position measurement in 3-D (position only, not velocity).
 
     z_{ab} = h(x^a, x^b) = p^b − p^a = [pbx−pax, pby−pay, pbz−paz]^T
 
-    Il modello è lineare in x, quindi i Jacobiani sono costanti:
+    The model is linear in x, so the Jacobians are constant:
         Ha = ∂h/∂x^a = [-I₃ | 0₃]   (3×6)
         Hb = ∂h/∂x^b = [ I₃ | 0₃]   (3×6)
 
     Returns
     -------
-    h_val : valore della funzione di misura  (3,)
-    Ha    : Jacobiano rispetto a x^a         (3×6)
-    Hb    : Jacobiano rispetto a x^b         (3×6)
+    h_val : measurement function value  (3,)
+    Ha    : Jacobian w.r.t. x^a        (3×6)
+    Hb    : Jacobian w.r.t. x^b        (3×6)
     """
     p_a = x_a.ravel()[:3]
     p_b = x_b.ravel()[:3]
@@ -62,14 +62,14 @@ def relative_position_measurement_3d(
 
 
 # ===========================================================================
-# Messaggi scambiati tra agenti
+# Messages exchanged between agents
 # ===========================================================================
 
 @dataclass
 class LandmarkMessage:
     """
-    Messaggio inviato dall'agente *landmark* b all'interim master a
-    (Eq. S8 del paper).
+    Message sent by *landmark* agent b to interim master a
+    (Eq. S8 of the paper).
     """
     agent_id: int
     x_hat: Vector    # stima propagata x^{b-}(k+1)
@@ -80,28 +80,28 @@ class LandmarkMessage:
 @dataclass
 class UpdateMessage:
     """
-    Messaggio di aggiornamento broadcast dall'interim master a tutto il team
-    (Eq. S10 del paper).
+    Update message broadcast from the interim master to the whole team
+    (Eq. S10 of the paper).
     """
     master_id: int
     landmark_id: int
     innovation: Vector              # r^a
     S_inv_sqrt: Matrix              # S_{ab}^{-1/2}
-    Gamma_a: Matrix                 # Γ_a  (termine di aggiornamento per master)
-    Gamma_b: Matrix                 # Γ_b  (termine di aggiornamento per landmark)
-    Phi_b_T_Hb_T_S_inv_sqrt: Matrix # Φ^{b⊤} H̃_b^⊤ S^{-1/2}  (necessario per Eq. S11)
-    Phi_a_T_Ha_T_S_inv_sqrt: Matrix # Φ^{a⊤} H̃_a^⊤ S^{-1/2}  (necessario per Eq. S11)
+    Gamma_a: Matrix                 # Γ_a  (update term for master)
+    Gamma_b: Matrix                 # Γ_b  (update term for landmark)
+    Phi_b_T_Hb_T_S_inv_sqrt: Matrix # Φ^{b⊤} H̃_b^⊤ S^{-1/2}  (needed for Eq. S11)
+    Phi_a_T_Ha_T_S_inv_sqrt: Matrix # Φ^{a⊤} H̃_a^⊤ S^{-1/2}  (needed for Eq. S11)
 
 
 # ===========================================================================
-# Funzione di misura relativa (esempio: posa relativa 2-D)
+# Relative measurement function (example: 2-D relative pose)
 # ===========================================================================
 
 def relative_pose_measurement(
     x_a: Vector, x_b: Vector
 ) -> Tuple[Vector, Matrix, Matrix]:
     """
-    Modello di misura della posa relativa in 2-D.
+    2-D relative pose measurement model.
 
     z_{ab} = h(x^a, x^b) = [Δx·cos θ_a + Δy·sin θ_a,
                              -Δx·sin θ_a + Δy·cos θ_a,
@@ -109,9 +109,9 @@ def relative_pose_measurement(
 
     Returns
     -------
-    h_val : valore della funzione di misura
-    Ha    : Jacobiano rispetto a x^a
-    Hb    : Jacobiano rispetto a x^b
+    h_val : measurement function value
+    Ha    : Jacobian w.r.t. x^a
+    Hb    : Jacobian w.r.t. x^b
     """
     pax, pay, tha = x_a.ravel()
     pbx, pby, thb = x_b.ravel()
@@ -139,29 +139,28 @@ def relative_pose_measurement(
 
 
 # ===========================================================================
-# Agente IMDCL
+# IMDCL Agent
 # ===========================================================================
 
 class AgentIMDCL:
     """
-    Agente che implementa l'algoritmo IMDCL (Algorithm 2, Kia et al. 2016).
+    Agent implementing the IMDCL algorithm (Algorithm 2, Kia et al. 2016).
 
-    Ogni agente mantiene in locale:
-      - x_hat  : stima dello stato (n_i,)
-      - P      : covarianza dell'errore (n_i × n_i)
-      - Phi    : matrice intermedia Φ^i, inizializzata a I (n_i × n_i)
-      - Pi_jl  : dizionario {(j,l): Π_{jl}^i} — copie locali delle
-                 covarianze incrociate per tutte le coppie (j < l) nel team
-                 eccetto quelle che includono l'id dell'agente stesso
-                 (Eq. S5 / S12c).
+    Each agent maintains locally:
+      - x_hat  : state estimate (n_i,)
+      - P      : estimation error covariance (n_i × n_i)
+      - Phi    : intermediate matrix Φ^i, initialised to I (n_i × n_i)
+      - Pi_jl  : dict {(j,l): Π_{jl}^i} — local copies of cross-covariances
+                 for all pairs (j < l) in the team, excluding pairs that
+                 include the agent's own id (Eq. S5 / S12c).
 
     Parameters
     ----------
-    agent_id    : identificatore univoco intero dell'agente.
-    x0          : stima iniziale dello stato.
-    P0          : covarianza iniziale dell'errore di stima.
-    team_ids    : lista di tutti gli id del team (incluso questo agente).
-    motion_model: istanza di MotionModel (sostituibile).
+    agent_id    : unique integer identifier for this agent.
+    x0          : initial state estimate.
+    P0          : initial estimation error covariance.
+    team_ids    : list of all team agent ids (including this agent).
+    motion_model: MotionModel instance (pluggable).
     """
 
     def __init__(
@@ -176,16 +175,16 @@ class AgentIMDCL:
         self.motion_model = motion_model
         n = motion_model.state_dim
 
-        # Stato e covarianza (Eq. S5)
+        # State and covariance (Eq. S5)
         self.x_hat: Vector = np.array(x0, dtype=float).ravel()
         self.P: Matrix = np.array(P0, dtype=float)
 
-        # Matrice intermedia Φ^i — inizializzata a I (Eq. S5)
+        # Intermediate matrix Φ^i — initialised to I (Eq. S5)
         self.Phi: Matrix = np.eye(n)
 
-        # Copie locali delle covarianze incrociate Π_{jl}^i
-        # Per simmetria del paper si mantengono solo le coppie con j < l
-        # e j ≠ id, l ≠ id  (Eq. S5: inizializzate a zero)
+        # Local copies of cross-covariances Π_{jl}^i
+        # By paper symmetry only pairs with j < l are stored,
+        # j ≠ id, l ≠ id  (Eq. S5: initialised to zero)
         other_ids = sorted(v for v in team_ids if v != agent_id)
         self.Pi_jl: Dict[Tuple[int, int], Matrix] = {}
         for idx_j, j in enumerate(other_ids):
@@ -196,7 +195,7 @@ class AgentIMDCL:
         self._team_ids = list(team_ids)
 
     # ------------------------------------------------------------------
-    # Proprietà di sola lettura utili per il debug
+    # Read-only properties useful for debugging
     # ------------------------------------------------------------------
 
     @property
@@ -204,19 +203,19 @@ class AgentIMDCL:
         return self._n
 
     # ------------------------------------------------------------------
-    # 1. Propagazione (locale, nessuna comunicazione)
+    # 1. Propagation (local, no communication)
     # ------------------------------------------------------------------
 
     def propagate(self, u: Vector, dt: float) -> None:
         """
-        Fase di propagazione — Algorithm 2, step 1 (Eq. S6).
+        Propagation step — Algorithm 2, step 1 (Eq. S6).
 
-        Aggiorna localmente x_hat, P e Phi senza alcuna comunicazione.
+        Updates x_hat, P and Phi locally without any communication.
 
         Parameters
         ----------
-        u  : vettore di controllo/misura odometrica u^i(k).
-        dt : intervallo di campionamento.
+        u  : control / odometry input vector u^i(k).
+        dt : sampling interval.
         """
         F = self.motion_model.F_jacobian(self.x_hat, u, dt)
         G = self.motion_model.G_jacobian(self.x_hat, dt)
@@ -232,29 +231,29 @@ class AgentIMDCL:
         self.Phi = F @ self.Phi
 
     # ------------------------------------------------------------------
-    # 2a. Aggiornamento — nessuna misura nel team
+    # 2a. Update — no team measurement
     # ------------------------------------------------------------------
 
     def step_no_measurement(self) -> None:
         """
-        Nessuna misura relativa nel team: le variabili propagate diventano
-        le stime aggiornate; Pi_jl rimangono invariate (Eq. S7).
+        No relative measurement in the team: propagated variables become
+        the updated estimates; Pi_jl remain unchanged (Eq. S7).
 
-        In questa implementazione le variabili sono già in-place, quindi
-        questo metodo è un no-op esplicito utile per chiarezza.
+        Variables are already updated in-place, so this is an explicit
+        no-op kept for clarity.
         """
-        pass  # x_hat, P, Phi già propagati; Pi_jl invariati per (14)
+        pass  # x_hat, P, Phi already propagated; Pi_jl unchanged per (14)
 
     # ------------------------------------------------------------------
-    # 2b. Generazione del landmark-message (agente landmark b)
+    # 2b. Landmark message generation (landmark agent b)
     # ------------------------------------------------------------------
 
     def make_landmark_message(self) -> LandmarkMessage:
         """
-        Crea il messaggio da inviare all'interim master (Eq. S8).
+        Creates the message to send to the interim master (Eq. S8).
 
-        Chiamato dall'agente landmark b prima che l'interim master a
-        esegua i propri calcoli.
+        Called by landmark agent b before interim master a performs
+        its own computations.
         """
         return LandmarkMessage(
             agent_id=self.id,
@@ -264,7 +263,7 @@ class AgentIMDCL:
         )
 
     # ------------------------------------------------------------------
-    # 2c. Calcolo update-message (agente interim master a)
+    # 2c. Update message computation (interim master agent a)
     # ------------------------------------------------------------------
 
     def compute_update_message(
@@ -275,19 +274,19 @@ class AgentIMDCL:
         measurement_fn=relative_pose_measurement,
     ) -> UpdateMessage:
         """
-        L'agente a (interim master) calcola il messaggio di aggiornamento
-        da broadcast al team intero (Eq. S9, S10).
+        Agent a (interim master) computes the update message to broadcast
+        to the whole team (Eq. S9, S10).
 
         Parameters
         ----------
-        lm_msg         : LandmarkMessage ricevuto dall'agente landmark b.
-        z_ab           : misura relativa effettuata da a verso b.
-        R_ab           : covarianza del rumore di misura.
-        measurement_fn : funzione h(x_a, x_b) → (h_val, Ha, Hb).
+        lm_msg         : LandmarkMessage received from landmark agent b.
+        z_ab           : relative measurement made by a towards b.
+        R_ab           : measurement noise covariance.
+        measurement_fn : function h(x_a, x_b) → (h_val, Ha, Hb).
 
         Returns
         -------
-        UpdateMessage da passare a tutti gli agenti tramite apply_update().
+        UpdateMessage to pass to all agents via apply_update().
         """
         x_a, P_a, Phi_a = self.x_hat, self.P, self.Phi
         x_b = lm_msg.x_hat
@@ -295,16 +294,16 @@ class AgentIMDCL:
         Phi_b = lm_msg.Phi
         b = lm_msg.agent_id
 
-        # Jacobiani della funzione di misura valutati nello stato propagato
+        # Measurement function Jacobians evaluated at the propagated state
         h_val, Ha_tilde, Hb_tilde = measurement_fn(x_a, x_b)
 
-        # Innovazione  r^a = z_{ab} − h(x^{a-}, x^{b-})  (Eq. S9a)
+        # Innovation  r^a = z_{ab} − h(x^{a-}, x^{b-})  (Eq. S9a)
         r = np.array(z_ab).ravel() - h_val
 
-        # Recupera Π_{ab}^a (o Π_{ba}^a) dalla copia locale
-        Pi_ab = self._get_Pi(self.id, b)   # Π_{ab}^a  →  Π tra a e b
+        # Retrieve Π_{ab}^a (or Π_{ba}^a) from local copy
+        Pi_ab = self._get_Pi(self.id, b)   # Π_{ab}^a  →  Π between a and b
 
-        # Covarianza dell'innovazione  S_{ab}  (Eq. S9b)
+        # Innovation covariance  S_{ab}  (Eq. S9b)
         #   S = R + H̃_a P^a H̃_a⊤ + H̃_b P^b H̃_b⊤
         #       − H̃_a Φ^a Π_{ab}^a Φ^{b⊤} H̃_b⊤
         #       − H̃_b Φ^b Π_{ab}^{a⊤} Φ^{a⊤} H̃_a⊤
@@ -316,19 +315,19 @@ class AgentIMDCL:
             - Hb_tilde @ Phi_b @ Pi_ab.T @ Phi_a.T @ Ha_tilde.T
         )
 
-        # Fattore S^{-1/2}  (usato per normalizzare Γ e conservare in msg)
+        # Factor S^{-1/2}  (used to normalise Γ and store in message)
         S_inv_sqrt = self._matrix_inv_sqrt(S)
 
-        # Termini di aggiornamento Γ_a, Γ_b  (Eq. S9c del paper)
+        # Update terms Γ_a, Γ_b  (Eq. S9c of the paper)
         #
-        # Dal paper (segni esatti):
+        # From the paper (exact signs):
         #   Γ_a = ((Φ^a)^{-1} P^a H̃_a⊤ − (Φ^a)^{-1} Φ^a Π_{ab}^a Φ^{b⊤} H̃_b⊤) S^{-1/2}
         #        = (Φ^a)^{-1} (P^a H̃_a⊤ − Π_{ab}^a Φ^{b⊤} H̃_b⊤) S^{-1/2}
         #
         #   Γ_b = ((Φ^b)^{-1} P^b H̃_b⊤ − (Φ^b)^{-1} Π_{ba}^a Φ^{a⊤} H̃_a⊤) S^{-1/2}
         #        = (Φ^b)^{-1} (P^b H̃_b⊤ − Π_{ab}^{a⊤} Φ^{a⊤} H̃_a⊤) S^{-1/2}
         #
-        # Nota: Φ^a_inv @ Φ^a = I  →  il termine Π si semplifica a Pi_ab direttamente.
+        # Note: Φ^a_inv @ Φ^a = I  →  the Π term simplifies to Pi_ab directly.
         Phi_a_inv = np.linalg.inv(Phi_a)
         Phi_b_inv = np.linalg.inv(Phi_b)
 
@@ -342,7 +341,7 @@ class AgentIMDCL:
             - Phi_b_inv @ Pi_ab.T @ Phi_a.T @ Ha_tilde.T
         ) @ S_inv_sqrt
 
-        # Termini ausiliari per consentire ad ogni agente i di calcolare Γ_i (Eq. S11)
+        # Auxiliary terms to let every agent i compute Γ_i (Eq. S11)
         Phi_b_T_Hb_T_S_inv = Phi_b.T @ Hb_tilde.T @ S_inv_sqrt
         Phi_a_T_Ha_T_S_inv = Phi_a.T @ Ha_tilde.T @ S_inv_sqrt
 
@@ -358,22 +357,22 @@ class AgentIMDCL:
         )
 
     # ------------------------------------------------------------------
-    # 2d. Applicazione dell'update-message (tutti gli agenti)
+    # 2d. Update message application (all agents)
     # ------------------------------------------------------------------
 
     def apply_update(self, msg: UpdateMessage) -> None:
         """
-        Ogni agente i ∈ V riceve l'update-message e aggiorna le proprie
-        variabili locali (Eq. S11, S12a–S12c).
+        Every agent i ∈ V receives the update message and updates its
+        local variables (Eq. S11, S12a–S12c).
 
         Parameters
         ----------
-        msg : UpdateMessage broadcast dall'interim master.
+        msg : UpdateMessage broadcast by the interim master.
         """
         a = msg.master_id
         b = msg.landmark_id
 
-        # --- Calcolo di Γ_i per questo agente (Eq. S11) ---
+        # --- Compute Γ_i for this agent (Eq. S11) ---
         if self.id == a:
             Gamma_i = msg.Gamma_a
         elif self.id == b:
@@ -387,35 +386,35 @@ class AgentIMDCL:
                 - Pi_ia @ msg.Phi_a_T_Ha_T_S_inv_sqrt
             )
 
-        # r̃^a = S^{-1/2} r^a  (innovazione normalizzata)
+        # r̃^a = S^{-1/2} r^a  (normalised innovation)
         r_tilde = msg.S_inv_sqrt @ msg.innovation
 
-        # --- Aggiornamento stato (Eq. S12a) ---
+        # --- State update (Eq. S12a) ---
         # x^{i+}(k+1) = x^{i-}(k+1) + Φ^i(k+1) Γ_i r̃^a
         self.x_hat = self.x_hat + self.Phi @ Gamma_i @ r_tilde
 
-        # --- Aggiornamento covarianza (Eq. S12b) ---
+        # --- Covariance update (Eq. S12b) ---
         # P^{i+}(k+1) = P^{i-}(k+1) − Φ^i Γ_i Γ_i⊤ Φ^{i⊤}
         self.P = self.P - self.Phi @ Gamma_i @ Gamma_i.T @ self.Phi.T
 
-        # --- Aggiornamento copie locali Π_{jl}^i (Eq. S12c) ---
+        # --- Local copy update Π_{jl}^i (Eq. S12c) ---
         # Π_{jl}^i(k+1) = Π_{jl}^i(k) − Γ_j Γ_l⊤
         for (j, l) in list(self.Pi_jl.keys()):
             Gamma_j = self._compute_gamma(j, msg)
             Gamma_l = self._compute_gamma(l, msg)
             with np.errstate(over="ignore", invalid="ignore"):
                 mat = self.Pi_jl[(j, l)] - Gamma_j @ Gamma_l.T
-            # Reset a zero se non finita o norma oltre soglia (Pi_jl è una cross-covarianza:
-            # se diverge, si assume indipendenza — il filtro continua senza correzione incrociata).
+            # Reset to zero if not finite or norm exceeds threshold (Pi_jl is a cross-covariance:
+            # if it diverges, independence is assumed — filter continues without cross-correction).
             if not np.all(np.isfinite(mat)) or np.linalg.norm(mat, "fro") > IMDCL_PI_MAX_NORM:
                 mat = np.zeros((self._n, self._n))
             self.Pi_jl[(j, l)] = mat
 
-        # Azzera Φ^i dopo ogni aggiornamento (Eq. S5/S6: Φ reset a I dopo update)
+        # Reset Φ^i after each update (Eq. S5/S6: Φ reset to I after update)
         self.Phi = np.eye(self._n)
 
     # ------------------------------------------------------------------
-    # 2e. Aggiornamento con misura assoluta (locale, nessuna comunicazione)
+    # 2e. Absolute measurement update (local, no communication)
     # ------------------------------------------------------------------
 
     def apply_absolute_update(
@@ -425,73 +424,73 @@ class AgentIMDCL:
         R: Matrix,
     ) -> None:
         """
-        Aggiornamento EKF con una misura assoluta **locale** dell'agente stesso
-        (nessuna comunicazione richiesta).
+        EKF update with a **local** absolute measurement of this agent
+        (no communication required).
 
-        Nel framework IMDCL una misura assoluta di un agente i è equivalente
-        a una misura relativa con a = b = i (landmark = master = stesso agente).
-        Il guadagno di Kalman si riduce alla forma standard:
+        In the IMDCL framework an absolute measurement of agent i is
+        equivalent to a relative measurement with a = b = i (landmark =
+        master = self). The Kalman gain reduces to the standard form:
 
             K  = P · H^T · (H · P · H^T + R)^{-1}
             x̂  ← x̂ + Φ · K · (z − H · x̂)
             P  ← P  − Φ · K · (H · P · H^T + R) · K^T · Φ^T
 
-        Dopo l'aggiornamento Φ viene resettato a I (come per apply_update).
+        Φ is reset to I after the update (same as apply_update).
 
-        Il termine Π_{jl} **non viene modificato** perché la misura assoluta
-        riguarda solo questo agente: non crea correlazioni incrociate nuove
-        (cfr. paper §"Cooperative Localization via EKF", misure assolute).
+        Π_{jl} is **not modified** because the absolute measurement
+        concerns only this agent and creates no new cross-covariances
+        (cf. paper §"Cooperative Localization via EKF", absolute measurements).
 
         Parameters
         ----------
-        z : vettore di misura                  (m,)
-        H : matrice di osservazione ∂h/∂x      (m × n)
-        R : covarianza rumore di misura        (m × m)
+        z : measurement vector                   (m,)
+        H : observation matrix ∂h/∂x             (m × n)
+        R : measurement noise covariance          (m × m)
         """
         z = np.asarray(z, dtype=float).ravel()
         H = np.asarray(H, dtype=float)
         R = np.asarray(R, dtype=float)
 
-        # Innovazione
+        # Innovation
         innov = z - H @ self.x_hat                         # (m,)
 
-        # Covarianza dell'innovazione
+        # Innovation covariance
         S = H @ self.P @ H.T + R                           # (m × m)
 
-        # Guadagno di Kalman standard
+        # Standard Kalman gain
         K = self.P @ H.T @ np.linalg.inv(S)               # (n × m)
 
-        # Aggiornamento stato: x̂ ← x̂ + Φ K (z − H x̂)
+        # State update: x̂ ← x̂ + Φ K (z − H x̂)
         self.x_hat = self.x_hat + self.Phi @ K @ innov
 
-        # Aggiornamento covarianza (Joseph form per stabilità numerica)
+        # Covariance update (Joseph form for numerical stability)
         I_KH = np.eye(self._n) - self.Phi @ K @ H
         self.P = I_KH @ self.P @ I_KH.T + self.Phi @ K @ R @ K.T @ self.Phi.T
 
-        # Reset Φ → I dopo ogni aggiornamento
+        # Reset Φ → I after each update
         self.Phi = np.eye(self._n)
 
     # ------------------------------------------------------------------
-    # Metodi ausiliari privati
+    # Private helper methods
     # ------------------------------------------------------------------
 
     def _get_Pi(self, i: int, j: int) -> Matrix:
         """
-        Restituisce Π_{ij}^{self} dalla copia locale, rispettando la
-        convenzione j > i (simmetria: Π_{ji} = Π_{ij}⊤).
+        Returns Π_{ij}^{self} from the local copy, honouring the
+        j > i convention (symmetry: Π_{ji} = Π_{ij}⊤).
         """
         if i == j:
-            # Π_{ii} ≡ P^i  (autocoppia — non viene mai usata direttamente)
+            # Π_{ii} ≡ P^i  (self-pair — never used directly)
             return self.P.copy()
         key = (min(i, j), max(i, j))
         mat = self.Pi_jl.get(key, np.zeros((self._n, self._n)))
-        # Se i > j la matrice è trasposta
+        # If i > j the matrix is transposed
         return mat if i < j else mat.T
 
     def _compute_gamma(self, agent_j: int, msg: UpdateMessage) -> Matrix:
         """
-        Calcola Γ_j per un agente j qualsiasi del team, dato l'update-message.
-        Usato internamente durante l'aggiornamento di Pi_jl.
+        Computes Γ_j for any team agent j given the update message.
+        Used internally during the Pi_jl update.
         """
         a, b = msg.master_id, msg.landmark_id
         if agent_j == a:
@@ -512,19 +511,19 @@ class AgentIMDCL:
     @staticmethod
     def _matrix_inv_sqrt(M: Matrix) -> Matrix:
         """
-        Calcola M^{-1/2} tramite decomposizione agli autovalori.
+        Computes M^{-1/2} via eigenvalue decomposition.
 
-        Per una matrice simmetrica definita positiva M = V Λ V⊤:
+        For a symmetric positive-definite matrix M = V Λ V⊤:
             M^{-1/2} = V Λ^{-1/2} V⊤
         """
         eigvals, eigvecs = np.linalg.eigh(M)
-        # Clamp numerico per evitare autovalori negativi per errori di floating point
+        # Numerical clamp to avoid negative eigenvalues from floating-point errors
         eigvals = np.maximum(eigvals, 1e-12)
         inv_sqrt_diag = np.diag(1.0 / np.sqrt(eigvals))
         return eigvecs @ inv_sqrt_diag @ eigvecs.T
 
     # ------------------------------------------------------------------
-    # Rappresentazione testuale
+    # String representation
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
@@ -536,18 +535,18 @@ class AgentIMDCL:
 
 
 # ===========================================================================
-# Esempio d'uso minimale
+# Minimal usage example
 # ===========================================================================
 
 if __name__ == "__main__":
-    # Esempio di istanziazione di un agente IMDCL con modello di moto
-    # PointMass3DModel e rumore di accelerazione σ_acc = 0.1 m/s².
+    # Example: instantiate an IMDCL agent with PointMass3DModel
+    # and acceleration noise σ_acc = 0.1 m/s².
     motion_model = PointMass3DModel(sigma_acc=0.1)
     agent = AgentIMDCL(
         agent_id=1,
-        x0=np.zeros(6),          # stato iniziale: posizione e velocità nulle
-        P0=np.eye(6) * 0.5,     # covarianza iniziale: incertezza moderata
-        team_ids=[1, 2, 3],     # id del team (incluso questo agente)
+        x0=np.zeros(6),          # initial state: zero position and velocity
+        P0=np.eye(6) * 0.5,     # initial covariance: moderate uncertainty
+        team_ids=[1, 2, 3],     # team ids (including this agent)
         motion_model=motion_model,
     )
     print(agent)

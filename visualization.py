@@ -1,18 +1,18 @@
 """
 visualization.py
 ================
-Visualizzazione e animazione per la simulazione di ricerca valanga multi-drone.
+Visualization and animation for the multi-drone avalanche search simulation.
 
-Consolida visualization.py + animate_drone.py (eliminando ridondanze).
+Consolidates visualization.py + animate_drone.py (removing redundancies).
 
-Funzioni pubbliche
-------------------
-  plot_mission          — figura statica 6 pannelli missione
-  animate_mission       — animazione 3-D reale + stima IMDCL (usata da main.py)
-  animate_mpc_standalone— animazione MPC standalone (ex animate_drone.py)
+Public functions
+----------------
+  plot_mission          — static 6-panel mission figure
+  animate_mission       — 3-D animation: real + IMDCL estimate (used by main.py)
+  animate_mpc_standalone— standalone MPC animation (formerly animate_drone.py)
 
-Utilizzo standalone (ex animate_drone.py)
------------------------------------------
+Standalone usage (formerly animate_drone.py)
+--------------------------------------------
     python visualization.py [--save] [--fps 30] [--speed 2.0] [--out path]
 """
 
@@ -47,17 +47,17 @@ from config import (
 )
 
 # ---------------------------------------------------------------------------
-# Palette condivisa (usata anche in animate_mpc_standalone)
+# Shared palette (also used in animate_mpc_standalone)
 # ---------------------------------------------------------------------------
 _BG_COLOR   = BG_DARK
 _GRID_COLOR = "#1e2730"
 _TEXT_COLOR = "#c9d1d9"
 _TRAIL_LEN  = 50
 
-# chi²(0.95, df=3) — soglia per l'ellissoide di confidenza 3D al 95%
+# chi²(0.95, df=3) — threshold for the 3-D confidence ellipsoid at 95%
 _K2_3DOF = 7.8147
 
-# RC params per i plot MPC — Computer Modern via LaTeX
+# RC params for MPC plots — Computer Modern via LaTeX
 _LATEX_RC: dict = {
     "text.usetex":     True,
     "font.family":     "serif",
@@ -82,14 +82,14 @@ _LATEX_RC_2X: dict = {
 
 
 # ============================================================================
-# Helper privato
+# Private helpers
 # ============================================================================
 
 def _reconstruct_state_sequence(ag: DroneAgent) -> List[DroneState]:
     """
-    Ricostruisce la sequenza FSM dal log segnali.
-    SEARCH fino al primo rilevamento, poi TRACK fino alla soglia STOP,
-    poi STOP/SUPPORT (approssimato come TRACK per il plot della traiettoria).
+    Reconstructs the FSM state sequence from the signal log.
+    SEARCH until first detection, then TRACK until the STOP threshold,
+    then STOP/SUPPORT (approximated as TRACK for trajectory plotting).
     """
     from config import TRACK_STOP_THR
     n = len(ag.history)
@@ -114,26 +114,26 @@ def _reconstruct_state_sequence(ag: DroneAgent) -> List[DroneState]:
 
 
 def _save_animation(anim, save_path, fps, bg_color=_BG_COLOR):
-    """Tenta il salvataggio mp4 (ffmpeg), poi gif (Pillow)."""
+    """Attempts to save as mp4 (ffmpeg), then gif (Pillow)."""
     try:
         out = save_path + ".mp4"
         anim.save(out, writer=FFMpegWriter(fps=fps, bitrate=1800,
                                            metadata={"title": "Drone Sim"}),
                   dpi=150, savefig_kwargs={"facecolor": bg_color})
-        print(f"Animazione salvata in: {out}")
+        print(f"Animation saved to: {out}")
     except Exception as e_mp4:
-        print(f"ffmpeg non disponibile ({e_mp4}), provo con Pillow...")
+        print(f"ffmpeg not available ({e_mp4}), trying Pillow...")
         try:
             out = save_path + ".gif"
             anim.save(out, writer=PillowWriter(fps=fps), dpi=100,
                       savefig_kwargs={"facecolor": bg_color})
-            print(f"Animazione salvata in: {out}")
+            print(f"Animation saved to: {out}")
         except Exception as e_gif:
-            print(f"Salvataggio fallito: {e_gif}")
+            print(f"Save failed: {e_gif}")
 
 
 # ============================================================================
-# Plot statico missione
+# Static mission plot
 # ============================================================================
 
 def plot_mission(
@@ -148,13 +148,13 @@ def plot_mission(
     
 ) -> plt.Figure:
     """
-    Figura missione — 6 pannelli:
-      A — Vista 2-D: traiettorie reali (—/--) + stimate IMDCL (:)
-      B — Vista 3-D: reale e IMDCL sul terreno
-      C — Segnale ARTVA nel tempo
-      D — Altezza AGL nel tempo
-      E — Errore stima IMDCL |x_reale − x̂|
-      F — Errore per asse x/y/z
+    Mission figure — 6 panels:
+      A — 2-D view: real trajectories (—/--) + IMDCL estimates (:)
+      B — 3-D view: real and IMDCL on terrain
+      C — ARTVA signal over time
+      D — AGL altitude over time
+      E — IMDCL estimation error |x_real − x̂|
+      F — Per-axis error x/y/z
     """
     drone_ids = list(agents.keys())
 
@@ -173,7 +173,7 @@ def plot_mission(
     fig = plt.figure(figsize=(20, 14))
     fig.patch.set_facecolor("#ffffff")
 
-    # ── A: Vista dall'alto ──────────────────────────────────────────────
+    # ── A: Top-down view ──────────────────────────────────────────────
     ax_a = fig.add_subplot(2, 3, 1)
     ax_a.set_facecolor("#1a1a2e")
     ls = LightSource(azdeg=315, altdeg=45)
@@ -212,13 +212,13 @@ def plot_mission(
 
     ax_a.plot(*artva._theta[:2], "*", color="white", ms=18, zorder=10,
               mec="yellow", mew=1.5)
-    # Waypoint markers (pallini semi-trasparenti per ogni drone)
+    # Waypoint markers (semi-transparent dots for each drone)
     for i in drone_ids:
         c  = COLORS.get(i, "#aaaaaa")
         ag = agents[i]
         if ag.wp_target_log:
             wps_xy = np.array([w[:2] for w in ag.wp_target_log])
-            # deduplica mantenendo l'ordine
+            # deduplicate while preserving order
             seen, unique_wps = set(), []
             for w in wps_xy:
                 key = (round(w[0], 1), round(w[1], 1))
@@ -231,21 +231,21 @@ def plot_mission(
 
     ax_a.set_xlabel("x [m]", fontsize=9)
     ax_a.set_ylabel("y [m]", fontsize=9)
-    ax_a.set_title("Piano XY — traiettorie · stima IMDCL", fontweight="bold", fontsize=10)
+    ax_a.set_title("XY plane — trajectories · IMDCL estimate", fontweight="bold", fontsize=10)
     ax_a.tick_params(labelsize=8)
     handles = [mpatches.Patch(color=COLORS.get(i, "#aaa"), label=f"Drone {i}") for i in drone_ids]
     handles += [
         plt.Line2D([0],[0], color="w", lw=2.0,  label="TRACK/SUPPORT"),
         plt.Line2D([0],[0], color="w", lw=1.0, ls="--", label="SEARCH"),
-        plt.Line2D([0],[0], color="w", lw=1.0, ls=":",  label="Stima IMDCL"),
+        plt.Line2D([0],[0], color="w", lw=1.0, ls=":",  label="IMDCL estimate"),
         plt.Line2D([0],[0], marker="o", color="w", mfc="w", ms=6, alpha=0.35,
                    label="Waypoint", linestyle="None"),
         plt.Line2D([0],[0], marker="*", color="w", mfc="yellow", ms=12,
-                   label="Vittima", linestyle="None"),
+                   label="Victim", linestyle="None"),
     ]
     ax_a.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.75)
 
-    # ── B: Vista 3-D ────────────────────────────────────────────────────
+    # ── B: 3-D view ────────────────────────────────────────────────────
     ax_b = fig.add_subplot(2, 3, 2, projection="3d")
     ax_b.set_facecolor(_BG_COLOR)
     xs_3d = np.linspace(terrain.x_min, terrain.x_max, 40)
@@ -259,7 +259,7 @@ def plot_mission(
         est  = np.array(ag.est_history) if ag.est_history else traj
         c    = COLORS.get(i, "#aaaaaa")
         ax_b.plot(traj[:, 0], traj[:, 1], traj[:, 2],
-                  color=c, lw=1.5, alpha=0.85, label=f"D{i} reale")
+                  color=c, lw=1.5, alpha=0.85, label=f"D{i} real")
         ax_b.scatter(*traj[0, :3], color=c, s=40, zorder=6)
         ax_b.scatter(*traj[-1, :3], marker="^", color=c, s=60, zorder=6)
         n_est = min(len(est), len(traj))
@@ -270,11 +270,11 @@ def plot_mission(
     ax_b.set_xlabel("x [m]", fontsize=8, labelpad=3)
     ax_b.set_ylabel("y [m]", fontsize=8, labelpad=3)
     ax_b.set_zlabel("z [m]", fontsize=8, labelpad=3)
-    ax_b.set_title("Vista 3D — reale (—) · IMDCL (--)", fontweight="bold", fontsize=10)
+    ax_b.set_title("3-D view — real (—) · IMDCL (--)", fontweight="bold", fontsize=10)
     ax_b.tick_params(labelsize=7)
     ax_b.legend(fontsize=6.5, loc="upper left")
 
-    # ── C: Segnale ARTVA ────────────────────────────────────────────────
+    # ── C: ARTVA signal ────────────────────────────────────────────────
     ax_c = fig.add_subplot(2, 3, 3)
     ax_c.set_facecolor("#f8f8f8")
     for i in drone_ids:
@@ -287,12 +287,12 @@ def plot_mission(
                  label=f"Detect ({ARTVA_DETECT_THR:.0e})")
     ax_c.axhline(TRACK_STOP_THR, color="orange", lw=1.2, ls="--",
                  label=f"Stop ({TRACK_STOP_THR:.0e})")
-    ax_c.set_xlabel("Tempo [s]", fontsize=9)
-    ax_c.set_ylabel("Segnale ARTVA [a.u.]", fontsize=9)
-    ax_c.set_title("Segnale ARTVA", fontweight="bold", fontsize=10)
+    ax_c.set_xlabel("Time [s]", fontsize=9)
+    ax_c.set_ylabel("ARTVA signal [a.u.]", fontsize=9)
+    ax_c.set_title("ARTVA signal", fontweight="bold", fontsize=10)
     ax_c.legend(fontsize=8); ax_c.grid(True, ls=":", alpha=0.5); ax_c.tick_params(labelsize=8)
 
-    # ── D: Altezza AGL ──────────────────────────────────────────────────
+    # ── D: AGL altitude ──────────────────────────────────────────────────
     ax_d = fig.add_subplot(2, 3, 4)
     ax_d.set_facecolor("#f8f8f8")
     for i in drone_ids:
@@ -304,14 +304,14 @@ def plot_mission(
         ax_d.plot(time, traj[:, 2] - z_t, color=c, lw=1.2, alpha=0.85, label=f"Drone {i}")
     ax_d.axhline(AGL_HEIGHT, color="green", lw=1.2, ls="--",
                  label=f"AGL target ({AGL_HEIGHT} m)")
-    ax_d.axhline(0, color="red", lw=1.0, ls=":", alpha=0.7, label="Terreno")
-    ax_d.set_xlabel("Tempo [s]", fontsize=9)
-    ax_d.set_ylabel("Altezza sopra terreno [m]", fontsize=9)
-    ax_d.set_title("Quota AGL", fontweight="bold", fontsize=10)
+    ax_d.axhline(0, color="red", lw=1.0, ls=":", alpha=0.7, label="Ground")
+    ax_d.set_xlabel("Time [s]", fontsize=9)
+    ax_d.set_ylabel("Height above ground [m]", fontsize=9)
+    ax_d.set_title("AGL altitude", fontweight="bold", fontsize=10)
     ax_d.legend(fontsize=8); ax_d.grid(True, ls=":", alpha=0.5)
     ax_d.tick_params(labelsize=8); ax_d.set_ylim(bottom=-0.5)
 
-    # ── E: Errore stima IMDCL ───────────────────────────────────────────
+    # ── E: IMDCL estimation error ───────────────────────────────────────────
     ax_e = fig.add_subplot(2, 3, 5)
     ax_e.set_facecolor("#f8f8f8")
     for i in drone_ids:
@@ -323,13 +323,13 @@ def plot_mission(
         time = np.arange(n) * DT_SIM
         ax_e.plot(time, np.linalg.norm(traj[:n, :3] - est[:n, :3], axis=1),
                   color=c, lw=1.2, alpha=0.85, label=f"Drone {i}")
-    ax_e.set_xlabel("Tempo [s]", fontsize=9)
-    ax_e.set_ylabel("Errore posizione [m]", fontsize=9)
-    ax_e.set_title("Errore localizzazione IMDCL", fontweight="bold", fontsize=10)
+    ax_e.set_xlabel("Time [s]", fontsize=9)
+    ax_e.set_ylabel("Position error [m]", fontsize=9)
+    ax_e.set_title("IMDCL localization error", fontweight="bold", fontsize=10)
     ax_e.legend(fontsize=8); ax_e.grid(True, ls=":", alpha=0.5)
     ax_e.tick_params(labelsize=8); ax_e.set_ylim(bottom=0)
 
-    # ── F: Errore per asse ──────────────────────────────────────────────
+    # ── F: Per-axis error ──────────────────────────────────────────────
     ax_f = fig.add_subplot(2, 3, 6)
     ax_f.set_facecolor("#f8f8f8")
     ls_map   = {0: "-", 1: "--", 2: ":"}
@@ -347,15 +347,15 @@ def plot_mission(
                       label=f"D{i} {ax_names[ax_idx]}" if i == drone_ids[0] else None)
     for ax_idx in range(3):
         ax_f.plot([], [], color="gray", lw=1.0, ls=ls_map[ax_idx],
-                  label=f"asse {ax_names[ax_idx]}")
-    ax_f.set_xlabel("Tempo [s]", fontsize=9)
-    ax_f.set_ylabel("|errore| per asse [m]", fontsize=9)
-    ax_f.set_title("Errore IMDCL per asse", fontweight="bold", fontsize=10)
+                  label=f"axis {ax_names[ax_idx]}")
+    ax_f.set_xlabel("Time [s]", fontsize=9)
+    ax_f.set_ylabel("|error| per axis [m]", fontsize=9)
+    ax_f.set_title("IMDCL error per axis", fontweight="bold", fontsize=10)
     ax_f.legend(fontsize=7.5); ax_f.grid(True, ls=":", alpha=0.5)
     ax_f.tick_params(labelsize=8); ax_f.set_ylim(bottom=0)
 
     fig.suptitle(
-        f"Missione valanga · {len(agents)} droni · "
+        f"Avalanche mission · {len(agents)} drones · "
         f"AGL={AGL_HEIGHT} m · N_MPC={N_MPC} · dt={DT_SIM} s · "
         f"IMDCL (Rc={_cfg.IMDCL_COMM_RADIUS:.0f} m, σ={IMDCL_R_MEAS_STD} m)",
         fontsize=11, fontweight="bold",
@@ -365,7 +365,7 @@ def plot_mission(
 
 
 # ============================================================================
-# MPC path-following performance — 3 figure separate (main.py)
+# MPC path-following performance — 3 separate figures (main.py)
 # ============================================================================
 
 def _mpc_style(ax: plt.Axes) -> None:
@@ -378,7 +378,7 @@ def plot_mpc_trajectories(
     agents:  Dict[int, DroneAgent],
     artva:   ARTVASource,
 ) -> plt.Figure:
-    """Traiettorie 2D (piano XY) viste dall'alto: reale (piena) ed IMDCL stimata (tratteggiata)."""
+    """2-D trajectories (XY plane) seen from above: real (solid) and IMDCL estimated (dashed)."""
     drone_ids = list(agents.keys())
     with plt.rc_context(_LATEX_RC_2X):
         fig, ax = plt.subplots(figsize=(7, 6))
@@ -398,7 +398,7 @@ def plot_mpc_trajectories(
             t_idx = [k for k in range(n) if state_seq[k] in (DroneState.TRACK, DroneState.SUPPORT)]
             p_idx = [k for k in range(n) if state_seq[k] == DroneState.STOP]
 
-            # ── traiettoria reale ──
+            # ── real trajectory ──
             if s_idx:
                 ax.plot(traj[s_idx, 0], traj[s_idx, 1],
                         color=c, lw=1.5, alpha=0.85, ls="-")
@@ -409,7 +409,7 @@ def plot_mpc_trajectories(
                 ax.plot(traj[p_idx, 0], traj[p_idx, 1],
                         color=c, lw=1.5, alpha=0.60, ls="-")
 
-            # ── traiettoria stimata IMDCL ──
+            # ── IMDCL estimated trajectory ──
             if n_est > 0:
                 ax.plot(est[:n_est, 0], est[:n_est, 1],
                         color=c, lw=1.0, alpha=0.55, ls="--")
@@ -447,7 +447,7 @@ def plot_mpc_trajectories_3d(
     artva:   ARTVASource,
     res:     int = 60,
 ) -> plt.Figure:
-    """Vista 3D con superficie del terreno, traiettorie reali e stimate IMDCL."""
+    """3-D view with terrain surface, real and IMDCL estimated trajectories."""
     drone_ids = list(agents.keys())
 
     xs_3d = np.linspace(terrain.x_min, terrain.x_max, res)
@@ -506,7 +506,7 @@ def plot_mpc_trajectories_3d(
 def plot_mpc_inputs(
     agents: Dict[int, DroneAgent],
 ) -> plt.Figure:
-    """Accelerazioni (top) e velocità (bottom) nel tempo con rispettivi limiti."""
+    """Accelerations (top) and velocities (bottom) over time with their limits."""
     drone_ids = list(agents.keys())
     comp_ls   = ["-", "--", ":"]
     comp_col  = ["#e63946", "#2a9d8f", "#f4a261"]
@@ -564,7 +564,7 @@ def plot_mpc_altitude(
     terrain: Terrain,
     agents:  Dict[int, DroneAgent],
 ) -> plt.Figure:
-    """Altitudine sopra il terreno (AGL) nel tempo per ogni drone."""
+    """Altitude above ground (AGL) over time per drone."""
     drone_ids = list(agents.keys())
     with plt.rc_context(_LATEX_RC):
         fig, ax = plt.subplots(figsize=(7, 4))
@@ -596,7 +596,7 @@ def plot_mpc_altitude(
 def plot_imdcl_error(
     agents: Dict[int, DroneAgent],
 ) -> plt.Figure:
-    """Errore di stima IMDCL: norma 3D (top) e per-asse (bottom) nel tempo."""
+    """IMDCL estimation error: 3-D norm (top) and per-axis (bottom) over time."""
     drone_ids = list(agents.keys())
 
     with plt.rc_context(_LATEX_RC):
@@ -629,7 +629,7 @@ def plot_artva_signal(
     artva_detect_thr: float = ARTVA_DETECT_THR,
     track_stop_thr:   float = TRACK_STOP_THR,
 ) -> plt.Figure:
-    """Segnale ARTVA filtrato nel tempo per ogni drone, con soglie DETECT e STOP."""
+    """Filtered ARTVA signal over time per drone, with DETECT and STOP thresholds."""
     drone_ids = list(agents.keys())
 
     with plt.rc_context(_LATEX_RC):
@@ -659,7 +659,7 @@ def plot_artva_signal(
 
 
 # ============================================================================
-# Plot posizioni finali
+# Final positions plot
 # ============================================================================
 
 def plot_final_positions(
@@ -668,27 +668,27 @@ def plot_final_positions(
     agents:  Dict[int, DroneAgent],
 ) -> plt.Figure:
     """
-    Mappa 2D — posizioni finali della missione:
-      ▲ (pieno)    — posizione reale del drone
-      ▲ (bordo)    — posizione stimata IMDCL del drone
-      ◆            — stima PF della sorgente, depurata dal drift IMDCL
-                     (riportata nel frame reale per il confronto con la vittima)
-      ellisse 95%  — regione di confidenza PF (covarianza 2×2 delle particelle)
-      ★            — posizione reale vittima
+    2-D map — final positions after the mission:
+      ▲ (filled)   — real drone position
+      ▲ (outline)  — IMDCL estimated drone position
+      ◆            — PF source estimate, corrected for IMDCL drift
+                     (projected back to real frame for comparison with victim)
+      95% ellipse  — PF confidence region (2×2 covariance of particles)
+      ★            — true victim position
 
-    In alto a sinistra: area media dell'ellisse di confidenza e IoU media a
-    coppie tra droni (consenso inter-drone), coerenti con lo sweep parametrico.
+    Top left: mean confidence ellipse area and mean pairwise IoU between drones
+    (inter-drone consensus), consistent with the parametric sweep.
     """
     all_ids   = list(agents.keys())
     drone_ids = [i for i in all_ids if agents[i].pf is not None]
     if not drone_ids:
-        drone_ids = all_ids   # fallback: nessun PF attivo
+        drone_ids = all_ids   # fallback: no PF active
     victim_xy   = artva._theta[:2]
     finals_real = {i: agents[i].history[-1][:2]     for i in drone_ids}
     finals_est  = {i: agents[i].est_history[-1][:2] for i in drone_ids}
 
-    # Il PF lavora nel frame stimato del drone: per confrontare la stima con la
-    # vittima vera si rimuove il drift IMDCL  center = m_xy − (x_est − x).
+    # The PF operates in the drone's estimated frame: to compare the estimate with
+    # the true victim the IMDCL drift is removed: center = m_xy − (x_est − x).
     source_ests: Dict[int, np.ndarray] = {}
     source_covs: Dict[int, np.ndarray] = {}
     for i in drone_ids:
@@ -701,14 +701,14 @@ def plot_final_positions(
         elif ag.source_est is not None:
             source_ests[i] = ag.source_est[:2] - (ag.x_est[:2] - ag.x[:2])
 
-    # Metriche aggregate coerenti con lo sweep (area media ellisse 95% + IoU media)
+    # Aggregate metrics consistent with the sweep (mean 95% ellipse area + mean IoU)
     _ids_cov  = [i for i in drone_ids if i in source_covs]
     mean_area, mean_iou = run_ellipse_metrics(
         [source_ests[i] for i in _ids_cov],
         [source_covs[i] for i in _ids_cov],
     )
 
-    # estensione delle ellissi per non tagliarle dai limiti degli assi
+    # extend ellipses to avoid clipping by axis limits
     ell_extents = []
     for i in _ids_cov:
         a, b, ang = ellipse_axes_angle(source_covs[i], conf=0.95)
@@ -740,11 +740,11 @@ def plot_final_positions(
         for i in drone_ids:
             c  = COLORS.get(i, "#aaaaaa")
 
-            # ── posizione reale e stimata IMDCL ───────────────────────────
-            # reale: triangolo pieno con bordo nero
+            # ── real and IMDCL estimated position ───────────────────────────
+            # real: filled triangle with black border
             ax.plot(*finals_real[i], "^", color=c, ms=12,
                     mec="black", mew=1.2, zorder=7)
-            # stimata: triangolo trasparente (solo bordo, colore drone)
+            # estimated: hollow triangle (outline only, drone color)
             ax.plot(*finals_est[i], "^", ms=12,
                     mfc="none", mec=c, mew=1.8, zorder=6)
             ax.plot(
@@ -753,12 +753,12 @@ def plot_final_positions(
                 color=c, lw=0.8, ls=":", alpha=0.6, zorder=5,
             )
 
-            # ── stima PF sorgente (senza correzione drift) ────────────────
+            # ── PF source estimate (without drift correction) ────────────────
             if i in source_ests:
                 src = source_ests[i]
                 ax.plot(*src, "D", color=c, ms=10, mec=c, mew=1.5, zorder=8)
 
-                # ellisse di confidenza 95% (covarianza 2×2 delle particelle)
+                # 95% confidence ellipse (2×2 covariance of particles)
                 if i in source_covs:
                     a, b, ang = ellipse_axes_angle(source_covs[i], conf=0.95)
                     ell = mpatches.Ellipse(
@@ -776,11 +776,11 @@ def plot_final_positions(
                     )
                     ax.add_patch(ell_edge)
 
-        # ── posizione reale vittima ────────────────────────────────────────
+        # ── true victim position ────────────────────────────────────────
         ax.plot(*victim_xy, "*", color="crimson", ms=16,
                 mec="black", mew=0.6, zorder=9)
 
-        # ── annotazione metriche aggregate (coerenti con lo sweep) ──────────
+        # ── aggregate metrics annotation (consistent with sweep) ──────────
         if not np.isnan(mean_area):
             txt = rf"$\bar A_{{95\%}}$ = {mean_area:.1f} m$^2$"
             if not np.isnan(mean_iou):
@@ -819,7 +819,7 @@ def plot_final_positions(
 
 
 # ============================================================================
-# Evoluzione nuvola di particelle PF (per il report)
+# PF particle cloud evolution (for the report)
 # ============================================================================
 
 def plot_pf_evolution(
@@ -830,12 +830,12 @@ def plot_pf_evolution(
     drone_id: int = None,
 ) -> plt.Figure:
     """
-    Griglia n_snaps pannelli 3D con patch di terreno, per mostrare la
-    concentrazione delle particelle nel tempo. Per n_snaps=4 usa layout 2×2;
-    altrimenti 1×n_snaps. Ogni pannello mostra:
-      - nuvola particelle (opacità ∝ peso)
-      - ellissoide di confidenza 3D al 95% (superficie semitrasparente + wireframe)
-      - annotazione delle 3 semi-quote dell'ellissoide
+    Grid of n_snaps 3-D panels with terrain patch, showing particle concentration
+    over time. For n_snaps=4 uses 2×2 layout; otherwise 1×n_snaps.
+    Each panel shows:
+      - particle cloud (opacity ∝ weight)
+      - 3-D 95% confidence ellipsoid (semi-transparent surface + wireframe)
+      - annotation of the 3 semi-axes of the ellipsoid
     """
     drone_ids = list(agents.keys())
     if drone_id is None:
@@ -850,7 +850,7 @@ def plot_pf_evolution(
     active = [k for k, e in enumerate(ag.pf_log) if e is not None]
     if len(active) < 2:
         fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "Nessun dato PF disponibile",
+        ax.text(0.5, 0.5, "No PF data available",
                 ha="center", va="center", transform=ax.transAxes)
         return fig
 
@@ -860,8 +860,8 @@ def plot_pf_evolution(
         indices = np.round(np.linspace(0, len(active) - 1, n_snaps)).astype(int)
         snap_idx = [active[i] for i in indices]
 
-    # Le particelle vivono nel frame stimato del drone (il PF usa x_est): per
-    # confrontarle con vittima e drone reali si rimuove il drift IMDCL del passo.
+    # Particles live in the drone's estimated frame (PF uses x_est): to compare
+    # with the true victim and drone, IMDCL drift is removed at each step.
     def _world_particles(step):
         parts, w = ag.pf_log[step]
         drift = np.zeros(3)
@@ -876,7 +876,7 @@ def plot_pf_evolution(
             lo, hi = lo - pad, hi + pad
         return lo - margin, hi + margin
 
-    # Layout: 2×2 per n_snaps=4, altrimenti 1×n
+    # Layout: 2×2 for n_snaps=4, otherwise 1×n
     nrows = 2 if n_snaps >= 4 else 1
     ncols = 2 if n_snaps >= 4 else len(snap_idx)
 
@@ -891,12 +891,12 @@ def plot_pf_evolution(
             particles, weights = _world_particles(step)
             p_drone = ag.history[step][:3] if step < len(ag.history) else None
 
-            # ── Covarianza 3D pesata per l'ellissoide ─────────────────────
+            # ── Weighted 3-D covariance for the ellipsoid ─────────────────────
             w_sum = weights / (weights.sum() + 1e-30)
             mean_3d = np.average(particles, weights=w_sum, axis=0)
             diff3    = particles - mean_3d
             cov3     = (diff3 * w_sum[:, None]).T @ diff3
-            # Semi-assi dell'ellissoide di confidenza al 95% (chi²₃ = 7.8147)
+            # Semi-axes of the 95% confidence ellipsoid (chi²₃ = 7.8147)
             try:
                 eigvals, eigvecs = np.linalg.eigh(cov3)
                 eigvals  = np.maximum(eigvals, 0.0)
@@ -907,7 +907,7 @@ def plot_pf_evolution(
                 ell_ok = False
                 ell_half = np.zeros(3)
 
-            # ── Volume minimo: drone + particelle + bbox ellissoide + vittima ─
+            # ── Minimum bounding volume: drone + particles + ellipsoid bbox + victim ─
             box_pts = particles if p_drone is None else np.vstack([particles, p_drone])
             box_pts = np.vstack([box_pts, mean_3d + ell_half, mean_3d - ell_half,
                                  victim[:3].reshape(1, 3)])
@@ -915,7 +915,7 @@ def plot_pf_evolution(
             yl = _axis_limits(box_pts[:, 1])
             zl = _axis_limits(box_pts[:, 2])
 
-            # Terreno entro il box del pannello
+            # Terrain within the panel bounding box
             res  = 20
             xs_t = np.linspace(max(xl[0], terrain.x_min), min(xl[1], terrain.x_max), res)
             ys_t = np.linspace(max(yl[0], terrain.y_min), min(yl[1], terrain.y_max), res)
@@ -924,14 +924,14 @@ def plot_pf_evolution(
             ax.plot_surface(XT, YT, ZT, cmap="copper", alpha=0.25,
                             rcount=res, ccount=res, linewidth=0, zorder=1)
 
-            # Particelle: colore fisso, solo opacità ∝ peso
+            # Particles: fixed color, only opacity ∝ weight
             w_norm = weights / (weights.max() + 1e-30)
             rgba = np.ones((len(w_norm), 4)) * np.array([0.25, 0.55, 0.95, 1.0])
             rgba[:, 3] = 0.08 + 0.82 * w_norm
             ax.scatter(particles[:, 0], particles[:, 1], particles[:, 2],
                        c=rgba, s=8, zorder=4, edgecolors="none", depthshade=False)
 
-            # ── Ellissoide 3D di confidenza 95% ───────────────────────────
+            # ── 3-D 95% confidence ellipsoid ───────────────────────────
             if ell_ok:
                 nu, nv = 18, 26
                 u_ = np.linspace(0, np.pi, nu)
@@ -942,7 +942,7 @@ def plot_pf_evolution(
                     np.sin(U) * np.sin(V),
                     np.cos(U),
                 ], axis=-1)                                   # (nu, nv, 3)
-                # scala per semi-assi e ruota con gli autovettori
+                # scale by semi-axes and rotate with eigenvectors
                 scaled = sphere * semi_axes[None, None, :]    # (nu, nv, 3)
                 pts = (scaled.reshape(-1, 3) @ eigvecs.T).reshape(nu, nv, 3)
                 Xe = mean_3d[0] + pts[:, :, 0]
@@ -953,7 +953,7 @@ def plot_pf_evolution(
                 ax.plot_wireframe(Xe, Ye, Ze, color="darkorange",
                                   alpha=0.25, linewidth=0.5,
                                   rstride=3, cstride=3, zorder=3)
-            # Stima media, vittima, drone
+            # Mean estimate, victim, drone
             ax.scatter(*mean_3d, color="orange", s=80, marker="D",
                        edgecolors="black", linewidths=0.6, zorder=7,
                        label=r"$\hat{\theta}$")
@@ -967,11 +967,11 @@ def plot_pf_evolution(
 
             ax.set_xlim(*xl); ax.set_ylim(*yl); ax.set_zlim(*zl)
 
-            # Semi-quote ellissoide sopra il cubo, su una riga, font grande
-            # Testo in sovraimpressione nello spazio grigio in alto
+            # Ellipsoid semi-axes above the cube, one line, large font
+            # Text overlay in the grey space at the top
             ax.text2D(0.5, 0.97, rf"step {step - active[0]}",
                       transform=ax.transAxes, ha="center", va="top",
-                      fontsize=22, fontweight="bold",
+                      fontsize=26, fontweight="bold",
                       bbox=dict(boxstyle="round,pad=0.2", fc="white",
                                 ec="none", alpha=0.6))
             if ell_ok:
@@ -980,23 +980,23 @@ def plot_pf_evolution(
                            rf"  $a_3$={sa[2]:.1f} m")
                 ax.text2D(0.5, 0.89, sa_line,
                           transform=ax.transAxes, ha="center", va="top",
-                          fontsize=17,
+                          fontsize=20,
                           bbox=dict(boxstyle="round,pad=0.2", fc="white",
                                     ec="none", alpha=0.6))
 
-            ax.set_xlabel("x [m]", fontsize=12, labelpad=6)
-            ax.set_ylabel("y [m]", fontsize=12, labelpad=6)
-            ax.set_zlabel("z [m]", fontsize=12, labelpad=6)
+            ax.set_xlabel("x [m]", fontsize=16, labelpad=8)
+            ax.set_ylabel("y [m]", fontsize=16, labelpad=8)
+            ax.set_zlabel("z [m]", fontsize=16, labelpad=8)
             ax.xaxis.set_major_locator(plt.MaxNLocator(4))
             ax.yaxis.set_major_locator(plt.MaxNLocator(4))
             ax.zaxis.set_major_locator(plt.MaxNLocator(4))
-            ax.tick_params(labelsize=9)
+            ax.tick_params(labelsize=13)
             ax.view_init(elev=20, azim=225)
 
-        # ── Legenda ─────────────────────────────────────────────────────────
+        # ── Legend ─────────────────────────────────────────────────────────
         handles, labels = fig.axes[0].get_legend_handles_labels()
         fig.legend(handles, labels, loc="lower right", ncol=1,
-                   fontsize=11, framealpha=0.85,
+                   fontsize=15, framealpha=0.85,
                    bbox_to_anchor=(0.98, 0.02))
 
         fig.tight_layout(rect=[0, 0.02, 1, 1.0])
@@ -1004,7 +1004,7 @@ def plot_pf_evolution(
 
 
 # ============================================================================
-# Animazione missione (main.py)
+# Mission animation (main.py)
 # ============================================================================
 
 def animate_mission(
@@ -1023,9 +1023,9 @@ def animate_mission(
     zoom_alpha:     float = 0.08,   # EMA: 0=immobile, 1=snap immediato
 ) -> FuncAnimation:
     """
-    Animazione 3-D (sinistra) + vista overhead 2-D (destra).
-    Nel pannello 2-D: cerchi di distanza stimata ARTVA per ogni drone in TRACK;
-    al momento del raffinamento: cerchio passante per le intersezioni dei 3 cerchi.
+    3-D animation (left) + 2-D overhead view (right).
+    In the 2-D panel: ARTVA estimated distance circles for each TRACK drone;
+    at refinement moment: circle through the intersections of the 3 circles.
     """
     drone_ids = list(agents.keys())
     T = max(len(ag.history) for ag in agents.values())
@@ -1034,7 +1034,7 @@ def animate_mission(
     _cos = np.cos(_th)
     _sin = np.sin(_th)
 
-    # ── Pre-calcola step di stop (usato per il testo stato) ─────────────
+    # ── Pre-compute stop step (used for state text) ─────────────
     stop_steps: Dict[int, int] = {}
     for i in drone_ids:
         for k, (_, s) in enumerate(agents[i].signal_log):
@@ -1042,7 +1042,7 @@ def animate_mission(
                 stop_steps[i] = k
                 break
 
-    # ── Figura: 3-D a sinistra, 2-D a destra ────────────────────────────
+    # ── Figure: 3-D on the left, 2-D on the right ────────────────────────────
     xs_3d = np.linspace(terrain.x_min, terrain.x_max, 35)
     ys_3d = np.linspace(terrain.y_min, terrain.y_max, 35)
     X3, Y3 = np.meshgrid(xs_3d, ys_3d)
@@ -1071,16 +1071,16 @@ def animate_mission(
         ax.set_ylim3d(terrain.y_min, terrain.y_max)
         ax.set_zlim3d(_z_lo_zoom, _z_hi_zoom)
         ax.set_autoscale_on(False)
-        # stato corrente limiti XY per EMA — [x_lo, x_hi, y_lo, y_hi]
+        # current XY limits for EMA — [x_lo, x_hi, y_lo, y_hi]
         _zoom_cur = [terrain.x_min, terrain.x_max,
                      terrain.y_min, terrain.y_max]
 
-    # — 2-D setup: sfondo statico (terreno + sorgente) —
+    # — 2-D setup: static background (terrain + source) —
     ax2.set_facecolor(_BG_COLOR)
     ax2.tick_params(colors=_TEXT_COLOR, labelsize=7)
     ax2.set_xlabel("x [m]", color=_TEXT_COLOR, fontsize=8)
     ax2.set_ylabel("y [m]", color=_TEXT_COLOR, fontsize=8)
-    ax2.set_title("Piano XY", color=_TEXT_COLOR, fontsize=9, fontweight="bold")
+    ax2.set_title("XY plane", color=_TEXT_COLOR, fontsize=9, fontweight="bold")
     for sp in ax2.spines.values():
         sp.set_edgecolor(_GRID_COLOR)
     ax2.grid(True, color=_GRID_COLOR, lw=0.4, alpha=0.5)
@@ -1097,11 +1097,11 @@ def animate_mission(
     hs2  = ls_.hillshade(np.nan_to_num(ZS2, nan=0.0), vert_exag=3)
     ext  = [terrain.x_min, terrain.x_max, terrain.y_min, terrain.y_max]
     ax2.imshow(hs2, cmap="gray", alpha=0.4, extent=ext, origin="lower", zorder=1)
-    # Posizione reale vittima
+    # True victim position
     ax2.scatter(*artva._theta[:2], marker="*", color="yellow",
                 s=200, zorder=10, edgecolors="red", linewidths=1.2)
 
-    # — Artists dinamici: 3-D —
+    # — Dynamic artists: 3-D —
     trails_r, dots_r = {}, {}
     trails_e, dots_e = {}, {}
     for i in drone_ids:
@@ -1111,7 +1111,7 @@ def animate_mission(
         trails_e[i], = ax.plot([], [], [], color=c, lw=1.0, alpha=0.5, ls="--")
         dots_e[i],   = ax.plot([], [], [], "o", color=c, ms=4, mfc="none", mec=c, mew=1.0, zorder=7)
 
-    # — Artists dinamici: 2-D trail, dot reale, dot stimato, dot waypoint —
+    # — Dynamic artists: 2-D trail, real dot, estimated dot, waypoint dot —
     trails2, dots2, dots2_e, wp_dots2 = {}, {}, {}, {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
@@ -1121,7 +1121,7 @@ def animate_mission(
         wp_dots2[i], = ax2.plot([], [], "o", color=c, ms=6, mec="white", mew=0.6,
                                 alpha=0.35, zorder=4)
 
-    # — Frecce direzione ES (visibili solo in TRACK) ───────────────────────
+    # — ES direction arrows (visible only in TRACK) ───────────────────────
     es_arrows2: Dict[int, FancyArrowPatch] = {}
     for i in drone_ids:
         c = COLORS.get(i, "#aaaaaa")
@@ -1135,7 +1135,7 @@ def animate_mission(
         ax2.add_patch(arrow)
         es_arrows2[i] = arrow
 
-    # — Pre-calcola pf_log per step (forward-fill: None prima dell'attivazione) ──
+    # — Pre-compute pf_log per step (forward-fill: None before activation) ──
     _pf_at: Dict[int, list] = {}
     for i in drone_ids:
         log  = agents[i].pf_log
@@ -1150,7 +1150,7 @@ def animate_mission(
                 arr[k] = last
         _pf_at[i] = arr
 
-    # — Particelle PF: scatter 2-D (overhead) e 3-D —————————————————————────
+    # — PF particles: 2-D scatter (overhead) and 3-D —————————————————————────
     pf_scatters:    dict = {}
     pf_scatters_3d: dict = {}
     for i in drone_ids:
@@ -1163,7 +1163,7 @@ def animate_mission(
             depthshade=False,
         )
 
-    # — Sfera di comunicazione 3-D: 3 cerchi ortogonali per drone ────────
+    # — 3-D communication sphere: 3 orthogonal circles per drone ────────
     N_SP   = 60
     _sp_t  = np.linspace(0, 2 * np.pi, N_SP, endpoint=False)
     _sp_c  = np.cos(_sp_t)
@@ -1180,8 +1180,8 @@ def animate_mission(
                      color=_TEXT_COLOR, fontsize=8, va="top", fontfamily="monospace")
 
     fig.suptitle(
-        "Ricerca valanga multi-agente — MPC + IMDCL + PF\n"
-        "reale (—)  ·  IMDCL (--)  ·  particelle PF (coordinate mondo)  ·  →: ES",
+        "Multi-agent avalanche search — MPC + IMDCL + PF\n"
+        "real (—)  ·  IMDCL (--)  ·  PF particles (world coordinates)  ·  →: ES",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold",
     )
 
@@ -1241,7 +1241,7 @@ def animate_mission(
             dots_e[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
             dots_e[i].set_3d_properties([est[ti_e, 2]])
 
-            # Sfera comunicazione 3-D (3 cerchi ortogonali centrati sul drone reale)
+            # 3-D communication sphere (3 orthogonal circles centered on the real drone)
             cx, cy, cz = traj[ti, 0], traj[ti, 1], traj[ti, 2]
             sph_xy[i].set_data(cx + R_comm * _sp_c, cy + R_comm * _sp_s)
             sph_xy[i].set_3d_properties(np.full(N_SP, cz))
@@ -1250,12 +1250,12 @@ def animate_mission(
             sph_yz[i].set_data(np.full(N_SP, cx), cy + R_comm * _sp_c)
             sph_yz[i].set_3d_properties(cz + R_comm * _sp_s)
 
-            # 2-D trail + dot reale + dot stimato IMDCL
+            # 2-D trail + real dot + IMDCL estimated dot
             trails2[i].set_data(traj[ts:ti+1, 0], traj[ts:ti+1, 1])
             dots2[i].set_data([traj[ti, 0]], [traj[ti, 1]])
             dots2_e[i].set_data([est[ti_e, 0]], [est[ti_e, 1]])
 
-            # Waypoint corrente (pallino semi-trasparente)
+            # Current waypoint (semi-transparent dot)
             wp_log = ag.wp_target_log
             if wp_log:
                 wp = wp_log[min(t_step, len(wp_log) - 1)]
@@ -1263,9 +1263,9 @@ def animate_mission(
             else:
                 wp_dots2[i].set_data([], [])
 
-            # Particelle PF — il PF lavora nel frame stimato del drone (x_est):
-            # per il rendering nel mondo reale si rimuove il drift IMDCL del
-            # passo corrente (est − reale), così la nuvola converge alla vittima.
+            # PF particles — the PF operates in the drone's estimated frame (x_est):
+            # for rendering in the real world, the IMDCL drift is removed at
+            # the current step (est − real), so the cloud converges to the victim.
             pf_entry = _pf_at[i][t_step]
             if pf_entry is not None:
                 parts, w = pf_entry
@@ -1281,7 +1281,7 @@ def animate_mission(
                 pf_scatters[i].set_offsets(_empty2)
                 pf_scatters_3d[i]._offsets3d = _empty3
 
-            # Direzione ES: freccia dal drone verso il riferimento ES
+            # ES direction: arrow from drone toward ES reference
             wp_log = ag.wp_target_log
             in_track = (ag.state_log and ti < len(ag.state_log)
                         and ag.state_log[ti] == DroneState.TRACK)
@@ -1299,7 +1299,7 @@ def animate_mission(
             else:
                 es_arrows2[i].set_alpha(0.0)
 
-            # Testo stato — usa lo state_log reale se disponibile
+            # State text — uses the real state_log if available
             if ag.state_log and ti < len(ag.state_log):
                 _s = ag.state_log[ti]
                 if _s == DroneState.SEARCH:
@@ -1323,12 +1323,12 @@ def animate_mission(
 
         info.set_text("\n".join(lines))
 
-        # ── Rotazione 3-D ────────────────────────────────────────────────
+        # ── 3-D rotation ────────────────────────────────────────────────
         if rotate_3d:
             azim = 45 + t_step * rotate_speed
             ax.view_init(elev=12, azim=azim)
 
-        # ── Zoom dinamico XY sul bounding box PF; Z fisso alla sorgente ──
+        # ── Dynamic XY zoom on PF bounding box; Z fixed to source ──
         if zoom_particles:
             all_pw = []
             for i in drone_ids:
@@ -1367,7 +1367,7 @@ def animate_mission(
 
         return all_artists
 
-    # ── Slider temporale ─────────────────────────────────────────────────
+    # ── Time slider ─────────────────────────────────────────────────
     fig.subplots_adjust(bottom=0.09)
     ax_sl = fig.add_axes([0.10, 0.025, 0.80, 0.025], facecolor="#1e2730")
     t_max = (T - 1) * dt
@@ -1378,7 +1378,7 @@ def animate_mission(
     slider.label.set_fontsize(8)
     slider.valtext.set_fontsize(8)
 
-    # _cur_f è il frame corrente — lo gestiamo noi, FuncAnimation passa f ma lo ignoriamo
+    # _cur_f is the current frame — we manage it ourselves; FuncAnimation passes f but we ignore it
     _sl_lock = [False]
     _cur_f   = [0]
 
@@ -1413,11 +1413,11 @@ def animate_mission(
 
 
 # ============================================================================
-# Animazione MPC standalone (ex animate_drone.py)
+# Standalone MPC animation (formerly animate_drone.py)
 # ============================================================================
 
 def _build_mpc_figure(drone_ids, waypoints):
-    """Costruisce la figura per animate_mpc_standalone."""
+    """Builds the figure for animate_mpc_standalone."""
     fig = plt.figure(figsize=(16, 9), facecolor=_BG_COLOR)
     ax3d  = fig.add_subplot(1, 3, (1, 2), projection="3d")
     ax_xy = fig.add_subplot(3, 3, 3)
@@ -1489,14 +1489,14 @@ def animate_mpc_standalone(
     waypoints: dict  = None,
 ) -> FuncAnimation:
     """
-    Animazione MPC 3-D + proiezioni.
+    MPC 3-D animation + projections.
 
     Parameters
     ----------
     starts, targets : {id: array}
-    history         : {id: list of x (6,)}  — output di mpc_drone.simulate()
+    history         : {id: list of x (6,)}  — output of mpc_drone.simulate()
     inputs          : {id: list of u (3,)}
-    waypoints       : {id: list of np.array(3,)}; se None derivato da targets
+    waypoints       : {id: list of np.array(3,)}; if None derived from targets
     """
     from mpc_drone import N_MPC as _N_MPC, DT_MPC as _DT_MPC, A_MAX as _A_MAX, V_MAX as _V_MAX
 
@@ -1546,7 +1546,7 @@ def animate_mpc_standalone(
                   alpha=0.6, edgecolor=_GRID_COLOR),
     )
     fig.suptitle(
-        f"MPC Droni 3-D  ·  N={_N_MPC}, dt={_DT_MPC} s  ·  "
+        f"MPC 3-D Drones  ·  N={_N_MPC}, dt={_DT_MPC} s  ·  "
         f"|a|≤{_A_MAX} m/s²  |v|≤{_V_MAX} m/s",
         color=_TEXT_COLOR, fontsize=10, fontweight="bold", y=0.99,
     )
@@ -1618,7 +1618,7 @@ def animate_mpc_standalone(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Animazione standalone simulazione MPC droni 3-D"
+        description="Standalone animation for MPC 3-D drone simulation"
     )
     parser.add_argument("--save",  action="store_true")
     parser.add_argument("--fps",   type=int,   default=30)
@@ -1642,11 +1642,11 @@ if __name__ == "__main__":
         2: np.array([5.0, -1.0,  4.0]),
     }
 
-    print("Esecuzione simulazione MPC...")
+    print("Running MPC simulation...")
     history, inputs, solve_t, waypoints = mpc_simulate(
         starts=starts, targets=targets, dt=_DT, n_steps=_N,
     )
-    print("Simulazione completata. Avvio animazione...")
+    print("Simulation complete. Starting animation...")
 
     anim = animate_mpc_standalone(
         starts=starts, targets=targets,

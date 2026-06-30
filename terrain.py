@@ -1,22 +1,22 @@
 """
 terrain.py
 ==========
-Lettura DEM TINItaly, estrazione area di lavoro e wrapper interpolato.
+TINItaly DEM reading, workspace extraction and interpolated wrapper.
 
-Consolida dem_tinitaly.py + terrain.py (eliminando ridondanze).
+Consolidates dem_tinitaly.py + terrain.py (removing redundancies).
 
-Funzioni pubbliche
-------------------
-  read_geotiff          — legge un GeoTIFF senza GDAL (solo tifffile)
-  pixel_to_coords       — converti indici pixel → coordinate mappa
-  coords_extent         — bounding box dell'intero tile
-  extract_area          — ritaglia area size_m × size_m dal DEM
-  interpolate_surface   — griglia fine RBF thin-plate (solo per plot DEM)
-  build_terrain         — pipeline completa → oggetto Terrain
+Public functions
+----------------
+  read_geotiff          — reads a GeoTIFF without GDAL (tifffile only)
+  pixel_to_coords       — converts pixel indices → map coordinates
+  coords_extent         — bounding box of the entire tile
+  extract_area          — crops a size_m × size_m area from the DEM
+  interpolate_surface   — fine RBF thin-plate grid (for DEM diagnostic plots only)
+  build_terrain         — full pipeline → Terrain object
 
-Classe
-------
-  Terrain               — DEM interpolato interrogabile come f(x, y)
+Class
+-----
+  Terrain               — interpolated DEM queryable as f(x, y)
 """
 
 from __future__ import annotations
@@ -33,13 +33,13 @@ from scipy.interpolate import RegularGridInterpolator, RBFInterpolator
 from config import AREA_SIZE_M, AGL_HEIGHT, LIDAR_SIGMA
 
 # ---------------------------------------------------------------------------
-# Percorso al file GeoTIFF
+# Path to the GeoTIFF file
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TIF_PATH   = os.path.join(SCRIPT_DIR, "w51065_s10.tif")
 
 # ---------------------------------------------------------------------------
-# Costanti interne (usate solo dalle funzioni di visualizzazione DEM raw)
+# Internal constants (used only by raw-DEM visualisation functions)
 # ---------------------------------------------------------------------------
 _NODATA_VALUE = -9999
 _INTERP_GRID  = 100
@@ -48,22 +48,22 @@ _CMAP_INTERP  = "plasma"
 
 
 # ============================================================================
-# I/O GeoTIFF
+# GeoTIFF I/O
 # ============================================================================
 
 def read_geotiff(path: str):
     """
-    Legge un GeoTIFF e restituisce:
-      dem       : array 2-D float (righe × colonne) — quota [m]
+    Reads a GeoTIFF and returns:
+      dem       : 2-D float array (rows × cols) — elevation [m]
       transform : (x_origin, pixel_w, y_origin, pixel_h)
 
-    Usa tifffile; i tag GeoTIFF ModelPixelScaleTag (33550) e
-    ModelTiepointTag (33922) sono estratti manualmente.
+    Uses tifffile; GeoTIFF tags ModelPixelScaleTag (33550) and
+    ModelTiepointTag (33922) are extracted manually.
     """
     try:
         import tifffile
     except ImportError:
-        raise ImportError("Installa tifffile:  pip install tifffile")
+        raise ImportError("Install tifffile:  pip install tifffile")
 
     with tifffile.TiffFile(path) as tif:
         page        = tif.pages[0]
@@ -86,20 +86,20 @@ def read_geotiff(path: str):
         pixel_h  = -pixel_scale[1]
         transform = (x_origin, pixel_w, y_origin, pixel_h)
     else:
-        print("[WARN] Tag GeoTIFF non trovati — uso coordinate pixel.")
+        print("[WARN] GeoTIFF tags not found — using pixel coordinates.")
         transform = (0.0, 1.0, dem.shape[0], -1.0)
 
     return dem, transform
 
 
 def pixel_to_coords(row, col, transform):
-    """Converte indici pixel in coordinate geografiche/proiettate."""
+    """Converts pixel indices to geographic/projected coordinates."""
     x_origin, pixel_w, y_origin, pixel_h = transform
     return x_origin + col * pixel_w, y_origin + row * pixel_h
 
 
 def coords_extent(dem, transform):
-    """Restituisce [xmin, xmax, ymin, ymax] in unità mappa."""
+    """Returns [xmin, xmax, ymin, ymax] in map units."""
     rows, cols = dem.shape
     x_origin, pixel_w, y_origin, pixel_h = transform
     xmin = x_origin
@@ -110,20 +110,21 @@ def coords_extent(dem, transform):
 
 
 # ============================================================================
-# Estrazione area
+# Area extraction
 # ============================================================================
 
 def extract_area(dem, transform, center_row=None, center_col=None, size_m=200):
     """
-    Estrae un'area quadrata di 'size_m' metri attorno al pixel centrale.
-    TODOS: punto generico passato in coordinate mappa invece che pixel; gestione bordi più elegante.
+    Extracts a square area of 'size_m' metres around the central pixel.
+    TODO: accept a generic point in map coordinates instead of pixel indices;
+          more elegant border handling.
 
     Returns
     -------
-    sub_dem  : array 2-D  (size_px × size_px)
-    x_coords : array 1-D coordinate E dei pixel [m]
-    y_coords : array 1-D coordinate N dei pixel [m]
-    (cr, cc) : centro in pixel (row, col)
+    sub_dem  : 2-D array  (size_px × size_px)
+    x_coords : 1-D array  E coordinates of pixels [m]
+    y_coords : 1-D array  N coordinates of pixels [m]
+    (cr, cc) : centre in pixels (row, col)
     """
     _, pixel_w, _, pixel_h = transform
     pixel_size = abs(pixel_w)
@@ -153,17 +154,17 @@ def extract_area(dem, transform, center_row=None, center_col=None, size_m=200):
 
 
 # ============================================================================
-# Interpolazione RBF fine (usata dai plot diagnostici del DEM)
+# Fine RBF interpolation (used by DEM diagnostic plots)
 # ============================================================================
 
 def interpolate_surface(sub_dem, x_coords, y_coords, grid_n=_INTERP_GRID):
     """
-    Interpola il DEM su griglia fine con RBFInterpolator (thin-plate spline).
+    Interpolates the DEM on a fine grid using RBFInterpolator (thin-plate spline).
 
     Returns
     -------
     xi, yi : meshgrid (grid_n × grid_n)
-    zi     : quota interpolata
+    zi     : interpolated elevation
     """
     XX, YY = np.meshgrid(x_coords, y_coords)
     mask   = ~np.isnan(sub_dem)
@@ -192,18 +193,18 @@ def interpolate_surface(sub_dem, x_coords, y_coords, grid_n=_INTERP_GRID):
 
 
 # ============================================================================
-# Classe Terrain
+# Terrain class
 # ============================================================================
 
 class Terrain:
     """
-    Incapsula il DEM interpolato e fornisce:
-      z(x, y)          — quota terreno [m]
-      z_lidar(x, y)    — quota con rumore LiDAR gaussiano
-      agl_z(x, y, agl) — quota assoluta per volare a 'agl' m sopra suolo
+    Encapsulates the interpolated DEM and provides:
+      z(x, y)          — terrain elevation [m]
+      z_lidar(x, y)    — elevation with Gaussian LiDAR noise
+      agl_z(x, y, agl) — absolute altitude to fly at 'agl' m above ground
 
-    Le coordinate x, y sono in metri locali del workspace (origine = angolo SW
-    dell'area estratta). Usare utm_origin per ricavare le coordinate UTM assolute.
+    Coordinates x, y are in local workspace metres (origin = SW corner of the
+    extracted area). Use utm_origin to recover absolute UTM coordinates.
     """
 
     def __init__(
@@ -216,7 +217,7 @@ class Terrain:
         self._interp   = rbf_interp
         self.x_min = x_min;  self.x_max = x_max
         self.y_min = y_min;  self.y_max = y_max
-        self.utm_origin = utm_origin   # (E_utm, N_utm) dell'angolo SW [m]
+        self.utm_origin = utm_origin   # (E_utm, N_utm) of SW corner [m]
         self._rng  = np.random.default_rng(0)
 
     def z(
@@ -224,7 +225,7 @@ class Terrain:
         x: float | np.ndarray,
         y: float | np.ndarray,
     ) -> float | np.ndarray:
-        """Quota terreno interpolata [m]. Clamp ai bordi dell'area."""
+        """Interpolated terrain elevation [m]. Clamped to area bounds."""
         x = np.clip(x, self.x_min, self.x_max)
         y = np.clip(y, self.y_min, self.y_max)
         pts = np.column_stack([np.atleast_1d(y).ravel(),
@@ -233,7 +234,7 @@ class Terrain:
         return float(z[0]) if np.ndim(x) == 0 else z
 
     def z_lidar(self, x: float, y: float) -> float:
-        """Quota terreno con rumore LiDAR gaussiano."""
+        """Terrain elevation with Gaussian LiDAR noise."""
         return self.z(x, y) + self._rng.normal(0, LIDAR_SIGMA)
 
     def agl_z(
@@ -242,36 +243,36 @@ class Terrain:
         y: float | np.ndarray,
         agl: float = AGL_HEIGHT,
     ) -> float | np.ndarray:
-        """Quota assoluta per volare a 'agl' m sopra il terreno."""
+        """Absolute altitude to fly at 'agl' m above the terrain."""
         return self.z(x, y) + agl
 
 
 # ============================================================================
-# Pipeline principale
+# Main pipeline
 # ============================================================================
 
 def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
     """
-    Legge il GeoTIFF, estrae area AREA_SIZE_M × AREA_SIZE_M m,
-    costruisce un oggetto Terrain interrogabile.
+    Reads the GeoTIFF, extracts an AREA_SIZE_M × AREA_SIZE_M m area,
+    and builds a queryable Terrain object.
 
-    Strategia: si estrae un patch leggermente più grande (AREA_SIZE_M + 2 pixel
-    di margine per lato) per costruire il RegularGridInterpolator, poi il dominio
-    del Terrain rimane esattamente [0, AREA_SIZE_M]². In questo modo non si
-    arriva mai al fill_value dell'interpolatore ai bordi.
+    Strategy: a slightly larger patch (AREA_SIZE_M + 2 pixels of margin on
+    each side) is extracted to build the RegularGridInterpolator, so the
+    Terrain domain stays exactly [0, AREA_SIZE_M]² and no fill_value is
+    hit at the interpolator borders.
 
     Parameters
     ----------
-    tif_path    : percorso al file GeoTIFF
-    center_frac : (row_frac, col_frac) ∈ [0,1]² — centro dell'area come
-                  frazione delle dimensioni del DEM. None = centro del DEM.
+    tif_path    : path to the GeoTIFF file
+    center_frac : (row_frac, col_frac) ∈ [0,1]² — area centre as a fraction
+                  of DEM dimensions. None = DEM centre.
 
     Returns
     -------
     terrain  : Terrain
-    x_coords : np.ndarray  (coordinate E dei pixel dell'area nominale)
-    y_coords : np.ndarray  (coordinate N dei pixel dell'area nominale)
-    sub_dem  : np.ndarray  (quota grezza dell'area nominale, per i plot)
+    x_coords : np.ndarray  (E coordinates of nominal area pixels)
+    y_coords : np.ndarray  (N coordinates of nominal area pixels)
+    sub_dem  : np.ndarray  (raw elevation of the nominal area, for plots)
     transform: tuple       (x_origin, pixel_w, y_origin, pixel_h)
     """
     dem, transform = read_geotiff(tif_path)
@@ -284,15 +285,14 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
         center_row = int(np.clip(center_frac[0] * rows, 0, rows - 1))
         center_col = int(np.clip(center_frac[1] * cols, 0, cols - 1))
 
-    # Patch nominale (usata per i plot diagnostici e come riferimento UTM)
+    # Nominal patch (used for diagnostic plots and as UTM reference)
     sub_dem, x_coords, y_coords, (cr, cc) = extract_area(
         dem, transform,
         center_row=center_row, center_col=center_col,
         size_m=AREA_SIZE_M,
     )
 
-    # Patch allargata: +2 pixel per lato → l'interpolatore non ha bordi "vuoti"
-    # all'interno del dominio [0, AREA_SIZE_M]²
+    # Enlarged patch: +2 pixels per side → no "empty" borders inside [0, AREA_SIZE_M]²
     margin_px   = 2
     size_large  = AREA_SIZE_M + 2 * margin_px * pixel_size
     sub_big, x_big, y_big, _ = extract_area(
@@ -308,7 +308,7 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
         y_big_asc   = y_big
         sub_big_asc = sub_big
 
-    # Origine UTM = angolo SW del patch nominale (invariato rispetto a prima)
+    # UTM origin = SW corner of the nominal patch
     x_min_utm = float(x_coords.min())
     y_min_utm = float((y_coords[::-1] if y_coords[0] > y_coords[-1] else y_coords).min())
 
@@ -330,7 +330,7 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
         utm_origin=(x_min_utm, y_min_utm),
     )
 
-    # y_loc_orig per i plot: ordine originale dei pixel nominali
+    # y_loc_orig for plots: original ordering of nominal pixels
     if y_coords[0] > y_coords[-1]:
         y_loc_orig = y_coords - y_min_utm
     else:
@@ -341,11 +341,11 @@ def build_terrain(center_frac=None, tif_path: str = TIF_PATH):
 
 
 # ============================================================================
-# Plot diagnostici DEM (standalone — non usati dalla simulazione)
+# Diagnostic DEM plots (standalone — not used by the simulation)
 # ============================================================================
 
 def plot_full_dem(dem, transform, area_x_coords=None, area_y_coords=None):
-    """DEM completo con hillshade; opzionalmente disegna il riquadro area."""
+    """Full DEM with hillshade; optionally draws the area bounding box."""
     rows, cols = dem.shape
     xmin, xmax, ymin, ymax = coords_extent(dem, transform)
     ls  = LightSource(azdeg=315, altdeg=45)
@@ -383,12 +383,12 @@ def plot_full_dem(dem, transform, area_x_coords=None, area_y_coords=None):
             arrowprops=dict(arrowstyle="->", color="#ff4444", lw=1.5),
         )
 
-    fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02).set_label("Quota [m s.l.m.]", fontsize=10)
+    fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02).set_label("Elevation [m a.s.l.]", fontsize=10)
     ax.set_xlabel("E  [m UTM]", fontsize=10)
     ax.set_ylabel("N  [m UTM]", fontsize=10)
     ax.set_title(
         f"DEM TINItaly — {os.path.basename(TIF_PATH)}\n"
-        f"{cols}×{rows} px  ·  risoluzione {abs(transform[1]):.0f} m/px",
+        f"{cols}×{rows} px  ·  resolution {abs(transform[1]):.0f} m/px",
         fontsize=11, fontweight="bold",
     )
     ax.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
@@ -399,7 +399,7 @@ def plot_full_dem(dem, transform, area_x_coords=None, area_y_coords=None):
 
 def plot_area_and_interpolation(sub_dem, x_coords, y_coords,
                                 xi, yi, zi, center_xy):
-    """Layout 4 pannelli: DEM originale / RBF / 3-D / residuo."""
+    """4-panel layout: original DEM / RBF / 3-D / residual."""
     xmin, xmax = x_coords.min(), x_coords.max()
     ymin, ymax = y_coords.min(), y_coords.max()
     ey = [ymax, ymin] if y_coords[0] > y_coords[-1] else [ymin, ymax]
@@ -415,8 +415,8 @@ def plot_area_and_interpolation(sub_dem, x_coords, y_coords,
     ax_a = fig.add_subplot(2, 2, 1)
     im_a = ax_a.imshow(sub_dem, cmap=_CMAP_DEM, vmin=vmin, vmax=vmax,
                        extent=extent_orig, origin="upper", interpolation="nearest")
-    fig.colorbar(im_a, ax=ax_a, fraction=0.046, pad=0.04).set_label("Quota [m]", fontsize=9)
-    ax_a.set_title("A — DEM originale 200×200 m", fontweight="bold", fontsize=10)
+    fig.colorbar(im_a, ax=ax_a, fraction=0.046, pad=0.04).set_label("Elevation [m]", fontsize=9)
+    ax_a.set_title("A — Original DEM 200×200 m", fontweight="bold", fontsize=10)
     ax_a.set_xlabel("E [m UTM]", fontsize=9); ax_a.set_ylabel("N [m UTM]", fontsize=9)
     ax_a.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
     ax_a.tick_params(labelsize=8); ax_a.set_facecolor("#cccccc")
@@ -424,8 +424,8 @@ def plot_area_and_interpolation(sub_dem, x_coords, y_coords,
     ax_b = fig.add_subplot(2, 2, 2)
     im_b = ax_b.imshow(zi, cmap=_CMAP_INTERP, vmin=vmin, vmax=vmax,
                        extent=extent_interp, origin="lower", interpolation="bilinear")
-    fig.colorbar(im_b, ax=ax_b, fraction=0.046, pad=0.04).set_label("Quota [m]", fontsize=9)
-    ax_b.set_title(f"B — Interpolata RBF (thin-plate)  {_INTERP_GRID}²",
+    fig.colorbar(im_b, ax=ax_b, fraction=0.046, pad=0.04).set_label("Elevation [m]", fontsize=9)
+    ax_b.set_title(f"B — RBF interpolation (thin-plate)  {_INTERP_GRID}²",
                    fontweight="bold", fontsize=10)
     ax_b.set_xlabel("E [m UTM]", fontsize=9); ax_b.set_ylabel("N [m UTM]", fontsize=9)
     ax_b.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
@@ -440,12 +440,12 @@ def plot_area_and_interpolation(sub_dem, x_coords, y_coords,
     ax_c.set_xlabel("E [m]", fontsize=8, labelpad=3)
     ax_c.set_ylabel("N [m]", fontsize=8, labelpad=3)
     ax_c.set_zlabel("z [m]", fontsize=8, labelpad=3)
-    ax_c.set_title("C — Vista 3-D (RBF)", fontweight="bold", fontsize=10)
+    ax_c.set_title("C — 3-D view (RBF)", fontweight="bold", fontsize=10)
     ax_c.tick_params(labelsize=7)
     ax_c.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
     ax_c.ticklabel_format(style="sci", axis="y", scilimits=(0, 0))
 
-    # Pannello D — residuo
+    # Panel D — residual
     y_asc     = np.sort(y_coords)
     sub_asc   = sub_dem[::-1, :] if y_coords[0] > y_coords[-1] else sub_dem
     sub_fill2 = sub_asc.copy(); sub_fill2[np.isnan(sub_fill2)] = np.nanmean(sub_fill2)
@@ -460,16 +460,16 @@ def plot_area_and_interpolation(sub_dem, x_coords, y_coords,
     vd   = np.nanpercentile(np.abs(diff), 98)
     im_d = ax_d.imshow(diff, cmap="RdBu_r", vmin=-vd, vmax=vd,
                        extent=extent_interp, origin="lower", interpolation="bilinear")
-    fig.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04).set_label("Δ quota [m]", fontsize=9)
-    ax_d.set_title("D — Residuo: interpolata − originale", fontweight="bold", fontsize=10)
+    fig.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04).set_label("Δ elevation [m]", fontsize=9)
+    ax_d.set_title("D — Residual: interpolated − original", fontweight="bold", fontsize=10)
     ax_d.set_xlabel("E [m UTM]", fontsize=9); ax_d.set_ylabel("N [m UTM]", fontsize=9)
     ax_d.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
     ax_d.tick_params(labelsize=8)
 
     fig.suptitle(
-        f"TINItaly DEM — Area 200×200 m  (centro: "
+        f"TINItaly DEM — Area 200×200 m  (centre: "
         f"E={center_xy[0]:.0f}, N={center_xy[1]:.0f})\n"
-        f"Interpolazione RBF thin-plate su griglia {_INTERP_GRID}×{_INTERP_GRID}",
+        f"RBF thin-plate interpolation on {_INTERP_GRID}×{_INTERP_GRID} grid",
         fontsize=11, fontweight="bold", y=1.01,
     )
     fig.tight_layout()
@@ -477,35 +477,35 @@ def plot_area_and_interpolation(sub_dem, x_coords, y_coords,
 
 
 # ============================================================================
-# Main standalone (diagnostico DEM)
+# Standalone main (DEM diagnostic)
 # ============================================================================
 
 if __name__ == "__main__":
     if not os.path.isfile(TIF_PATH):
         print(
-            f"[ERRORE] File non trovato: {TIF_PATH}\n"
-            "Scarica 'w51065_s10.tif' da:\n"
+            f"[ERROR] File not found: {TIF_PATH}\n"
+            "Download 'w51065_s10.tif' from:\n"
             "  https://tinitaly.pi.ingv.it/Download_Area1_1.html\n"
-            "e posizionalo nella stessa directory di questo script."
+            "and place it in the same directory as this script."
         )
         sys.exit(1)
 
-    print(f"Lettura: {TIF_PATH}")
+    print(f"Reading: {TIF_PATH}")
     dem, transform = read_geotiff(TIF_PATH)
     rows, cols = dem.shape
-    print(f"  Dimensioni : {cols} × {rows} pixel")
-    print(f"  Risoluzione: {abs(transform[1]):.1f} m/pixel")
-    print(f"  Quota min/max: {np.nanmin(dem):.1f} / {np.nanmax(dem):.1f} m")
+    print(f"  Dimensions : {cols} × {rows} pixels")
+    print(f"  Resolution : {abs(transform[1]):.1f} m/pixel")
+    print(f"  Elevation min/max: {np.nanmin(dem):.1f} / {np.nanmax(dem):.1f} m")
 
     sub_dem, x_coords, y_coords, (cr, cc) = extract_area(dem, transform, size_m=AREA_SIZE_M)
     cx, cy = pixel_to_coords(cr, cc, transform)
-    print(f"\nArea selezionata: {AREA_SIZE_M}×{AREA_SIZE_M} m  (centro E={cx:.0f} N={cy:.0f})")
+    print(f"\nSelected area: {AREA_SIZE_M}×{AREA_SIZE_M} m  (centre E={cx:.0f} N={cy:.0f})")
 
     fig1 = plot_full_dem(dem, transform, area_x_coords=x_coords, area_y_coords=y_coords)
 
-    print(f"\nInterpolazione RBF thin-plate su griglia {_INTERP_GRID}×{_INTERP_GRID}...")
+    print(f"\nRBF thin-plate interpolation on {_INTERP_GRID}×{_INTERP_GRID} grid...")
     xi, yi, zi = interpolate_surface(sub_dem, x_coords, y_coords)
-    print("  Completata.")
+    print("  Done.")
 
     fig2 = plot_area_and_interpolation(sub_dem, x_coords, y_coords, xi, yi, zi, (cx, cy))
     plt.show()

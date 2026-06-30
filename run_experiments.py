@@ -1,47 +1,45 @@
 """
 run_experiments.py
 ==================
-Script di test batch per la simulazione di ricerca multi-drone ARTVA.
+Batch test script for the multi-drone ARTVA search simulation.
 
-Per ogni combinazione di parametri esegue la simulazione e registra in
+For each parameter combination runs the simulation and records in
 results.csv:
-  - tempo simulato per trovare la vittima [s]
-  - varianza planimetrica della stima di posizione tra i droni [m²]
-  - errore planimetrico della stima rispetto alla posizione reale [m]
-  - nota di timeout se il tempo supera 15 minuti simulati
+  - simulated time to find the victim [s]
+  - planimetric variance of the position estimate across drones [m²]
+  - planimetric estimation error w.r.t. true position [m]
+  - timeout note if the time exceeds 15 simulated minutes
 
-Uso
----
-    python run_experiments.py                      # sweep completo (4 worker)
-    python run_experiments.py --workers 8          # più paralleli
-    python run_experiments.py --workers 1          # sequenziale (debug)
+Usage
+-----
+    python run_experiments.py                      # full sweep (4 workers)
+    python run_experiments.py --workers 8          # more parallel workers
+    python run_experiments.py --workers 1          # sequential (debug)
     python run_experiments.py --workers 1 --verbose
-    python run_experiments.py --dry-run            # mostra combinazioni, non esegue
-    python run_experiments.py --out mio.csv        # file output personalizzato
+    python run_experiments.py --dry-run            # show combinations, do not run
+    python run_experiments.py --out my.csv         # custom output file
 
-Resume automatico
------------------
-Se results.csv esiste già, i run_id già presenti vengono saltati e lo sweep
-riprende dai job mancanti (utile dopo interruzione).
+Automatic resume
+----------------
+If results.csv already exists, run_ids already present are skipped and the
+sweep resumes from missing jobs (useful after interruption).
 
-Configurazione
---------------
-Modificare le liste nella sezione "GRID DEI PARAMETRI".
-Il numero totale di esperimenti è stampato prima dell'esecuzione.
+Configuration
+-------------
+Modify the lists in the "PARAMETER GRID" section.
+The total number of experiments is printed before execution.
 
 Workspace
 ---------
-WORKSPACE_CENTERS definisce 5 patch di terreno distinte estratte dal DEM
-reale TINItaly. Ogni entry è (row_frac, col_frac) ∈ [0,1]² oppure None
-(= centro del DEM, comportamento originale). Questo permette di valutare
-la robustezza del sistema su terreni alpini diversi.
+WORKSPACE_CENTERS defines 5 distinct terrain patches extracted from the
+real TINItaly DEM. Each entry is (row_frac, col_frac) ∈ [0,1]² or None
+(= DEM centre, original behaviour). This allows evaluating system
+robustness on different alpine terrains.
 
-Vittime casuali
----------------
-N_RANDOM_VICTIMS posizioni vittima e N_RANDOM_DEPTHS profondità di
-sepoltura vengono campionate con seme fisso _GRID_RNG_SEED e aggiunte
-alle liste fisse, aumentando la diversità senza compromettere la
-riproducibilità.
+Random victims
+--------------
+N_RANDOM_VICTIMS victim positions and burial depths are sampled uniformly
+in run_one(), increasing diversity without compromising reproducibility.
 """
 
 from __future__ import annotations
@@ -70,40 +68,40 @@ except ImportError:
     _HAS_TQDM = False
 
 # ============================================================================
-# GRID DEI PARAMETRI — modificare per restringere/ampliare lo sweep
+# PARAMETER GRID — modify to restrict/expand the sweep
 # ============================================================================
 
-AREA_SIZES = [100, 200]        # [m]  lato workspace
+AREA_SIZES = [100, 200]        # [m]  workspace side
 
-N_DRONES_LIST = [3, 4, 5]          # numero di agenti
+N_DRONES_LIST = [3, 4, 5]          # number of agents
 
-# Numero di posizioni vittima casuali: ognuna campionata indipendentemente in run_one().
+# Number of random victim positions: each sampled independently in run_one().
 N_RANDOM_VICTIMS = 10
 
-ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # rumore segnale ARTVA
+ARTVA_NOISE_STDS = [1e-7, 1e-6, 1e-5]  # ARTVA signal noise
 
-# Rumore accelerazione simulazione:
+# Simulation acceleration noise:
 ACC_SIM_LIST = [0.05, 0.1]             # [m/s²]
 
-# Raggio comunicazione UWB:
-#   120 m → condizioni ottimali (visibilità diretta)
-#    60 m → ambiente aperto con ostacoli leggeri
-#    25 m → condizioni difficili
+# UWB communication radius:
+#   120 m → optimal conditions (direct line of sight)
+#    60 m → open environment with light obstacles
+#    25 m → difficult conditions
 COMM_RADII = [25, 60, 120]     # [m]
 
-# Patch di terreno distinte estratte dal DEM TINItaly.
-# Ogni entry è (row_frac, col_frac) come frazioni delle dimensioni del DEM.
-# None = centro del DEM (comportamento originale e di default).
+# Distinct terrain patches extracted from the TINItaly DEM.
+# Each entry is (row_frac, col_frac) as fractions of the DEM dimensions.
+# None = DEM centre (original and default behaviour).
 WORKSPACE_CENTERS = [
-    None,            # patch centrale (default)
-    (0.35, 0.4),    # patch SW
-    (0.45, 0.55),    # patch E
-    (0.60, 0.45),    # patch N-W
-    (0.60, 0.58),    # patch N-E
+    None,            # central patch (default)
+    (0.35, 0.4),    # SW patch
+    (0.45, 0.55),    # E patch
+    (0.60, 0.45),    # N-W patch
+    (0.60, 0.58),    # N-E patch
 ]
 
 # ============================================================================
-# Costanti di simulazione
+# Simulation constants
 # ============================================================================
 
 MAX_SIM_SECONDS = 900.0             # 15 minuti → soglia timeout
@@ -112,7 +110,7 @@ MAX_STEPS       = int(MAX_SIM_SECONDS / DT_SIM)
 SEED            = 42
 
 # ============================================================================
-# Intestazione CSV
+# CSV header
 # ============================================================================
 
 CSV_FIELDS = [
@@ -147,14 +145,14 @@ CSV_FIELDS = [
 ]
 
 # ============================================================================
-# Cache terreno — riutilizzata all'interno di ogni processo
+# Terrain cache — reused within each process
 # ============================================================================
 
 _terrain_cache: dict = {}
 
 
 def _load_terrain(area_size: float, center_frac=None, verbose: bool = False):
-    """Restituisce (terrain_obj, …) per l'area richiesta, con cache per processo."""
+    """Returns (terrain_obj, …) for the requested area, with per-process cache."""
     key = (area_size, center_frac)
     if key in _terrain_cache:
         return _terrain_cache[key]
@@ -176,7 +174,7 @@ def _load_terrain(area_size: float, center_frac=None, verbose: bool = False):
 
 
 # ============================================================================
-# Runner di un singolo esperimento
+# Single-experiment runner
 # ============================================================================
 
 def run_one(
@@ -190,14 +188,14 @@ def run_one(
     verbose:     bool  = False,
 ) -> dict:
     """
-    Esegue un esperimento e restituisce le metriche.
+    Runs one experiment and returns the metrics.
 
-    I parametri vengono patchati sulle variabili globali dei moduli (senza
-    toccare config.py su disco) e ripristinati nel finally.
-    Ogni processo figlio ha la propria copia dei moduli → nessuna race condition.
+    Parameters are patched on module globals (without touching config.py on disk)
+    and restored in the finally block.
+    Each child process has its own module copies → no race conditions.
 
-    center_frac : (row_frac, col_frac) per la selezione del workspace nel DEM,
-                  oppure None per il centro di default.
+    center_frac : (row_frac, col_frac) for workspace selection in the DEM,
+                  or None for the default centre.
     """
     import config
     import terrain    as terrain_mod
@@ -270,16 +268,16 @@ def run_one(
         steps_run = len(next(iter(agents.values())).history) - 1
         time_s    = steps_run * DT_SIM
 
-        # STOP o FINAL_ORBIT: i droni che hanno raggiunto la sorgente (a fine run
-        # quelli con PF attivo sono in FINAL_ORBIT per l'orbita di raffinamento).
+        # STOP or FINAL_ORBIT: drones that have reached the source (at the end of the
+        # run, those with an active PF are in FINAL_ORBIT for the refinement orbit).
         n_stopped  = sum(1 for ag in agents.values()
                          if ag.state in (DroneState.STOP, DroneState.FINAL_ORBIT))
 
         n_tracked  = sum(1 for ag in agents.values() if ag.detected)
 
-        # Il PF lavora nel frame stimato del drone (x_est): per confrontare con la
-        # vittima vera ogni stima va depurata dal drift IMDCL (x_est − x). Tutte
-        # le metriche di errore e l'inter-drone spread usano le stime corrette.
+        # The PF operates in the drone's estimated frame (x_est): to compare with the
+        # true victim position each estimate must be corrected for IMDCL drift (x_est − x).
+        # All error metrics and inter-drone spread use the corrected estimates.
         corrected_ests = [
             ag.source_est - (ag.x_est[:3] - ag.x[:3])
             for ag in agents.values() if ag.source_est is not None
@@ -311,9 +309,9 @@ def run_one(
                 if ag.source_est_std is not None
             ]
             pf_std_xy_mean = float(np.mean(pf_stds)) if pf_stds else float("nan")
-            # Ellissi di confidenza per drone (riusate per metriche e criterio found)
-            # Centri depurati dal drift IMDCL (frame reale) + covarianza PF.
-            # Coerente tra criterio found, metriche IoU/area e plot.
+            # Per-drone confidence ellipses (reused for metrics and found criterion)
+            # Centres corrected for IMDCL drift (real frame) + PF covariance.
+            # Consistent between found criterion, IoU/area metrics and plots.
             pf_clouds = []
             for ag in agents.values():
                 if ag.pf is None or ag.source_est is None:
@@ -329,11 +327,10 @@ def run_one(
             pf_ellipse_area_mean = pf_iou_mean = float("nan")
             pf_clouds = []
 
-        # Criterio found (PF-based): basta UN drone con PF attivo la cui ellisse
-        # di confidenza (depurata dal drift IMDCL) contenga la vittima nel piano
-        # xy ED abbia area ≤ FOUND_ELLIPSE_AREA_MAX. Da quando esiste il PF un
-        # solo drone è sufficiente a localizzare la sorgente: niente più soglia
-        # di droni in STOP. Il vincolo sull'area scarta le stime troppo larghe.
+        # Found criterion (PF-based): ONE drone with an active PF whose confidence
+        # ellipse (corrected for IMDCL drift) contains the victim in the xy plane
+        # AND has area ≤ FOUND_ELLIPSE_AREA_MAX is sufficient. The area constraint
+        # discards estimates that are too broad.
         from config import FOUND_ELLIPSE_CONF, FOUND_ELLIPSE_AREA_MAX
         found = False
         for center, cov_xy in pf_clouds:
@@ -347,13 +344,13 @@ def run_one(
             note = ""
         elif not pf_clouds:
             note = (
-                f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti "
-                "(nessun PF attivato)"
+                f"victim not found within {MAX_SIM_SECONDS/60:.0f} minutes "
+                "(no PF activated)"
             )
         else:
             note = (
-                f"vittima non trovata entro {MAX_SIM_SECONDS/60:.0f} minuti "
-                "(ellisse PF non contiene la vittima o troppo larga)"
+                f"victim not found within {MAX_SIM_SECONDS/60:.0f} minutes "
+                "(PF ellipse does not contain victim or too large)"
             )
 
         return {
@@ -390,11 +387,11 @@ def run_one(
 
 
 # ============================================================================
-# Worker — top-level per essere picklable con multiprocessing
+# Worker — top-level to be picklable with multiprocessing
 # ============================================================================
 
 def _worker(job: tuple) -> tuple:
-    """Eseguito nel processo figlio. Restituisce (run_id, metrics_or_None, tb_or_None)."""
+    """Executed in the child process. Returns (run_id, metrics_or_None, tb_or_None)."""
     import matplotlib.pyplot as _plt
     _plt.switch_backend("agg")
     run_id, (area, n_drones, _, noise, acc_sim, rc, ws), seed, verbose = job
@@ -415,7 +412,7 @@ def _worker(job: tuple) -> tuple:
 # ============================================================================
 
 class _FallbackBar:
-    """Progress bar senza dipendenze esterne."""
+    """Progress bar without external dependencies."""
 
     def __init__(self, total: int, initial: int = 0, desc: str = "") -> None:
         self.total  = total
@@ -476,21 +473,21 @@ def _make_pbar(total: int, initial: int, desc: str):
 # ============================================================================
 
 def _read_done_ids(path: str) -> set:
-    """Legge i run_id già completati nel CSV (per resume dopo interruzione).
-    Le righe con note che iniziano per 'ERRORE:' non vengono conteggiate come
-    completate, così vengono rieseguite automaticamente al prossimo run."""
+    """Reads already-completed run_ids from the CSV (for resume after interruption).
+    Rows with notes starting with 'ERROR:' are not counted as complete and will be
+    re-run automatically on the next invocation."""
     try:
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
             return {int(row["run_id"]) for row in reader
                     if row.get("run_id") and row["run_id"] != "run_id"
-                    and not row.get("note", "").startswith("ERRORE:")}
+                    and not row.get("note", "").startswith("ERROR:")}
     except FileNotFoundError:
         return set()
 
 
 def _ws_label(ws) -> tuple:
-    """Converte workspace center in (frac_r, frac_c) stringhe per il CSV."""
+    """Converts workspace centre to (frac_r, frac_c) strings for the CSV."""
     if ws is None:
         return ("center", "center")
     return (f"{ws[0]:.2f}", f"{ws[1]:.2f}")
@@ -542,22 +539,18 @@ def preview_workspaces() -> None:
         origin="upper", interpolation="bilinear", zorder=3,
     )
 
-    # Small colorbar inset inside the map (bottom-left corner)
-    cbar_ax = ax_map.inset_axes([0.015, 0.03, 0.017, 0.33])
+    # Small colorbar inset inside the map (bottom-right corner)
+    cbar_ax = ax_map.inset_axes([0.968, 0.03, 0.017, 0.33])
     cb = fig.colorbar(im, cax=cbar_ax)
     cb.set_label("m a.s.l.", fontsize=7, color="#222222", labelpad=3)
     cbar_ax.tick_params(colors="#222222", labelsize=6)
-    cbar_ax.yaxis.set_ticks_position("left")
-    cbar_ax.yaxis.set_label_position("left")
+    cbar_ax.yaxis.set_ticks_position("right")
+    cbar_ax.yaxis.set_label_position("right")
 
-    ax_map.set_xlabel("E  [m UTM]", fontsize=9, color="#222222")
-    ax_map.set_ylabel("N  [m UTM]", fontsize=9, color="#222222")
-    ax_map.set_title(
-        "workspace sampling from Trentino, Alps",
-        fontsize=13, fontweight="bold", color="#111111", pad=8,
-    )
+    ax_map.set_xlabel("E  [m UTM]", fontsize=13, color="#222222")
+    ax_map.set_ylabel("N  [m UTM]", fontsize=13, color="#222222")
     ax_map.ticklabel_format(style="sci", axis="both", scilimits=(0, 0))
-    ax_map.tick_params(labelsize=8, colors="#222222")
+    ax_map.tick_params(labelsize=12, colors="#222222")
     for spine in ax_map.spines.values():
         spine.set_edgecolor("#aaaaaa")
     ax_map.xaxis.offsetText.set_color("#222222")
@@ -674,50 +667,50 @@ def main() -> None:
     default_workers = min(os.cpu_count() or 1, 4)
 
     parser = argparse.ArgumentParser(
-        description="Sweep parametrico simulazione multi-drone ARTVA",
+        description="Parameter sweep for multi-drone ARTVA search simulation",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--out",     default="results.csv", help="File CSV di output")
+    parser.add_argument("--out",     default="results.csv", help="Output CSV file")
     parser.add_argument("--workers", type=int, default=default_workers,
-                        help="Processi paralleli (1 = sequenziale)")
+                        help="Parallel processes (1 = sequential)")
     parser.add_argument("--verbose", action="store_true",
-                        help="Stampa output simulazione (solo con --workers 1)")
+                        help="Print simulation output (only with --workers 1)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Mostra combinazioni senza eseguire")
-    parser.add_argument("--seed",    type=int, default=SEED, help="Seme random")
+                        help="Show combinations without running")
+    parser.add_argument("--seed",    type=int, default=SEED, help="Random seed")
     args = parser.parse_args()
 
     if args.verbose and args.workers > 1:
-        print("ATTENZIONE: --verbose è ignorato con workers > 1 (output interleaved).")
+        print("WARNING: --verbose is ignored with workers > 1 (interleaved output).")
         args.verbose = False
 
-    # ── Griglia ───────────────────────────────────────────────────────────
+    # ── Grid ──────────────────────────────────────────────────────────────
     grid = list(itertools.product(
         AREA_SIZES, N_DRONES_LIST, range(N_RANDOM_VICTIMS),
         ARTVA_NOISE_STDS, ACC_SIM_LIST, COMM_RADII, WORKSPACE_CENTERS,
     ))
     total = len(grid)
 
-    print(f"Sweep parametrico — {total} esperimenti totali")
+    print(f"Parameter sweep — {total} total experiments")
     print(f"  area_sizes:        {AREA_SIZES}")
     print(f"  n_drones:          {N_DRONES_LIST}")
-    print(f"  victim positions:  {N_RANDOM_VICTIMS} (posizione e profondità uniformi casuali in run_one)")
+    print(f"  victim positions:  {N_RANDOM_VICTIMS} (uniform random position and depth in run_one)")
     print(f"  noise_stds:        {ARTVA_NOISE_STDS}")
     print(f"  acc_sim [m/s²]:    {ACC_SIM_LIST}")
     print(f"  comm_radii[m]:     {COMM_RADII}")
-    print(f"  workspace_centers: {len(WORKSPACE_CENTERS)} patch DEM")
-    print(f"  timeout:          {MAX_SIM_SECONDS:.0f}s ({MAX_SIM_SECONDS/60:.0f}min) / {MAX_STEPS} passi")
+    print(f"  workspace_centers: {len(WORKSPACE_CENTERS)} DEM patches")
+    print(f"  timeout:          {MAX_SIM_SECONDS:.0f}s ({MAX_SIM_SECONDS/60:.0f}min) / {MAX_STEPS} steps")
     print(f"  workers:          {args.workers}")
     print(f"  output:           {args.out}")
 
     if args.dry_run:
-        print("\n[dry-run] Prime 10 combinazioni:")
+        print("\n[dry-run] First 10 combinations:")
         for i, (area, nd, vidx, noise, acc_sim, rc, ws) in enumerate(grid[:10], 1):
             ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
             print(f"  {i:3d}: area={area}m  n={nd}  victim_rep={vidx}  "
                   f"noise={noise:.0e}  acc_sim={acc_sim:.2f}  rc={rc}m  ws={ws_str}")
         if total > 10:
-            print(f"  … ({total - 10} altre)")
+            print(f"  … ({total - 10} more)")
         return
 
     # ── Preview workspace su DEM + 3-D ────────────────────────────────────
@@ -732,16 +725,16 @@ def main() -> None:
     ]
     remaining = len(jobs)
     if done_ids:
-        print(f"\nResume: {len(done_ids)} già completati, {remaining} rimanenti.")
+        print(f"\nResume: {len(done_ids)} already completed, {remaining} remaining.")
     if remaining == 0:
-        print("Nessun job da eseguire.")
+        print("No jobs to run.")
         return
 
-    # ── Pre-carica terreni nel processo principale ────────────────────────
-    # Su Linux (fork) i worker ereditano la cache → non rileggono il DEM.
-    # Su macOS/Windows (spawn) ogni worker ricostruisce la propria cache.
+    # ── Pre-load terrains in the main process ─────────────────────────────
+    # On Linux (fork) workers inherit the cache → no DEM re-read.
+    # On macOS/Windows (spawn) each worker rebuilds its own cache.
     unique_terrain_keys = {(a, ws) for a, _, _, _, _, _, ws in grid}
-    print(f"\nPre-caricamento {len(unique_terrain_keys)} configurazioni terreno...")
+    print(f"\nPre-loading {len(unique_terrain_keys)} terrain configurations...")
     for area, ws in sorted(unique_terrain_keys, key=lambda x: (x[0], str(x[1]))):
         t0     = time.perf_counter()
         ws_str = "center" if ws is None else f"({ws[0]:.2f},{ws[1]:.2f})"
@@ -784,7 +777,7 @@ def main() -> None:
                     "dcgd_err_final_mean_m": float("nan"),
                     "landing_err_mean_m":    float("nan"),
                     "pf_std_xy_mean_m":      float("nan"),
-                    "note":                  f"ERRORE: {tb.splitlines()[-1]}",
+                    "note":                  f"ERROR: {tb.splitlines()[-1]}",
                 }
             elif metrics["found"]:
                 found_n += 1
@@ -815,8 +808,8 @@ def main() -> None:
                     for result in pool.imap_unordered(_worker, jobs):
                         _record(*result)
 
-    print(f"\nCompletato: {found_n} trovati, {timeout_n} timeout, {error_n} errori.")
-    print(f"Risultati: {args.out}")
+    print(f"\nDone: {found_n} found, {timeout_n} timeout, {error_n} errors.")
+    print(f"Results: {args.out}")
 
 
 if __name__ == "__main__":

@@ -1,21 +1,21 @@
 """
 simulation.py
 =============
-Loop principale di simulazione multi-agente.
+Main multi-agent simulation loop.
 
-Funzioni pubbliche
-------------------
-  build_agents — costruisce N DroneAgent con MPC + IMDCL + warm-start
-  simulate     — loop temporale multi-agente
+Public functions
+----------------
+  build_agents — builds N DroneAgent instances with MPC + IMDCL + warm-start
+  simulate     — multi-agent time loop
 
-FSM a 4 stati
--------------
+4-state FSM
+-----------
   SEARCH  → lawnmower arrival-gated
-  TRACK   → ES (Extremum Seeking) verso la sorgente; → STOP a soglia
-  STOP    → hovering sulla posizione raggiunta
-  SUPPORT → naviga verso posizione di supporto cooperativo
+  TRACK   → ES (Extremum Seeking) towards the source; → STOP at threshold
+  STOP    → hovering at the reached position
+  SUPPORT → navigates to cooperative-support position
 
-Algoritmo stima sorgente: Particle Filter distribuito.
+Source estimation algorithm: distributed Particle Filter.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ from config import (
 
 
 # ============================================================================
-# Average consensus distribuito — helper generico
+# Distributed average consensus — generic helper
 # ============================================================================
 
 def _average_consensus(
@@ -73,10 +73,10 @@ def _average_consensus(
     beta:        float = None,
 ) -> dict:
     """
-    Average consensus distribuito su grandezze scalari o vettoriali.
+    Distributed average consensus on scalar or vector quantities.
 
-    beta=None  → ogni nodo fa media uguale con se stesso e i vicini.
-    beta=float → (1-beta)*self + beta*mean(neighbors); invariante se no vicini.
+    beta=None  → each node averages equally with itself and its neighbours.
+    beta=float → (1-beta)*self + beta*mean(neighbors); invariant if no neighbours.
     """
     v = {i: np.asarray(values[i], dtype=float) for i in drone_ids}
     for _ in range(iters):
@@ -99,7 +99,7 @@ def _average_consensus(
 
 
 # ============================================================================
-# Min-consensus SUPPORT — selezione partner cooperativi
+# Min-consensus SUPPORT — cooperative partner selection
 # ============================================================================
 
 def _reachable_from(
@@ -108,7 +108,7 @@ def _reachable_from(
     start_id:    int,
     comm_radius: float = IMDCL_COMM_RADIUS,
 ) -> list:
-    """BFS sulla rete di comunicazione: ritorna la componente connessa di start_id."""
+    """BFS on the communication graph: returns the connected component of start_id."""
     pos       = {did: agents[did].x[:3] for did in drone_ids}
     reachable = {start_id}
     frontier  = {start_id}
@@ -132,10 +132,10 @@ def _consensus_select_partners(
     comm_radius: float = IMDCL_COMM_RADIUS,
 ) -> List[int]:
     """
-    Min-consensus distribuito: seleziona i n_partners droni disponibili
-    più vicini al drone STOP (stop_id) raggiungibili via rete.
+    Distributed min-consensus: selects the n_partners available drones
+    closest to the STOP drone (stop_id) reachable via the network.
 
-    Usa posizioni stimate (x_est) per le distanze; iterazioni k_max ≥ diametro grafo.
+    Uses estimated positions (x_est) for distances; k_max iterations ≥ graph diameter.
     """
     reachable  = set(_reachable_from(drone_ids, agents, stop_id, comm_radius))
     candidates = [
@@ -178,7 +178,7 @@ def _transition_to_support(
     sigma_noise: float,
     step:        int,
 ) -> None:
-    """SEARCH/TRACK → SUPPORT: assegna orbita cooperativa e inizializza il PF se mancante."""
+    """SEARCH/TRACK → SUPPORT: assigns cooperative orbit and initialises PF if missing."""
     ag.state                = DroneState.SUPPORT
     ag.waypoints            = wps
     ag.wp_idx               = 0
@@ -194,7 +194,7 @@ def _transition_to_support(
                                    z_ground=ag.x_est[2] - AGL_HEIGHT)
 
     print(
-        f"    SUPPORT: Drone {drone_id} → orbita Drone {stop_id}"
+        f"    SUPPORT: Drone {drone_id} → orbit Drone {stop_id}"
         f"  r={orbit_r:.1f} m  {'CW' if cw else 'CCW'}  (step {step})"
     )
 
@@ -208,11 +208,11 @@ def _assign_support_partners(
     step:           int,
     terrain:        Terrain,
     agl:            float,
-    consensus_done: list,      # [bool] flag mutable
+    consensus_done: list,      # [bool] mutable flag
 ) -> None:
     """
-    Lancia il min-consensus e assegna l'orbita cooperativa ai droni selezionati.
-    Imposta support_pending=True sul drone STOP se mancano partner.
+    Runs min-consensus and assigns the cooperative orbit to the selected drones.
+    Sets support_pending=True on the STOP drone if partners are missing.
     """
     consensus_done[0] = True
     partners = _consensus_select_partners(agents, drone_ids, stop_id)
@@ -236,8 +236,8 @@ def _assign_support_partners(
         stop_ag.support_deadline = step + SUPPORT_SEARCH_TIMEOUT
         stop_ag.support_n_needed = n_missing
         print(
-            f"    SUPPORT: {n_assigned}/{TRIANGULATE_N_PARTNERS} assegnati; "
-            f"cerco ancora {n_missing} (deadline step {stop_ag.support_deadline})"
+            f"    SUPPORT: {n_assigned}/{TRIANGULATE_N_PARTNERS} assigned; "
+            f"still searching for {n_missing} (deadline step {stop_ag.support_deadline})"
         )
     else:
         stop_ag.support_pending = False
@@ -252,14 +252,14 @@ def _retry_support_search(
     terrain:     Terrain,
     agl:         float,
 ) -> None:
-    """Riprova ogni step ad assegnare i partner SUPPORT mancanti per un drone STOP."""
+    """Retries every step to assign missing SUPPORT partners to a STOP drone."""
     stop_ag = agents[stop_id]
     if not stop_ag.support_pending:
         return
     if step >= stop_ag.support_deadline:
         stop_ag.support_pending = False
         stop_ag.support_failed  = True
-        print(f"    SUPPORT timeout: Drone {stop_id} rinuncia (step {step})")
+        print(f"    SUPPORT timeout: Drone {stop_id} giving up (step {step})")
         return
 
     partners = _consensus_select_partners(
@@ -297,12 +297,12 @@ def _start_final_orbit(
     agl:       float,
 ) -> list:
     """
-    Avvia l'orbita finale di raffinamento: tutti i droni con PF attivo orbitano
-    attorno a un centro statico (media delle stime PF nel frame stimato) per
-    raccogliere viste diverse e affinare il PF prima dell'arresto.
+    Starts the final refinement orbit: all drones with an active PF orbit
+    around a static centre (mean of PF estimates in the estimated frame) to
+    collect diverse views and refine the PF before stopping.
 
-    Restituisce la lista degli id dei droni messi in orbita (vuota se nessun PF
-    è attivo, nel qual caso la simulazione può fermarsi subito).
+    Returns the list of drone ids put into orbit (empty if no PF is active,
+    in which case the simulation can stop immediately).
     """
     pf_ids = [i for i in drone_ids
               if agents[i].pf is not None and agents[i].source_est is not None]
@@ -329,7 +329,7 @@ def _start_final_orbit(
 # ============================================================================
 
 def _es_condition_signal(sig: float) -> float:
-    """yt = 1 / ∛S — convesso con minimo in sorgente."""
+    """yt = 1 / ∛S — convex with minimum at the source."""
     return 1.0 / np.cbrt(max(sig, ES_EPS))
 
 
@@ -340,17 +340,17 @@ def _es_update(
     terrain: Terrain,
     agl:     float,
 ) -> None:
-    """Un passo ES (Azzollini et al. 2021, eq. 11-13), Euler in avanti."""
+    """One ES step (Azzollini et al. 2021, eq. 11-13), forward Euler."""
     ag.es_alpha += dt * (ES_ALPHA_MAX - ag.es_alpha) / ES_LAMBDA
     speed = np.sqrt(ag.es_alpha * ES_OMEGA)
     phase = ES_OMEGA * ag.es_time + ES_KAPPA * yt
     ag.es_x_ref += dt * speed * np.cos(phase)
     ag.es_y_ref += dt * speed * np.sin(phase)
     ag.es_time  += dt
-    # Il riferimento ES non è confinato al workspace: il drone deve poter
-    # inseguire la sorgente anche oltre i bordi del patch (il workspace è solo
-    # l'area di copertura del lawnmower). terrain.z() estrapola gracefully la
-    # quota di bordo fuori dominio, così l'AGL resta ben definito.
+    # The ES reference is not confined to the workspace: the drone must be able
+    # to follow the source even beyond patch boundaries (the workspace is only
+    # the lawnmower coverage area). terrain.z() gracefully extrapolates the
+    # border altitude outside the domain, keeping AGL well-defined.
     x = float(ag.es_x_ref)
     y = float(ag.es_y_ref)
     z = terrain.agl_z(x, y, agl)
@@ -359,7 +359,7 @@ def _es_update(
 
 
 # ============================================================================
-# Calibrazione rumore pre-volo
+# Pre-flight noise calibration
 # ============================================================================
 
 def _calibrate_noise(
@@ -369,8 +369,8 @@ def _calibrate_noise(
     consensus_iters: int = NOISE_CONSENSUS_ITERS,
 ) -> tuple[float, float]:
     """
-    Ogni drone stima σ_noise da misure ripetute alla propria posizione iniziale.
-    Average-consensus distribuito converge a σ̂ comune.
+    Each drone estimates σ_noise from repeated measurements at its initial position.
+    Distributed average-consensus converges to a shared σ̂.
     """
     drone_ids = list(agents.keys())
 
@@ -382,7 +382,7 @@ def _calibrate_noise(
         mu_local[i]    = float(np.mean(samples))
         sigma_local[i] = float(np.std(samples))
 
-    print("  [Calibrazione] σ_noise locale per drone:")
+    print("  [Calibration] Local σ_noise per drone:")
     for i in drone_ids:
         print(f"    Drone {i}: σ̂={sigma_local[i]:.2e}")
 
@@ -390,12 +390,12 @@ def _calibrate_noise(
     mu_agreed    = _average_consensus(agents, drone_ids, mu_local,    iters=consensus_iters)
     mu_agreed    = float(np.mean([mu_agreed[i]    for i in drone_ids]))
     sigma_agreed = float(np.mean([sigma_agreed[i] for i in drone_ids]))
-    print(f"  [Calibrazione] σ̂ consensus = {sigma_agreed:.2e}")
+    print(f"  [Calibration] σ̂ consensus = {sigma_agreed:.2e}")
     return mu_agreed, sigma_agreed
 
 
 # ============================================================================
-# Waypoint dispatch — arrival-gated per stato
+# Waypoint dispatch — arrival-gated per state
 # ============================================================================
 
 def _on_wp_reached(
@@ -404,7 +404,7 @@ def _on_wp_reached(
     terrain: Terrain,
     agl:     float,
 ) -> None:
-    """Chiamato quando il drone raggiunge il waypoint corrente."""
+    """Called when the drone reaches the current waypoint."""
     if ag.state == DroneState.SEARCH:
         if not ag.advance_waypoint():
             next_idx = ag.current_lane_idx + ag.n_drones_total
@@ -420,18 +420,18 @@ def _on_wp_reached(
 
     elif ag.state == DroneState.SUPPORT:
         if not ag.advance_waypoint():
-            ag.wp_idx = 0   # cicla la circonferenza
+            ag.wp_idx = 0   # loop the circle
 
     elif ag.state == DroneState.FINAL_ORBIT:
         if not ag.advance_waypoint():
-            ag.final_orbit_done = True   # ultimo waypoint del cerchio raggiunto
+            ag.final_orbit_done = True   # last circle waypoint reached
 
     elif ag.state == DroneState.STOP:
         pass  # hovering
 
 
 # ============================================================================
-# Transizioni di stato
+# State transitions
 # ============================================================================
 
 def _transition_search_to_track(
@@ -444,7 +444,7 @@ def _transition_search_to_track(
     terrain:     Terrain,
     agl:         float,
 ) -> None:
-    """SEARCH → TRACK: avvia l'Extremum Seeking e inizializza il Particle Filter."""
+    """SEARCH → TRACK: starts Extremum Seeking and initialises the Particle Filter."""
     ag.state    = DroneState.TRACK
     ag.detected = True
     px, py      = float(ag.x_est[0]), float(ag.x_est[1])
@@ -459,10 +459,10 @@ def _transition_search_to_track(
                                z_ground=ag.x_est[2] - AGL_HEIGHT)
 
     print(
-        f"\n    Drone {drone_id} TRACK-ES (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
-        f"\n    pos reale={ag.x[:3].round(2)}  stimata={ag.x_est[:3].round(2)}"
+        f"\n    Drone {drone_id} TRACK-ES (S={sig:.2e}) at step {step} (t={t:.2f}s)"
+        f"\n    real pos={ag.x[:3].round(2)}  estimated={ag.x_est[:3].round(2)}"
         f"\n    ES ref init=({ag.es_x_ref:.1f}, {ag.es_y_ref:.1f})"
-        f"\n    PF inizializzato con {PF_N_PARTICLES} particelle"
+        f"\n    PF initialised with {PF_N_PARTICLES} particles"
     )
 
 
@@ -473,19 +473,19 @@ def _transition_to_stop(
     step:    int,
     t:       float,
 ) -> None:
-    """TRACK → STOP quando il segnale supera track_stop_thr."""
+    """TRACK → STOP when the signal exceeds track_stop_thr."""
     ag.state     = DroneState.STOP
     hover_wp     = ag.x_est[:3].copy()
     ag.waypoints = [hover_wp]
     ag.wp_idx    = 0
     print(
-        f"\n  ⬛ Drone {drone_id} STOP (S={sig:.2e}) al passo {step} (t={t:.2f}s)"
+        f"\n  ⬛ Drone {drone_id} STOP (S={sig:.2e}) at step {step} (t={t:.2f}s)"
         f"  pos={ag.x[:3].round(1)}"
     )
 
 
 # ============================================================================
-# Costruzione agenti
+# Agent construction
 # ============================================================================
 
 def build_agents(
@@ -494,7 +494,7 @@ def build_agents(
     n_drones:  int   = N_DRONES,
     agl:       float = AGL_HEIGHT,
 ) -> Dict[int, DroneAgent]:
-    """Crea N droni con posizione iniziale, lawnmower, MPC e IMDCL."""
+    """Creates N drones with initial position, lawnmower, MPC and IMDCL."""
     agents: Dict[int, DroneAgent] = {}
 
     x_min = terrain.x_min;  x_max = terrain.x_max
@@ -531,7 +531,7 @@ def build_agents(
         agent.est_history.append(imdcl_agent.x_hat.copy())
         agents[i] = agent
 
-    print("Warm-start MPC droni...")
+    print("MPC drone warm-start...")
     for i, ag in agents.items():
         ag.ctrl.first_step(ag.x_est, ag.current_target())
         print(f"  Drone {i}: wp[0]={ag.current_target().round(1)}")
@@ -540,7 +540,7 @@ def build_agents(
 
 
 # ============================================================================
-# Loop di simulazione
+# Simulation loop
 # ============================================================================
 
 def simulate(
@@ -554,25 +554,25 @@ def simulate(
     rng_seed: int   = 42,
 ) -> tuple:
     """
-    Esegue la simulazione multi-agente.
+    Runs the multi-agent simulation.
 
-    Per ogni passo temporale:
-      1. Misura ARTVA reale (filtrata)
-      2. Transizioni di stato (SEARCH→TRACK, TRACK→STOP, SUPPORT→STOP)
-      3. ES update per droni TRACK
+    At each time step:
+      1. Real ARTVA measurement (filtered)
+      2. State transitions (SEARCH→TRACK, TRACK→STOP, SUPPORT→STOP)
+      3. ES update for TRACK drones
       4. MPC step → u_opt
-      5. Propagazione dinamica reale con rumore
-      5a-c. IMDCL: propagazione, update LiDAR, update cooperativo
-      6. Particle Filter: update pesi + resample + stima sorgente
-      7. Avanza waypoint se raggiunto (arrival-gated)
-      8. Terminazione
+      5. Real dynamic propagation with noise
+      5a-c. IMDCL: propagation, LiDAR update, cooperative update
+      6. Particle Filter: weight update + resample + source estimate
+      7. Advance waypoint if reached (arrival-gated)
+      8. Termination
     """
     rng       = np.random.default_rng(rng_seed)
     model     = PointMass3DModel(sigma_acc=sigma)
     drone_ids = list(agents.keys())
 
-    # ── Calibrazione rumore e soglie dinamiche ───────────────────────────────
-    print("Calibrazione rumore ARTVA...")
+    # ── Noise calibration and dynamic thresholds ─────────────────────────────
+    print("Calibrating ARTVA noise...")
     mu_noise, sigma_noise = _calibrate_noise(agents, artva)
     artva_detect_thr = max(mu_noise + 5*sigma_noise, ARTVA_MOMENT / ES_DETECT_MAX_R**3)
     track_stop_thr   = ARTVA_MOMENT / FOUND_RADIUS**3
@@ -589,10 +589,10 @@ def simulate(
         lane_spacing,
     )
     print(
-        f"  Soglie dinamiche: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}"
-        f"  r_detect={r_detect:.1f} m  →  {n_cov_lanes} corsie di copertura"
-        f"  →  {n_passes} passate di pettine  ×  {n_agents} droni"
-        f"  =  {n_lanes_tot} corsie totali  (lane_spacing={lane_spacing:.1f} m)\n"
+        f"  Dynamic thresholds: DETECT={artva_detect_thr:.2e}  STOP={track_stop_thr:.2e}"
+        f"  r_detect={r_detect:.1f} m  →  {n_cov_lanes} coverage lanes"
+        f"  →  {n_passes} comb passes  ×  {n_agents} drones"
+        f"  =  {n_lanes_tot} total lanes  (lane_spacing={lane_spacing:.1f} m)\n"
     )
 
     for i, ag in agents.items():
@@ -608,7 +608,7 @@ def simulate(
 
     R_rel         = np.eye(3) * IMDCL_R_MEAS_STD**2
     R_lidar       = np.array([[IMDCL_R_LIDAR_STD**2]])
-    consensus_done = [False]   # True dopo il primo STOP con partner assegnati
+    consensus_done = [False]   # True after the first STOP with assigned partners
 
     _STATE_LABEL = {
         DroneState.SEARCH:  "SRCH",
@@ -618,12 +618,12 @@ def simulate(
         DroneState.FINAL_ORBIT: "ORBT",
     }
 
-    # Stato dell'orbita finale di raffinamento (vedi sezione Terminazione)
+    # Final refinement orbit state (see Termination section)
     final_orbit_active   = False
     final_orbit_start    = 0
     orbit_ids: list      = []
-    # Tetto di sicurezza per l'orbita (anti-stallo): largo, NON è il criterio di
-    # fine — l'orbita termina quando tutti raggiungono l'ultimo waypoint.
+    # Safety cap for the orbit (anti-stall): generous, NOT the termination criterion —
+    # the orbit ends when all drones reach the last waypoint.
     orbit_safety_steps   = int(
         FINAL_ORBIT_N_WAYPOINTS * (2.0 * np.pi * FINAL_ORBIT_RADIUS
                                    / max(FINAL_ORBIT_N_WAYPOINTS, 1)) / V_MAX / dt * 6
@@ -634,12 +634,12 @@ def simulate(
         + "  ".join(f"D{i}:st/wp/dist/Δest" for i in drone_ids)
     )
 
-    # Il loop prosegue oltre n_steps solo per completare l'orbita finale.
+    # The loop continues past n_steps only to complete the final orbit.
     step = 0
     while step < n_steps or final_orbit_active:
         t = step * dt
 
-        # ── 1. Misura ARTVA ──────────────────────────────────────────────
+        # ── 1. ARTVA measurement ─────────────────────────────────────────────
         signals: Dict[int, float] = {}
         for i in drone_ids:
             ag       = agents[i]
@@ -651,9 +651,9 @@ def simulate(
             ag.signal_log.append((ag.x[:3].copy(), sig_filt))
             signals[i] = sig_filt
 
-        # ── 2. FSM (sospesa durante l'orbita finale di raffinamento) ──────
+        # ── 2. FSM (suspended during the final refinement orbit) ─────────────
         if not final_orbit_active:
-            # ── 2. Transizioni di stato ──────────────────────────────────
+            # ── 2. State transitions ─────────────────────────────────────────
             for i in drone_ids:
                 ag  = agents[i]
                 sig = signals[i]
@@ -675,26 +675,26 @@ def simulate(
                     ag.wp_idx    = 0
                     print(
                         f"\n  ⬛ Drone {i} STOP (SUPPORT→STOP, S={sig:.2e}) "
-                        f"al passo {step} (t={t:.2f}s)"
+                        f"at step {step} (t={t:.2f}s)"
                     )
 
-            # ── 2b. Retry SUPPORT search per droni STOP in attesa ────────
+            # ── 2b. Retry SUPPORT search for waiting STOP drones ─────────────
             for i in drone_ids:
                 if agents[i].state == DroneState.STOP and agents[i].support_pending:
                     _retry_support_search(agents, drone_ids, i, sigma_noise, step, terrain, agl)
 
-            # ── 2c. ES update per droni in TRACK ─────────────────────────
+            # ── 2c. ES update for TRACK drones ───────────────────────────────
             for i in drone_ids:
                 ag = agents[i]
                 if ag.state == DroneState.TRACK:
                     yt = _es_condition_signal(signals[i])
                     _es_update(ag, yt, dt, terrain, agl)
 
-        # Log waypoint corrente
+        # Log current waypoint target
         for i in drone_ids:
             agents[i].wp_target_log.append(agents[i].current_target().copy())
 
-        # ── 3. MPC step ──────────────────────────────────────────────────
+        # ── 3. MPC step ──────────────────────────────────────────────────────
         u_commands: Dict[int, np.ndarray] = {}
         for i in drone_ids:
             ag     = agents[i]
@@ -705,7 +705,7 @@ def simulate(
             ag.solve_t_log.append(perf_counter() - t0)
             u_commands[i] = u_opt
 
-        # ── 4. Propagazione dinamica reale ───────────────────────────────
+        # ── 4. Real dynamic propagation ──────────────────────────────────────
         for i in drone_ids:
             ag    = agents[i]
             noise = rng.multivariate_normal(np.zeros(3), np.diag([sigma**2] * 3))
@@ -718,11 +718,11 @@ def simulate(
             ag.state_log.append(ag.state)
             ag.input_log.append(u_commands[i].copy())
 
-        # ── 5a. IMDCL — propagazione ─────────────────────────────────────
+        # ── 5a. IMDCL — propagation ──────────────────────────────────────────
         for i in drone_ids:
             agents[i].imdcl.propagate(u_commands[i], dt)
 
-        # ── 5b. IMDCL — update LiDAR ────────────────────────────────────
+        # ── 5b. IMDCL — LiDAR update ─────────────────────────────────────────
         for i in drone_ids:
             ag          = agents[i]
             z_terr_real = terrain.z(ag.x[0], ag.x[1])
@@ -731,7 +731,7 @@ def simulate(
             z_obs       = np.array([z_terr_est + agl_lidar])
             ag.imdcl.apply_absolute_update(z_obs, IMDCL_H_LIDAR, R_lidar)
 
-        # ── 5c. IMDCL — update cooperativo ──────────────────────────────
+        # ── 5c. IMDCL — cooperative update ───────────────────────────────────
         processed: set = set()
         for i in drone_ids:
             ag_i = agents[i]
@@ -764,18 +764,18 @@ def simulate(
         for i in drone_ids:
             agents[i].est_history.append(agents[i].imdcl.x_hat.copy())
 
-        # ── 6. Source estimation — Particle Filter update ────────────────
+        # ── 6. Source estimation — Particle Filter update ────────────────────
         for i in drone_ids:
             ag = agents[i]
             if ag.pf is None:
                 ag.pf_log.append(None)
                 continue
 
-            # update con la misura del drone stesso (frame stimato: il drone
-            # conosce solo x_est, non la posizione vera → niente "cheating" GPS)
+            # Update with the drone's own measurement (estimated frame: the drone
+            # only knows x_est, not the true position → no GPS cheating)
             ag.pf.update_weights(ag.x_est[:3], signals[i], ARTVA_MOMENT, ag.artva_sigma_noise)
 
-            # update con le misure dei droni vicini che hanno già il PF inizializzato
+            # Update with measurements from nearby drones that have an active PF
             for j in drone_ids:
                 if j == i or agents[j].pf is None:
                     continue
@@ -792,15 +792,15 @@ def simulate(
             if ag_i.source_est is not None and ag_i.state != DroneState.SEARCH:
                 ag_i.source_est_log.append((step, ag_i.source_est.copy()))
 
-        # ── 7. Avanza waypoint (arrival-gated) ───────────────────────────
+        # ── 7. Advance waypoint (arrival-gated) ──────────────────────────────
         for i in drone_ids:
             ag = agents[i]
             if ag.state == DroneState.TRACK:
-                continue  # guidato dall'ES
+                continue  # driven by ES
             if np.linalg.norm(ag.x_est[:3] - ag.current_target()) < STOP_THRESH:
                 _on_wp_reached(ag, signals[i], terrain, agl)
 
-        # ── 8. Log periodico ─────────────────────────────────────────────
+        # ── 8. Periodic log ──────────────────────────────────────────────────
         if (step + 1) % 20 == 0:
             row = f"{step+1:>5}  {(step+1)*dt:>5.1f}s  "
             for i in drone_ids:
@@ -810,64 +810,64 @@ def simulate(
                 row    += f"  {_STATE_LABEL[ag.state]}/{ag.wp_idx:02d}/{dist:5.2f}m/Δ{est_err:.2f}m"
             print(row)
 
-        # ── 9. Terminazione / orbita finale di raffinamento ──────────────
+        # ── 9. Termination / final refinement orbit ──────────────────────────
         if final_orbit_active:
-            # L'orbita finisce quando ogni drone ha raggiunto l'ultimo waypoint
-            # del cerchio (non c'è limite di tempo). Tetto di sicurezza anti-stallo.
+            # The orbit ends when every drone has reached the last circle waypoint
+            # (no time limit). Safety cap prevents infinite loops.
             if all(agents[i].final_orbit_done for i in orbit_ids):
                 print(
-                    f"\n  Orbita finale completata (ultimo waypoint raggiunto) "
-                    f"al passo {step} (t={t:.2f}s) — simulazione terminata"
+                    f"\n  Final orbit completed (last waypoint reached) "
+                    f"at step {step} (t={t:.2f}s) — simulation ended"
                 )
                 break
             if step - final_orbit_start >= orbit_safety_steps:
                 print(
-                    f"\n  Orbita finale: tetto di sicurezza raggiunto al passo "
-                    f"{step} (t={t:.2f}s) — simulazione terminata"
+                    f"\n  Final orbit: safety cap reached at step "
+                    f"{step} (t={t:.2f}s) — simulation ended"
                 )
                 break
         else:
             n_stopped = sum(1 for i in drone_ids if agents[i].state == DroneState.STOP)
 
-            # Condizioni di stop (→ orbita finale):
-            #   1. l'intero team è in STOP (N_STOP droni);
-            #   2. la chiamata SUPPORT di un drone in STOP è scaduta: il timeout
-            #      va SEMPRE atteso, anche se nel frattempo qualche partner si è
-            #      già fermato (team < N_STOP), così da dare tempo di reclutare
-            #      altri droni prima di rinunciare;
-            #   3. timeout globale (ultimo passo).
+            # Stop conditions (→ final orbit):
+            #   1. the entire team is in STOP (N_STOP drones);
+            #   2. the SUPPORT call of a STOP drone has expired: the timeout
+            #      must ALWAYS be awaited, even if some partners have already
+            #      stopped (team < N_STOP), to give time to recruit other drones
+            #      before giving up;
+            #   3. global timeout (last step).
             reason = None
             if n_stopped >= N_STOP:
-                reason = f"{N_STOP} droni in STOP"
+                reason = f"{N_STOP} drones in STOP"
             elif any(agents[i].state == DroneState.STOP and agents[i].support_failed
                      for i in drone_ids):
-                reason = "chiamata SUPPORT scaduta"
+                reason = "SUPPORT call expired"
             elif step >= n_steps - 1:
                 reason = "timeout"
 
             if reason is not None:
-                # Comunque venga fermata, prima dello stop i droni con PF attivo
-                # orbitano attorno alla stima (centro statico) per affinare il PF.
+                # Regardless of why it was stopped, drones with an active PF
+                # first orbit around the estimate (static centre) to refine the PF.
                 orbit_ids = _start_final_orbit(agents, drone_ids, terrain, agl)
                 if orbit_ids:
                     final_orbit_active = True
                     final_orbit_start  = step
                     print(
-                        f"\n  Stop ({reason}) al passo {step} (t={t:.2f}s) — "
-                        f"orbita finale di raffinamento ({FINAL_ORBIT_N_WAYPOINTS} "
-                        f"waypoint): droni {orbit_ids} attorno alla stima"
+                        f"\n  Stop ({reason}) at step {step} (t={t:.2f}s) — "
+                        f"final refinement orbit ({FINAL_ORBIT_N_WAYPOINTS} "
+                        f"waypoints): drones {orbit_ids} around the estimate"
                     )
                 else:
                     print(
-                        f"\n  Stop ({reason}) al passo {step} (t={t:.2f}s) — "
-                        "nessun PF attivo, simulazione terminata"
+                        f"\n  Stop ({reason}) at step {step} (t={t:.2f}s) — "
+                        "no active PF, simulation ended"
                     )
                     break
 
         step += 1
 
 
-    # ── Stima finale PF: media pesata + deviazione standard ───────────────
+    # ── Final PF estimate: weighted mean + standard deviation ────────────────
     for i in drone_ids:
         ag = agents[i]
         if ag.pf is not None and ag.source_est is not None:
@@ -875,10 +875,10 @@ def simulate(
             var  = np.average(diff ** 2, weights=ag.pf.weights, axis=0)
             ag.source_est_std = np.sqrt(var)
 
-    # ── Report finale ──────────────────────────────────────────────────────
+    # ── Final report ─────────────────────────────────────────────────────────
     valid_ests = [agents[i].source_est for i in drone_ids if agents[i].source_est is not None]
 
-    print("\n  Stime PF source_est per drone:")
+    print("\n  PF source_est per drone:")
     for i in drone_ids:
         ag = agents[i]
         if ag.source_est is not None:
@@ -889,31 +889,31 @@ def simulate(
                 std_str = f"  σ=({s[0]:.2f}, {s[1]:.2f}, {s[2]:.2f}) m"
             print(f"    Drone {i}: {ag.source_est.round(2)}  (err_xy={e_i:.2f} m){std_str}")
         else:
-            print(f"    Drone {i}: n/a (PF non attivato)")
+            print(f"    Drone {i}: n/a (PF not activated)")
 
     if valid_ests:
         est    = np.mean(valid_ests, axis=0)
         err_xy = np.linalg.norm(est[:2] - artva._theta[:2])
-        print(f"\n  Stima PF media          : {est.round(2)}")
-        print(f"  Errore planimetrico     : {err_xy:.2f} m")
+        print(f"\n  Mean PF estimate        : {est.round(2)}")
+        print(f"  Planimetric error       : {err_xy:.2f} m")
         if len(valid_ests) >= 2:
             ests_xy = np.array([e[:2] for e in valid_ests])
             var_xy  = np.var(ests_xy, axis=0)
             print(
-                f"  Varianza stime [σ²x={var_xy[0]:.3f}, σ²y={var_xy[1]:.3f}]  "
-                f"(σ_planimetrica={np.sqrt(var_xy.sum()):.3f} m)"
+                f"  Estimate variance [σ²x={var_xy[0]:.3f}, σ²y={var_xy[1]:.3f}]  "
+                f"(σ_planimetric={np.sqrt(var_xy.sum()):.3f} m)"
             )
 
-    print("\n  Errore stima IMDCL finale:")
+    print("\n  Final IMDCL estimation error:")
     for i in drone_ids:
         ag = agents[i]
         print(f"    Drone {i}: |x_real - x_est| = {np.linalg.norm(ag.x[:3] - ag.x_est[:3]):.3f} m")
 
-    print("\n  Errore di landing per drone:")
+    print("\n  Landing error per drone:")
     for i in drone_ids:
         ag = agents[i]
         if ag.source_est is None:
-            print(f"    Drone {i}: n/a (nessuna stima PF)")
+            print(f"    Drone {i}: n/a (no PF estimate)")
             continue
         landing_point = ag.source_est - (ag.x_est[:3] - ag.x[:3])
         landing_err   = landing_point[:2] - artva._theta[:2]

@@ -1,20 +1,20 @@
 """
 main.py
 =======
-Entry point della simulazione di ricerca in valanga multi-agente.
+Entry point for the multi-agent avalanche search simulation.
 
-Parametri di esecuzione  → config.py
-Modello terreno          → terrain.py
-Sorgente ARTVA           → artva.py
-Agente drone             → drone_agent.py
-Loop simulazione         → simulation.py
-Visualizzazione          → visualization.py
-Filtro IMDCL             → imdcl.py
-Controllore MPC          → mpc_drone.py
-DEM TINItaly             → dem_tinitaly.py
+Execution parameters → config.py
+Terrain model        → terrain.py
+ARTVA source         → artva.py
+Drone agent          → drone_agent.py
+Simulation loop      → simulation.py
+Visualisation        → visualization.py
+IMDCL filter         → imdcl.py
+MPC controller       → mpc_drone.py
+DEM TINItaly         → dem_tinitaly.py
 
-Utilizzo
---------
+Usage
+-----
     python main.py --n 3 --steps 600 --animate --save
     python main.py --n 2 --agl 2.0 --seed 7
 """
@@ -52,52 +52,52 @@ import matplotlib.pyplot as plt
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Simulazione ricerca valanga multi-drone MPC + IMDCL"
+        description="Multi-drone MPC avalanche search simulation"
     )
     parser.add_argument("--n",            type=int,   default=N_DRONES,
-                        help="Numero di droni")
+                        help="Number of drones")
     parser.add_argument("--agl",          type=float, default=AGL_HEIGHT,
-                        help="Altezza sopra terreno [m]")
+                        help="Height above ground [m]")
     parser.add_argument("--steps", "--step", type=int,   default=N_SIM,
-                        help="Passi simulazione")
+                        help="Simulation steps")
     parser.add_argument("--animate",      action="store_true",
-                        help="Mostra animazione 3-D")
+                        help="Show 3-D animation")
     parser.add_argument("--fps",          type=int,   default=30,
-                        help="Frame per secondo animazione (default: 30)")
+                        help="Frames per second for animation (default: 30)")
     parser.add_argument("--interval",     type=int,   default=None,
-                        help="Intervallo display tra frame [ms] (default: 1000/fps)")
+                        help="Display interval between frames [ms] (default: 1000/fps)")
     parser.add_argument("--save",         action="store_true",
-                        help="Salva animazione su disco")
+                        help="Save animation to disk")
     parser.add_argument("--seed",         type=int,   default=42)
     parser.add_argument("--noise",        type=float, default=None,
-                        help="ARTVA noise std (override config, es: 1e-8)")
+                        help="ARTVA noise std (override config, e.g.: 1e-8)")
     parser.add_argument("--acc-noise",    type=float, default=None,
-                        help="Rumore accelerazione simulazione σ_acc [m/s²] (override config)")
+                        help="Simulation acceleration noise σ_acc [m/s²] (override config)")
     parser.add_argument("--rc",           type=float, default=None,
-                        help="Raggio comunicazione [m] (override config)")
+                        help="Communication radius [m] (override config)")
     parser.add_argument("--area",         type=float, default=None,
-                        help="Lato workspace [m] (override config)")
+                        help="Workspace side [m] (override config)")
     parser.add_argument("--victim-x",     type=float, default=None,
-                        help="Posizione x vittima [m] nel workspace locale")
+                        help="Victim x position [m] in local workspace")
     parser.add_argument("--victim-y",     type=float, default=None,
-                        help="Posizione y vittima [m] nel workspace locale")
+                        help="Victim y position [m] in local workspace")
     parser.add_argument("--victim-depth", type=float, default=None,
-                        help="Profondità sepoltura [m] (override config)")
+                        help="Burial depth [m] (override config)")
     parser.add_argument("--ws",           type=str,   default=None,
-                        help="Workspace center: 'center' oppure 'r,c' (es: 0.60,0.45)")
+                        help="Workspace center: 'center' or 'r,c' (e.g.: 0.60,0.45)")
     parser.add_argument("--save-figs",    action="store_true",
-                        help="Salva le figure PNG in ./figures/")
+                        help="Save PNG figures to ./figures/")
     parser.add_argument("--no-rotate",    action="store_true",
-                        help="Disabilita la rotazione automatica del pannello 3D")
+                        help="Disable automatic rotation of the 3D panel")
     parser.add_argument("--rotate-speed", type=float, default=0.15,
-                        help="Gradi di rotazione per step (default 0.15)")
+                        help="Degrees of rotation per step (default 0.15)")
     parser.add_argument("--zoom-pf",      action="store_true",
-                        help="Zoom dinamico 3D centrato sul centroide PF")
+                        help="Dynamic 3D zoom centred on PF centroid")
     parser.add_argument("--zoom-alpha",   type=float, default=0.08,
-                        help="Smoothing EMA zoom (0=fermo, 1=snap; default 0.08)")
+                        help="EMA smoothing for zoom (0=fixed, 1=snap; default 0.08)")
     args = parser.parse_args()
 
-    # — Patch parametri sui moduli (prima di qualsiasi import lazy) —
+    # — Patch parameters on modules (before any lazy imports) —
     if args.noise is not None:
         artva_mod.ARTVA_NOISE_STD  = args.noise
         config.ARTVA_NOISE_STD     = args.noise
@@ -114,34 +114,34 @@ def main() -> None:
     victim_depth = args.victim_depth if args.victim_depth is not None else VICTIM_DEPTH
 
     if args.ws is None:
-        center_frac = (0.60, 0.58)   # default originale main.py
+        center_frac = (0.60, 0.58)   # default original main.py
     elif args.ws == "center":
-        center_frac = None           # centro DEM (come run_experiments)
+        center_frac = None           # DEM centre (as in run_experiments)
     else:
         r_s, c_s = args.ws.split(",")
         center_frac = (float(r_s), float(c_s))
 
     print("=" * 62)
-    print("  ARTVA Search & Rescue — simulazione multi-drone MPC")
-    print(f"  Droni: {args.n}   AGL: {args.agl} m   Passi: {args.steps}")
+    print("  ARTVA Search & Rescue — multi-drone MPC simulation")
+    print(f"  Drones: {args.n}   AGL: {args.agl} m   Steps: {args.steps}")
     if args.noise is not None:
         print(f"  noise={args.noise:.0e}  rc={args.rc}m  area={args.area}m")
     print("=" * 62)
 
-    # — Costruzione ambiente —
-    print("\nLettura e interpolazione DEM...")
+    # — Build environment —
+    print("\nReading and interpolating DEM...")
     terrain_obj, _x_coords, _y_coords, _sub_dem, _transform = build_terrain(center_frac)
     print(f"  Workspace: x=[{terrain_obj.x_min:.0f}, {terrain_obj.x_max:.0f}]  "
           f"y=[{terrain_obj.y_min:.0f}, {terrain_obj.y_max:.0f}] m  "
-          f"(UTM origine: E≈{terrain_obj.utm_origin[0]:.0f}, N≈{terrain_obj.utm_origin[1]:.0f})")
+          f"(UTM origin: E≈{terrain_obj.utm_origin[0]:.0f}, N≈{terrain_obj.utm_origin[1]:.0f})")
 
-    # — Deployment nell'angolo SW del workspace —
+    # — Deploy at SW corner of workspace —
     deploy_xy = np.array([
         terrain_obj.x_min + 5.0,
         terrain_obj.y_min + 5.0,
     ])
 
-    # — Posizione vittima —
+    # — Victim position —
     if args.victim_x is not None and args.victim_y is not None:
         victim_x = terrain_obj.x_min + args.victim_x
         victim_y = terrain_obj.y_min + args.victim_y
@@ -158,10 +158,10 @@ def main() -> None:
         moment=ARTVA_MOMENT,
         seed=args.seed + 1,
     )
-    print(f"\n  Vittima: x={victim_x:.1f}  y={victim_y:.1f}  z={victim_z:.1f} m (locale)")
+    print(f"\n  Victim: x={victim_x:.1f}  y={victim_y:.1f}  z={victim_z:.1f} m (local)")
 
-    # — Costruzione agenti —
-    print(f"\nCostruzione {args.n} droni dal deployment ({deploy_xy.round(1)})...")
+    # — Build agents —
+    print(f"\nBuilding {args.n} drones from deployment ({deploy_xy.round(1)})...")
     agents = build_agents(
         deploy_xy=deploy_xy,
         terrain=terrain_obj,
@@ -169,8 +169,8 @@ def main() -> None:
         agl=args.agl,
     )
 
-    # — Simulazione —
-    print("\nAvvio simulazione...\n")
+    # — Simulation —
+    print("\nStarting simulation...\n")
     agents, artva_detect_thr, track_stop_thr = simulate(
         terrain=terrain_obj,
         artva=artva,
@@ -182,7 +182,7 @@ def main() -> None:
         rng_seed=args.seed,
     )
 
-    # — Plot risultati —
+    # — Plot results —
     figs = {
         "trajectories_top_view": plot_mpc_trajectories(terrain_obj, agents, artva),
         "trajectories_3d_view":  plot_mpc_trajectories_3d(terrain_obj, agents, artva),
@@ -201,9 +201,9 @@ def main() -> None:
             out = fig_dir / f"{name}.png"
             fig.savefig(out, dpi=150, bbox_inches="tight")
             print(f"  Saved: {out}")
-        print(f"Figure salvate in: {fig_dir}")
+        print(f"Figures saved to: {fig_dir}")
 
-    # — Animazione (opzionale) —
+    # — Animation (optional) —
     anim = None
     if args.animate:
         anim = animate_mission(

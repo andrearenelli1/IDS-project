@@ -1,31 +1,30 @@
 """
-MPC per droni modellati come massa puntiforme 3-D
-=================================================
-Usa CasADi + IPOPT con l'interfaccia cs.Opti(), stesso stile del progetto
-double-pendulum.
+MPC for point-mass 3-D drones
+==============================
+Uses CasADi + IPOPT with the cs.Opti() interface.
 
-Modello di moto (da imdcl.py — doppio integratore ZOH):
+Motion model (from imdcl.py — double integrator ZOH):
 
     x = [px, py, pz, vx, vy, vz]^T
-    u = [ax, ay, az]^T   (accelerazione — gravità già compensata)
+    u = [ax, ay, az]^T   (acceleration — gravity already compensated)
 
     x(k+1) = F·x(k) + B·u(k)
         F = [[I3, dt·I3], [0, I3]]
         B = [[0.5·dt²·I3], [dt·I3]]
 
-Funzione costo quadratica sull'orizzonte N:
+Quadratic cost over horizon N:
 
     J = Σ_{k=0}^{N-1} [ (x_k − x_ref)^T Q (x_k − x_ref) + u_k^T R u_k ]
         + (x_N − x_ref)^T P_f (x_N − x_ref)
 
-Vincoli:
-    x(k+1) = F·x(k) + B·u(k)       dinamica
-    |u(k)|_∞ ≤ a_max                saturazione accelerazione
-    |v(k)|_∞ ≤ v_max                saturazione velocità
+Constraints:
+    x(k+1) = F·x(k) + B·u(k)       dynamics
+    |u(k)|_∞ ≤ a_max                acceleration saturation
+    |v(k)|_∞ ≤ v_max                velocity saturation
 
-Utilizzo
---------
-    python mpc_drone.py               # lancia la simulazione con plot
+Usage
+-----
+    python mpc_drone.py               # run simulation with plots
 """
 
 import sys                              # to manage sys.path for imports
@@ -57,7 +56,7 @@ W_P       = 1e2   # position weight 2
 W_V       = 1e0   # speed weight -1
 W_A       = 1e-1  # acceleration weight (input) 0
 W_FINAL_P = 1e3   # terminal weight 3-1
-W_FINAL_V = 1e1     
+W_FINAL_V = 1e1
 
 Ax_MAX = 2*9.81   # [m/s²] maximum acceleration
 Ay_MAX = 2*9.81   # [m/s²] maximum acceleration
@@ -89,7 +88,7 @@ class DroneMPC:
         vx_max: float = Vx_MAX,
         vy_max: float = Vy_MAX,
         vz_max: float = Vz_MAX,
-    ) -> None: 
+    ) -> None:
         self.dt    = dt
         self.N     = N
         self.ax_max = ax_max
@@ -103,20 +102,20 @@ class DroneMPC:
         self.nx = nx
         self.nu = nu
 
-        # Matrici di sistema (costanti — modello lineare)
+        # System matrices (constant — linear model)
         I3 = np.eye(3)
         Z3 = np.zeros((3, 3))
         self.F_np = np.block([[I3, dt * I3], [Z3, I3]])          # 6×6
         self.B_np = np.block([[0.5 * dt**2 * I3], [dt * I3]])    # 6×3
 
-        # Matrici peso
+        # Weight matrices
         self.w_p = W_P
         self.w_v = W_V
         self.w_a = W_A
         self.w_finalp = W_FINAL_P
         self.w_finalv = W_FINAL_V
 
-        # Costruisce il problema Opti (una sola volta)
+        # Build Opti problem (once only)
         self._build_opti()
         self._sol = None
 
@@ -131,7 +130,7 @@ class DroneMPC:
         # fixed parameters (changed at each MPC step with "self._opti.set_value(..., ...)")
         self.param_x0    = opti.parameter(nx)   # current state
         self.param_x_ref = opti.parameter(nx)   # reference state (target pos + zero vel)
-        
+
         # Speed and acceleration bounds
         lbx = np.array([-np.inf, -np.inf, -np.inf, -self.vx_max, -self.vy_max, -self.vz_max]).tolist()
         ubx = np.array([np.inf, np.inf, np.inf, self.vx_max, self.vy_max, self.vz_max]).tolist()
@@ -266,45 +265,46 @@ def simulate(
     rng_seed: int   = 42,
 ) -> tuple[dict, dict, dict, dict]:
     """
-    Simula più droni con MPC verso i rispettivi target (waypoint sequenziali).
+    Simulates multiple drones with MPC towards their respective targets
+    (sequential waypoints).
 
     Parameters
     ----------
     starts  : {id: x0 (6,)}
     targets : {id: array-like}
-              Accetta due formati:
-                - singolo target  →  np.array([x, y, z])
-                - lista waypoint  →  [np.array([x,y,z]), np.array([...]), ...]
-              I droni non devono avere lo stesso numero di waypoint.
+              Accepts two formats:
+                - single target  →  np.array([x, y, z])
+                - waypoint list  →  [np.array([x,y,z]), np.array([...]), ...]
+              Drones need not have the same number of waypoints.
 
     Returns
     -------
     history   : {id: list of x (6,)}
     inputs    : {id: list of u (3,)}
-    solve_t   : {id: list of float}    tempi di solve [s]
-    waypoints : {id: list of np.array} sequenza waypoint normalizzata
+    solve_t   : {id: list of float}    solve times [s]
+    waypoints : {id: list of np.array} normalised waypoint sequence
     """
     rng       = np.random.default_rng(rng_seed)
     model     = PointMass3DModel(sigma_acc=sigma)
     drone_ids = list(starts.keys())
 
-    # — Normalizza targets: ogni drone ha sempre una lista di waypoint —
+    # — Normalise targets: every drone always has a waypoint list —
     waypoints = {}
     for i in drone_ids:
         t = targets[i]
-        # singolo array 1-D → lista con un elemento
+        # single 1-D array → list with one element
         if isinstance(t, np.ndarray) and t.ndim == 1:
             waypoints[i] = [t]
         else:
             waypoints[i] = [np.asarray(w, dtype=float) for w in t]
 
-    # — Indice waypoint corrente per ogni drone —
+    # — Current waypoint index for each drone —
     wp_idx = {i: 0 for i in drone_ids}
 
     def current_target(i):
         return waypoints[i][wp_idx[i]]
 
-    # — Crea controllori e warm-start sul primo waypoint —
+    # — Create controllers and warm-start on first waypoint —
     ctrls = {i: DroneMPC(dt=dt) for i in drone_ids}
     x_cur = {i: starts[i].copy() for i in drone_ids}
 
@@ -312,19 +312,19 @@ def simulate(
     inputs  = {i: []                 for i in drone_ids}
     solve_t = {i: []                 for i in drone_ids}
 
-    print("Warm-start iniziale...")
+    print("Initial warm-start...")
     for i in drone_ids:
         t0 = perf_counter()
         ctrls[i].first_step(x_cur[i], current_target(i))
         n_wp = len(waypoints[i])
         print(f"  Drone {i}: warm-start in {perf_counter()-t0:.3f} s  "
-              f"({n_wp} waypoint)")
+              f"({n_wp} waypoints)")
 
-    # — Header log —
+    # — Log header —
     print(f"\n{'Step':>5}  {'Time':>7}  " +
           "  ".join(f"D{i}:wp/dist/t_solve" for i in drone_ids))
 
-    # — Loop MPC —
+    # — MPC loop —
     for step in range(n_steps):
         for i in drone_ids:
             tgt = current_target(i)
@@ -341,20 +341,20 @@ def simulate(
             inputs[i].append(u_opt.copy())
             solve_t[i].append(dt_s)
 
-            # — Controlla se il drone ha raggiunto il waypoint corrente —
+            # — Check whether the drone has reached the current waypoint —
             dist = np.linalg.norm(x_cur[i][:3] - tgt)
             if dist < STOP_THRESH and wp_idx[i] < len(waypoints[i]) - 1:
                 wp_idx[i] += 1
                 new_tgt = current_target(i)
-                print(f"  ► Drone {i} raggiunto wp {wp_idx[i]-1} "
-                      f"al passo {step+1} (t={step*dt:.2f}s)  "
+                print(f"  ► Drone {i} reached wp {wp_idx[i]-1} "
+                      f"at step {step+1} (t={step*dt:.2f}s)  "
                       f"→ wp {wp_idx[i]}: {new_tgt}")
-                # Aggiorna solo il riferimento — la soluzione corrente
-                # rimane come warm-start per il nuovo waypoint
+                # Update reference only — current solution stays as warm-start
+                # for the new waypoint
                 x_ref = ctrls[i]._x_ref_from_target(new_tgt)
                 ctrls[i]._opti.set_value(ctrls[i].param_x_ref, x_ref)
 
-        # Log ogni 10 passi
+        # Log every 10 steps
         if (step + 1) % 10 == 0:
             row = f"{step+1:>5}  {(step+1)*dt:>6.2f}s  "
             for i in drone_ids:
@@ -363,15 +363,15 @@ def simulate(
                         f"{dist:>6.2f}m  {solve_t[i][-1]*1e3:>5.1f}ms")
             print(row)
 
-        # Stop globale: tutti i droni hanno completato tutti i waypoint
+        # Global stop: all drones have completed all waypoints
         all_done = all(
             wp_idx[i] == len(waypoints[i]) - 1 and
             np.linalg.norm(x_cur[i][:3] - current_target(i)) < STOP_THRESH
             for i in drone_ids
         )
         if all_done:
-            print(f"\nTutti i droni hanno completato la missione "
-                  f"al passo {step+1} (t = {(step+1)*dt:.2f} s).")
+            print(f"\nAll drones completed the mission "
+                  f"at step {step+1} (t = {(step+1)*dt:.2f} s).")
             break
 
     return history, inputs, solve_t, waypoints
@@ -391,7 +391,7 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
     time_u    = {i: np.arange(len(inputs[i])) * dt for i in drone_ids}
     time_x    = {i: np.arange(len(history[i])) * dt for i in drone_ids}
 
-    # Normalizza waypoints se non passati esplicitamente
+    # Normalise waypoints if not passed explicitly
     if waypoints is None:
         waypoints = {}
         for i in drone_ids:
@@ -399,7 +399,7 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
             waypoints[i] = ([t] if isinstance(t, np.ndarray) and t.ndim == 1
                             else [np.asarray(w) for w in t])
 
-    # ── Figura 1: traiettorie 3-D + proiezioni ──────────────────────────────
+    # ── Figure 1: 3-D trajectories + projections ────────────────────────────
     fig1 = plt.figure(figsize=(17, 9))
     fig1.patch.set_facecolor("#ffffff")
 
@@ -422,12 +422,12 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
         wps  = waypoints[i]
         wp_arr = np.array(wps)
 
-        # Vista 3-D — traiettoria
+        # 3-D view — trajectory
         ax3d.plot(traj[:, 0], traj[:, 1], traj[:, 2],
                   color=c, lw=1.8, alpha=0.9, label=f"Drone {i}")
         ax3d.scatter(*traj[0, :3], marker="o", color=c, s=60,
                      edgecolors="white", linewidths=1.2, zorder=5)
-        # Waypoint collegati da linea tratteggiata
+        # Waypoints connected by a dashed line
         ax3d.plot(wp_arr[:, 0], wp_arr[:, 1], wp_arr[:, 2],
                   color=c, lw=0.8, ls=":", alpha=0.5)
         for k, wp in enumerate(wps):
@@ -437,7 +437,7 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
             ax3d.text(wp[0], wp[1], wp[2]+0.15, f" wp{k}",
                       color=c, fontsize=6.5, alpha=0.85)
 
-        # Proiezioni
+        # Projections
         for ax2, ix, iy, xl, yl, name in proj_cfg:
             ax2.plot(traj[:, ix], traj[:, iy],
                      color=c, lw=1.6, alpha=0.85)
@@ -451,29 +451,29 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
                          mec="white", mew=0.6, zorder=6)
             ax2.set_xlabel(xl, fontsize=8)
             ax2.set_ylabel(yl, fontsize=8)
-            ax2.set_title(f"Proiezione {name}", fontsize=9,
+            ax2.set_title(f"Projection {name}", fontsize=9,
                           fontweight="bold", pad=3)
             ax2.set_aspect("equal")
             ax2.grid(True, ls=":", alpha=0.45)
             ax2.tick_params(labelsize=7)
             ax2.set_facecolor("#f8f8f8")
 
-        # Norma accelerazione nel tempo
+        # Acceleration norm over time
         ax_u.plot(time_u[i], np.linalg.norm(us, axis=1),
                   color=c, lw=1.5, label=f"Drone {i}")
 
     ax_u.axhline(A_MAX, color="grey", lw=1.0, ls="--",
                  alpha=0.6, label=f"|u|₂ max = {A_MAX:.2f}")
-    ax_u.set_xlabel("Tempo [s]", fontsize=8)
+    ax_u.set_xlabel("Time [s]", fontsize=8)
     ax_u.set_ylabel("|u|₂  [m/s²]", fontsize=8)
-    ax_u.set_title("Norma accelerazione", fontsize=9, fontweight="bold", pad=3)
+    ax_u.set_title("Acceleration norm", fontsize=9, fontweight="bold", pad=3)
     ax_u.legend(fontsize=7.5); ax_u.grid(True, ls=":", alpha=0.45)
     ax_u.tick_params(labelsize=7); ax_u.set_facecolor("#f8f8f8")
 
     ax3d.set_xlabel("x [m]", fontsize=9, labelpad=5)
     ax3d.set_ylabel("y [m]", fontsize=9, labelpad=5)
     ax3d.set_zlabel("z [m]", fontsize=9, labelpad=5)
-    ax3d.set_title("Traiettorie 3-D", fontsize=10, fontweight="bold")
+    ax3d.set_title("3-D Trajectories", fontsize=10, fontweight="bold")
     ax3d.tick_params(labelsize=7)
     handles = []
     for i in drone_ids:
@@ -485,15 +485,15 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
         plt.Line2D([0],[0], marker="*", color="w", mfc="grey",
                    ms=10, linestyle="None", label="Waypoint"),
         plt.Line2D([0],[0], marker="o", color="w", mfc="grey",
-                   ms=7,  linestyle="None", label="Inizio"),
+                   ms=7,  linestyle="None", label="Start"),
     ]
     ax3d.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.85)
-    fig1.suptitle(f"MPC Droni 3-D — N={N_MPC}, dt={DT_MPC} s, "
+    fig1.suptitle(f"MPC 3-D Drones — N={N_MPC}, dt={DT_MPC} s, "
                   f"|a|≤{A_MAX} m/s², |v|≤{V_MAX} m/s",
                   fontsize=11, fontweight="bold")
     fig1.tight_layout(rect=[0, 0, 1, 0.96])
 
-    # ── Figura 2: posizione, velocità e accelerazione nel tempo ─────────────
+    # ── Figure 2: position, velocity and acceleration over time ─────────────
     fig2, axes = plt.subplots(3, 3, figsize=(18, 10), sharex="col")
     fig2.patch.set_facecolor("#ffffff")
     comp_labels = ["x", "y", "z"]
@@ -506,7 +506,7 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
             acc  = np.array(inputs[i])
             ax_p.plot(time_x[i], traj[:, comp], color=c, lw=1.6,
                       label=f"Drone {i}")
-            # Linea tratteggiata per ogni waypoint
+            # Dashed line for each waypoint
             for k, wp in enumerate(waypoints[i]):
                 ax_p.axhline(wp[comp], color=c, lw=0.8, ls="--", alpha=0.4)
             ax_v.plot(time_x[i], traj[:, comp+3], color=c, lw=1.6,
@@ -526,20 +526,20 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
             ax.tick_params(labelsize=8)
             ax.set_facecolor("#f8f8f8")
         if row == 0:
-            ax_p.set_title("Posizione", fontsize=10, fontweight="bold")
-            ax_v.set_title("Velocità",  fontsize=10, fontweight="bold")
-            ax_a.set_title("Accelerazione", fontsize=10, fontweight="bold")
+            ax_p.set_title("Position",     fontsize=10, fontweight="bold")
+            ax_v.set_title("Velocity",     fontsize=10, fontweight="bold")
+            ax_a.set_title("Acceleration", fontsize=10, fontweight="bold")
             ax_p.legend(fontsize=8, loc="upper right")
             ax_a.legend(fontsize=8, loc="upper right")
         if row == 2:
-            ax_p.set_xlabel("Tempo [s]", fontsize=9)
-            ax_v.set_xlabel("Tempo [s]", fontsize=9)
-            ax_a.set_xlabel("Tempo [s]", fontsize=9)
-    fig2.suptitle("MPC Droni 3-D — Stati nel tempo",
+            ax_p.set_xlabel("Time [s]", fontsize=9)
+            ax_v.set_xlabel("Time [s]", fontsize=9)
+            ax_a.set_xlabel("Time [s]", fontsize=9)
+    fig2.suptitle("MPC 3-D Drones — States over time",
                   fontsize=11, fontweight="bold")
     fig2.tight_layout()
 
-    # ── Figura 3: tempi di solve ──────────────────────────────────────────────
+    # ── Figure 3: solve times ────────────────────────────────────────────────
     fig3, ax_t = plt.subplots(figsize=(10, 4))
     fig3.patch.set_facecolor("#ffffff")
     for i in drone_ids:
@@ -548,9 +548,9 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
         ax_t.plot(time_u[i], t_ms, color=c, lw=1.4, alpha=0.85,
                   label=f"Drone {i}  (mean={np.mean(t_ms):.1f} ms)")
         ax_t.axhline(np.mean(t_ms), color=c, lw=1.0, ls="--", alpha=0.6)
-    ax_t.set_xlabel("Tempo [s]", fontsize=10)
-    ax_t.set_ylabel("Tempo di solve [ms]", fontsize=10)
-    ax_t.set_title(f"Tempo di solve MPC  (max_iter={SOLVER_MAX_ITER})",
+    ax_t.set_xlabel("Time [s]", fontsize=10)
+    ax_t.set_ylabel("Solve time [ms]", fontsize=10)
+    ax_t.set_title(f"MPC solve time  (max_iter={SOLVER_MAX_ITER})",
                    fontsize=10, fontweight="bold")
     ax_t.legend(fontsize=9); ax_t.grid(True, ls=":", alpha=0.45)
     ax_t.set_facecolor("#f8f8f8")
@@ -565,26 +565,26 @@ def plot_results(starts, targets, history, inputs, solve_t, dt,
 
 if __name__ == "__main__":
 
-    # — Scenario: droni con numero diverso di waypoint —
+    # — Scenario: drones with different numbers of waypoints —
     starts = {
         0: np.array([0.0,  0.0,  0.0,  0.0, 0.0, 0.0]),
         1: np.array([5.0,  0.0,  1.0,  0.0, 0.0, 0.0]),
         2: np.array([2.5,  4.0,  3.0,  0.0, 0.0, 0.0]),
     }
     targets = {
-        # Drone 0: tre waypoint
+        # Drone 0: three waypoints
         0: [np.array([4.0,  3.0,  2.0]),
             np.array([2.0,  5.0,  1.0]),
             np.array([0.0,  0.0,  0.5])],
-        # Drone 1: due waypoint
+        # Drone 1: two waypoints
         1: [np.array([0.0,  4.0,  0.5]),
             np.array([3.0,  2.0,  3.0])],
-        # Drone 2: singolo target (formato vecchio — compatibile)
+        # Drone 2: single target (old format — compatible)
         2: np.array([5.0, -1.0,  4.0]),
     }
 
     print("=" * 60)
-    print("  MPC — Droni 3-D con waypoint sequenziali")
+    print("  MPC — 3-D Drones with sequential waypoints")
     print(f"  N={N_MPC}, dt={DT_MPC} s, max_iter={SOLVER_MAX_ITER}")
     print(f"  |a|≤{A_MAX} m/s²,  |v|≤{V_MAX} m/s")
     print("=" * 60)

@@ -1,11 +1,11 @@
 """
 plot_results.py
 ===============
-Analisi visiva dello sweep parametrico (results.csv).
+Visual analysis of the parametric sweep (results.csv).
 
-Uso:
-    python plot_results.py                  # legge results.csv, mostra
-    python plot_results.py results7200.csv  # file CSV alternativo
+Usage:
+    python plot_results.py                  # reads results.csv, displays
+    python plot_results.py results7200.csv  # alternative CSV file
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
-# ─────────────────────────── Caricamento CSV ────────────────────────────────
+# ─────────────────────────── CSV loading ────────────────────────────────────
 
 FIELDS = [
     "run_id", "area_size_m", "n_drones",
@@ -79,7 +79,7 @@ def load(path: str) -> list[dict]:
     return rows
 
 
-# ────────────────────────── Helper aggregazioni ─────────────────────────────
+# ────────────────────────── Aggregation helpers ─────────────────────────────
 
 def groupby(rows: list[dict], *keys: str) -> dict:
     out: dict = defaultdict(list)
@@ -91,9 +91,9 @@ def groupby(rows: list[dict], *keys: str) -> dict:
 
 def apply_time_cutoff(rows: list[dict], timeout: float) -> int:
     """
-    Riclassifica come fallite (found=False) le run trovate ma con tempo oltre
-    `timeout` [s]. Taglia gli outlier (es. soglia a 600 s invece dei 900 s).
-    Mutazione in-place; restituisce il numero di run riclassificate.
+    Re-classifies as failed (found=False) runs that were found but exceeded
+    `timeout` [s]. Cuts outliers (e.g. threshold at 600 s instead of 900 s).
+    In-place mutation; returns the number of re-classified runs.
     """
     n = 0
     for r in rows:
@@ -117,7 +117,7 @@ def median(vals: list[float]) -> float:
     return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2
 
 
-# ───────────────────────────── Stile IEEE ───────────────────────────────────
+# ───────────────────────────── IEEE style ───────────────────────────────────
 
 PALETTE          = ["#4e79a7", "#f28e2b", "#59a14f"]
 AREA_COLORS      = {100: "#5778a4", 200: "#e49444"}
@@ -163,15 +163,15 @@ _setup_ieee_style()
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 1 — Tasso di successo: heatmap rumore × raggio comm.
+# Fig 1 — Success rate: noise × comm. radius heatmap
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
-    fig, axes = plt.subplots(2, 3, figsize=(6.0, 3.8),
+    fig, axes = plt.subplots(2, 3, figsize=(5.0, 4.2),
                              constrained_layout=True)
     fig.suptitle(
         r"Success rate [\%] --- ARTVA noise $\sigma$ $\times$ comm.\ radius",
-        fontsize=10, fontweight="bold")
+        fontsize=12, fontweight="bold")
 
     noise_idx = {n: i for i, n in enumerate(sorted(NOISE_STDS))}
     rc_idx    = {r: i for i, r in enumerate(sorted(COMM_RADII))}
@@ -189,14 +189,16 @@ def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
             im = ax.imshow(mat, vmin=0, vmax=100, cmap="RdYlGn",
                            aspect="auto", origin="lower")
             ax.set_xticks(range(len(NOISE_STDS)))
-            ax.set_xticklabels([NOISE_LABELS[n_] for n_ in sorted(NOISE_STDS)])
+            ax.set_xticklabels([NOISE_LABELS[n_] for n_ in sorted(NOISE_STDS)],
+                               fontsize=9)
             ax.set_yticks(range(len(COMM_RADII)))
-            ax.set_yticklabels([rf"{r}\,m" for r in sorted(COMM_RADII)])
+            ax.set_yticklabels([rf"{r}\,m" for r in sorted(COMM_RADII)],
+                               fontsize=9)
             if row_i == len(AREAS) - 1:
-                ax.set_xlabel(r"ARTVA noise $\sigma_n$")
+                ax.set_xlabel(r"ARTVA noise $\sigma_n$", fontsize=10)
             if col == 0:
-                ax.set_ylabel(r"Comm.\ radius")
-            ax.set_title(rf"{n} drones --- {area}\,m", fontsize=9, fontweight="bold")
+                ax.set_ylabel(r"Comm.\ radius", fontsize=10)
+            ax.set_title(rf"{n} drones --- {area}\,m", fontsize=10, fontweight="bold")
             ax.grid(False)
 
             for i in range(len(COMM_RADII)):
@@ -204,8 +206,8 @@ def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
                     v = mat[i, j]
                     if not math.isnan(v):
                         ax.text(j, i, rf"{v:.0f}\%",
-                                ha="center", va="center", fontsize=7,
-                                color="black" if v > 45 else "white",
+                                ha="center", va="center", fontsize=9,
+                                color="black" if 30 < v < 70 else "white",
                                 fontweight="bold")
 
 
@@ -213,7 +215,7 @@ def fig_success_heatmap(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 2 — Tempo di ricerca: boxplot per n_droni, separati per area
+# Fig 2 — Search time: boxplot per drone count, separated by area
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_time_boxplot(rows: list[dict]) -> plt.Figure:
@@ -251,7 +253,7 @@ def fig_time_boxplot(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 4 — Raggio di comunicazione: tasso di successo vs comm_radius
+# Fig 4 — Communication radius: success rate vs comm_radius
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_comm_radius(rows: list[dict]) -> plt.Figure:
@@ -288,7 +290,7 @@ def fig_comm_radius(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 4b — Rumore ARTVA: tasso di successo vs noise_std
+# Fig 4b — ARTVA noise: success rate vs noise_std
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_noise_success(rows: list[dict]) -> plt.Figure:
@@ -327,7 +329,7 @@ def fig_noise_success(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 5 — CDF del tempo di ricerca
+# Fig 5 — CDF of search time
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_cdf(rows: list[dict]) -> plt.Figure:
@@ -336,7 +338,9 @@ def fig_cdf(rows: list[dict]) -> plt.Figure:
     fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
                              constrained_layout=True, sharey=True)
     fig.suptitle(r"CDF of search time --- cumulative distribution",
-                 fontsize=13, fontweight="bold")
+                 fontsize=15, fontweight="bold")
+
+    xlims = {AREAS[0]: 600}   # 100×100 m capped at 600 s
 
     for ax, area in zip(axes, AREAS):
         for n, color in zip(N_DRONES_LIST, PALETTE):
@@ -348,25 +352,28 @@ def fig_cdf(rows: list[dict]) -> plt.Figure:
             ax.step(times, cdf * 100, where="post",
                     color=color, label=rf"{n} drones  ($n$={len(times)})")
 
+        if area in xlims:
+            ax.set_xlim(right=xlims[area])
+        x_label = ax.get_xlim()[1] * 0.95
         ax.axhline(90, color="grey", lw=0.8, ls="--", alpha=0.6)
-        ax.text(ax.get_xlim()[1] if ax.get_xlim()[1] < 900 else 860,
-                91, r"90\%", fontsize=10, color="grey")
+        ax.text(x_label, 91, r"90\%", fontsize=12, color="grey", ha="right")
 
-        ax.set_xlabel(r"Search time [s]", fontsize=11)
-        ax.set_ylabel(r"CDF [\%]", fontsize=11)
-        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=12, fontweight="bold")
-        ax.tick_params(axis="both", labelsize=10)
-        ax.legend(fontsize=9)
+        ax.set_xlabel(r"Search time [s]", fontsize=14)
+        ax.set_ylabel(r"CDF [\%]", fontsize=12)
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=14, fontweight="bold")
+        ax.tick_params(axis="x", labelsize=13, length=0)
+        ax.tick_params(axis="y", labelsize=11)
+        ax.legend(fontsize=11)
         ax.set_ylim(0, 105)
 
     return fig
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 6 — Dispersione inter-drone della stima a media ponderata (pos_std_m)
-#   pos_std_m = deviazione standard planimetrica, TRA i droni, delle loro stime
-#   PF a media ponderata θ̂ (drift-corrette). Misura quanto i droni sono in
-#   disaccordo sulla posizione della sorgente. Solo run riuscite.
+# Fig 6 — Inter-drone dispersion of the weighted-mean estimate (pos_std_m)
+#   pos_std_m = planimetric standard deviation BETWEEN drones of their PF
+#   weighted-mean estimates θ̂ (drift-corrected). Measures how much drones
+#   disagree on the source position. Successful runs only.
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
@@ -421,7 +428,7 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
                 ax_bp.text(pos + 0.32, med, rf" {med:.3f}\,m",
                            va="center", fontsize=7, color="#333333")
 
-        # ── istogramma orizzontale (condivide asse y col boxplot) ─────────
+        # ── horizontal histogram (shares y axis with boxplot) ─────────
         for d, color, noise in zip(data, noise_colors, noise_sorted):
             if not d:
                 continue
@@ -440,7 +447,7 @@ def fig_consensus_spread(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 7 — Tempo vs distanza vittima–start
+# Fig 7 — Time vs victim–start distance
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_time_vs_distance(rows: list[dict]) -> plt.Figure:
@@ -497,7 +504,7 @@ def fig_time_vs_distance(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 8 — Istogrammi del tempo di ricerca per parametro
+# Fig 8 — Search time histograms by parameter
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_time_histograms(rows: list[dict]) -> plt.Figure:
@@ -557,13 +564,13 @@ def fig_time_histograms(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 9 — Rumore accelerazione: tasso di successo vs σ_acc
+# Fig 9 — Acceleration noise: success rate vs σ_acc
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_acc_sim(rows: list[dict]) -> plt.Figure:
     acc_vals = sorted(set(r["acc_sim"] for r in rows if not math.isnan(r["acc_sim"])))
     if len(acc_vals) < 2:
-        return None   # CSV vecchio senza la colonna: nulla da mostrare
+        return None   # old CSV without the column: nothing to show
 
     fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.5),
                              constrained_layout=True, sharey=True)
@@ -599,7 +606,7 @@ def fig_acc_sim(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 10 — Mappa posizioni vittima
+# Fig 10 — Victim position map
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_victim_map(rows: list[dict]) -> plt.Figure:
@@ -636,7 +643,7 @@ def fig_victim_map(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 11 — Errore XY di landing e errore stima profondità
+# Fig 11 — XY landing error and depth estimation error
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_localization_errors(rows: list[dict]) -> plt.Figure:
@@ -646,66 +653,75 @@ def fig_localization_errors(rows: list[dict]) -> plt.Figure:
     noise_colors = ["#4e79a7", "#f28e2b", "#e15759"]
 
     fig, axes = plt.subplots(2, 2, figsize=(7.16, 5.5), constrained_layout=True)
-    fig.suptitle(
-        r"Localization accuracy: XY landing error and depth estimation error",
-        fontsize=10, fontweight="bold",
-    )
 
-    bp_kw = dict(patch_artist=True, notch=False, widths=0.55,
+    bp_kw = dict(patch_artist=True, notch=False, widths=0.35,
                  medianprops=dict(color="black", lw=1.5),
                  flierprops=dict(marker=".", markersize=3, alpha=0.3))
 
-    # ── Riga 0: errore XY di landing per livello di rumore ────────────────
+    # ── Row 0: XY landing error per noise level ────────────────
     for col, area in enumerate(AREAS):
         ax    = axes[0, col]
         valid = [r for r in found
                  if not math.isnan(r["landing_err"]) and r["area"] == area]
         data  = [[r["landing_err"] for r in valid if r["noise"] == noise]
                  for noise in noise_sorted]
+        n_boxes = len(noise_sorted)
 
-        bp = ax.boxplot(data, positions=range(len(noise_sorted)), **bp_kw)
+        bp = ax.boxplot(data, positions=range(n_boxes), **bp_kw)
         for patch, color in zip(bp["boxes"], noise_colors):
             patch.set_facecolor(color)
             patch.set_alpha(0.75)
 
-        ax.set_xticks(range(len(noise_sorted)))
-        ax.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted])
-        ax.set_xlabel(r"ARTVA noise $\sigma$")
-        ax.set_ylabel(r"XY landing error [m]")
+        ax.set_xticks(range(n_boxes))
+        ax.set_xticklabels([NOISE_LABELS[n] for n in noise_sorted], fontsize=13)
+        ax.set_xlabel(r"ARTVA noise $\sigma$", fontsize=14)
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", labelsize=11)
+        if col == 0:
+            ax.set_ylabel(r"XY landing error [m]", fontsize=12)
+        else:
+            ax.set_yticklabels([])
         ax.set_title(rf"Landing error --- ${area}\times{area}$\,m",
-                     fontsize=9, fontweight="bold")
+                     fontsize=14, fontweight="bold")
+        ax.set_ylim(bottom=0, top=15)
 
         for pos, d in enumerate(data):
             if d:
                 med = median(d)
-                ax.text(pos + 0.32, med, rf" {med:.2f}\,m",
-                        va="center", fontsize=7, color="#333333")
+                ax.text(pos + 0.22, med, rf"{med:.2f}\,m",
+                        va="center", ha="left", fontsize=11, color="#333333")
 
-    # ── Riga 1: errore stima profondità per bin di profondità ─────────────
+    # ── Row 1: depth estimation error per depth bin ─────────────
     for col, area in enumerate(AREAS):
         ax    = axes[1, col]
         valid = [r for r in found
                  if not math.isnan(r["depth_err"]) and r["area"] == area]
         data  = [[r["depth_err"] for r in valid if r["depth_bin"] == bin_]
                  for bin_ in DEPTH_BIN_LABELS]
+        n_boxes = len(DEPTH_BIN_LABELS)
 
-        bp = ax.boxplot(data, positions=range(len(DEPTH_BIN_LABELS)), **bp_kw)
+        bp = ax.boxplot(data, positions=range(n_boxes), **bp_kw)
         for patch, color in zip(bp["boxes"], DEPTH_BIN_COLORS):
             patch.set_facecolor(color)
             patch.set_alpha(0.75)
 
-        ax.set_xticks(range(len(DEPTH_BIN_LABELS)))
-        ax.set_xticklabels(DEPTH_BIN_LABELS)
-        ax.set_xlabel(r"Victim depth [m]")
-        ax.set_ylabel(r"Depth estimation error [m]")
+        ax.set_xticks(range(n_boxes))
+        ax.set_xticklabels(DEPTH_BIN_LABELS, fontsize=13)
+        ax.set_xlabel(r"Victim depth [m]", fontsize=14)
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", labelsize=11)
+        if col == 0:
+            ax.set_ylabel(r"Depth estimation error [m]", fontsize=12)
+        else:
+            ax.set_yticklabels([])
         ax.set_title(rf"Depth error --- ${area}\times{area}$\,m",
-                     fontsize=9, fontweight="bold")
+                     fontsize=14, fontweight="bold")
 
         for pos, d in enumerate(data):
             if d:
                 med = median(d)
-                ax.text(pos + 0.32, med, rf" {med:.2f}\,m",
-                        va="center", fontsize=7, color="#333333")
+                ax.text(pos + 0.22, med, rf"{med:.2f}\,m",
+                        va="center", ha="left", fontsize=11, color="#333333")
 
     return fig
 
@@ -716,12 +732,12 @@ def fig_localization_errors(rows: list[dict]) -> plt.Figure:
 
 def fig_pf_uncertainty(rows: list[dict]) -> plt.Figure:
     """
-    Incertezza intra-drone del Particle Filter (||σ_xy|| medio).
-    Diversa da pos_std_m (dispersione *inter*-drone): questa misura quanto
-    ogni singolo drone è incerto sulla posizione della sorgente.
-    Atteso: diminuisce con il rumore ARTVA — la soglia di rilevamento dinamica
-    (mu+5σ) aumenta con il rumore, quindi il drone rileva la sorgente solo da
-    vicino, il PF si inizializza con r piccolo e le particelle restano concentrate.
+    Intra-drone Particle Filter uncertainty (mean ||σ_xy||).
+    Different from pos_std_m (inter-drone dispersion): this measures how
+    uncertain each individual drone is about the source position.
+    Expected: decreases with ARTVA noise — the dynamic detection threshold
+    (mu+5σ) increases with noise, so the drone detects the source only from
+    close range, the PF initializes with small r and particles stay concentrated.
     """
     found = [r for r in rows if r["found"] and not math.isnan(r["pf_std_xy"])]
     if not found:
@@ -767,22 +783,22 @@ def fig_pf_uncertainty(rows: list[dict]) -> plt.Figure:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Fig 13 — Consenso PF: IoU media inter-drone vs area media ellisse 95%
+# Fig 13 — PF consensus: mean inter-drone IoU vs mean 95% ellipse area
 # ════════════════════════════════════════════════════════════════════════════
 
 def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
     """
-    Una metrica di consenso inter-drone più informativa di pos_std_m.
+    A more informative inter-drone consensus metric than pos_std_m.
 
-    Per ogni run (con ≥2 droni a PF attivo):
-      - asse x: IoU media a coppie tra le ellissi di confidenza 95% dei droni
-                (consenso: 100% = stime perfettamente sovrapposte);
-      - asse y: area media dell'ellisse di confidenza 95% [m²]
-                (incertezza intra-drone: più piccola = più confidente).
+    For each run (with ≥2 drones with active PF):
+      - x axis: mean pairwise IoU between the 95% confidence ellipses of drones
+                (consensus: 100% = perfectly overlapping estimates);
+      - y axis: mean area of the 95% confidence ellipse [m²]
+                (intra-drone uncertainty: smaller = more confident).
 
-    Il regime ideale è in basso-a-destra (confidenti E d'accordo). La IoU evita
-    il confondente geometrico dell'intersezione grezza (box grandi → più overlap).
-    Marker pieno = run riuscito, vuoto = fallito.
+    Ideal regime is bottom-right (confident AND in agreement). IoU avoids
+    the geometric confound of raw intersection (large boxes → more overlap).
+    Filled marker = successful run, hollow = failed.
     """
     valid = [r for r in rows
              if not math.isnan(r["pf_iou"]) and not math.isnan(r["pf_area"])
@@ -797,7 +813,7 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
                              constrained_layout=True, sharey=True)
     fig.suptitle(
         r"Inter-drone PF agreement --- mean pairwise IoU vs.\ mean 95\% ellipse area",
-        fontsize=13, fontweight="bold")
+        fontsize=15, fontweight="bold")
 
     for idx, (ax, area) in enumerate(zip(axes, AREAS)):
         sub   = [r for r in valid if r["area"] == area]
@@ -816,12 +832,13 @@ def fig_pf_ellipse_consensus(rows: list[dict]) -> plt.Figure:
 
         ax.set_yscale("log")
         ax.set_xlim(-3, 103)
-        ax.set_xlabel(r"Mean pairwise IoU [\%]", fontsize=11)
+        ax.set_xlabel(r"Mean pairwise IoU [\%]", fontsize=14)
         if idx == 0:
-            ax.set_ylabel(r"Mean 95\% ellipse area [m$^2$]", fontsize=11)
-        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=11, fontweight="bold")
-        ax.tick_params(labelsize=10)
-        ax.legend(fontsize=9, loc="upper right", ncol=1)
+            ax.set_ylabel(r"Mean 95\% ellipse area [m$^2$]", fontsize=12)
+        ax.set_title(rf"Area ${area}\times{area}$\,m", fontsize=14, fontweight="bold")
+        ax.tick_params(axis="x", labelsize=13, length=0)
+        ax.tick_params(axis="y", labelsize=11)
+        ax.legend(fontsize=11, loc="upper right", ncol=1)
 
     return fig
 
@@ -903,38 +920,38 @@ def fig_depth_calibration(rows: list[dict]) -> plt.Figure:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Visualizzazione sweep ARTVA",
+        description="ARTVA sweep visualization",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("csv", nargs="?", default="results.csv",
-                        help="File CSV prodotto da run_experiments.py")
+                        help="CSV file produced by run_experiments.py")
     parser.add_argument("--timeout", type=float, default=None,
-                        help="Soglia di tempo [s]: le run trovate ma con tempo "
-                             "superiore vengono considerate fallite (taglia gli "
-                             "outlier, es. 600). Default: nessun taglio (900 s).")
+                        help="Time threshold [s]: runs found but exceeding this "
+                             "are reclassified as failed (cuts outliers, e.g. 600). "
+                             "Default: no cutoff (900 s).")
     parser.add_argument("--save-figs", action="store_true",
-                        help="Salva le figure dello sweep come PNG in --fig-dir "
-                             "invece (oltre) a mostrarle.")
+                        help="Save sweep figures as PNG to --fig-dir "
+                             "(in addition to displaying).")
     parser.add_argument("--fig-dir", default="figures_sweep",
-                        help="Cartella di output per --save-figs.")
+                        help="Output directory for --save-figs.")
     parser.add_argument("--no-show", action="store_true",
-                        help="Non aprire le finestre (utile con --save-figs).")
+                        help="Do not open windows (useful with --save-figs).")
     args = parser.parse_args()
 
-    print(f"Caricamento {args.csv} ...")
+    print(f"Loading {args.csv} ...")
     rows = load(args.csv)
     _noise_set = set(NOISE_STDS)
     rows    = [r for r in rows if r["noise"] in _noise_set]
 
     if args.timeout is not None:
         n_cut = apply_time_cutoff(rows, args.timeout)
-        print(f"  taglio a {args.timeout:.0f}s: {n_cut} run riclassificate come fallite")
+        print(f"  cutoff at {args.timeout:.0f}s: {n_cut} runs re-classified as failed")
 
     total   = len(rows)
     n_found = sum(r["found"] for r in rows)
     n_fail  = total - n_found
-    print(f"  {total} run totali -- {n_found} successi ({100*n_found/total:.1f}pct) "
-          f"-- {n_fail} falliti")
+    print(f"  {total} total runs -- {n_found} successes ({100*n_found/total:.1f}%) "
+          f"-- {n_fail} failed")
 
     figs = {
         "success_heatmap":      fig_success_heatmap(rows),
@@ -963,7 +980,7 @@ def main() -> None:
             out = fig_dir / f"{name}.png"
             fig.savefig(out, dpi=200, bbox_inches="tight")
             print(f"  Saved: {out}")
-        print(f"Figure salvate in: {fig_dir}")
+        print(f"Figures saved to: {fig_dir}")
 
     if not args.no_show:
         plt.show()
