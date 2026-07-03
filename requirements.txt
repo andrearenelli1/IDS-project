@@ -1,0 +1,6 @@
+numpy==1.26.4
+scipy==1.11.4
+matplotlib==3.6.3
+tifffile==2024.6.18
+casadi==3.7.2
+tqdm==4.67.3
