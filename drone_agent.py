@@ -5,7 +5,7 @@ Drone agent definitions and local navigation functions.
 
 Contents
 --------
-  DroneState           — 4-state FSM: SEARCH / TRACK / STOP / SUPPORT
+  DroneState           — 5-state FSM: SEARCH / TRACK / STOP / SUPPORT / FINAL_ORBIT
   DroneAgent           — dataclass with real state, IMDCL filter, navigation
   lawnmower_waypoints  — lawnmower pattern for the SEARCH phase
   rotate_2d            — utility: rotates a 2D vector
@@ -136,7 +136,7 @@ def circle_waypoints(
 @dataclass
 class DroneAgent:
     """
-    Drone with a 4-state FSM, MPC controller and IMDCL filter.
+    Drone with a 5-state FSM, MPC controller and IMDCL filter.
 
     Waypoint management
     -------------------

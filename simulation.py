@@ -8,12 +8,13 @@ Public functions
   build_agents — builds N DroneAgent instances with MPC + IMDCL + warm-start
   simulate     — multi-agent time loop
 
-4-state FSM
+5-state FSM
 -----------
-  SEARCH  → lawnmower arrival-gated
-  TRACK   → ES (Extremum Seeking) towards the source; → STOP at threshold
-  STOP    → hovering at the reached position
-  SUPPORT → navigates to cooperative-support position
+  SEARCH      → lawnmower arrival-gated
+  TRACK       → ES (Extremum Seeking) towards the source; → STOP at threshold
+  STOP        → hovering at the reached position
+  SUPPORT     → navigates to cooperative-support position
+  FINAL_ORBIT → multi-view refinement orbit around the final estimate
 
 Source estimation algorithm: distributed Particle Filter.
 """
@@ -102,27 +103,6 @@ def _average_consensus(
 # Min-consensus SUPPORT — cooperative partner selection
 # ============================================================================
 
-def _reachable_from(
-    drone_ids:   list,
-    agents:      Dict[int, DroneAgent],
-    start_id:    int,
-    comm_radius: float = IMDCL_COMM_RADIUS,
-) -> list:
-    """BFS on the communication graph: returns the connected component of start_id."""
-    pos       = {did: agents[did].x[:3] for did in drone_ids}
-    reachable = {start_id}
-    frontier  = {start_id}
-    while frontier:
-        new_frontier: set = set()
-        for fid in frontier:
-            for did in drone_ids:
-                if did not in reachable and np.linalg.norm(pos[fid] - pos[did]) <= comm_radius:
-                    reachable.add(did)
-                    new_frontier.add(did)
-        frontier = new_frontier
-    return [did for did in drone_ids if did in reachable]
-
-
 def _consensus_select_partners(
     agents:      Dict[int, DroneAgent],
     drone_ids:   list,
@@ -133,38 +113,50 @@ def _consensus_select_partners(
 ) -> List[int]:
     """
     Distributed min-consensus: selects the n_partners available drones
-    closest to the STOP drone (stop_id) reachable via the network.
+    closest to the STOP drone (stop_id).
+
+    Each available drone is a min-plus source (self-distance 0); every node
+    relaxes its distance to *every* source using only its own neighbours
+    within comm_radius, exactly as the single-target version did, but run for
+    all sources in parallel. After k_max rounds, stop_id's own local table
+    already holds the distance to every reachable candidate — unreachable
+    ones simply never arrive and stay at +inf, so no separate reachability
+    (BFS) pass is needed: it falls out of the flood itself.
 
     Uses estimated positions (x_est) for distances; k_max iterations ≥ graph diameter.
     """
-    reachable  = set(_reachable_from(drone_ids, agents, stop_id, comm_radius))
     candidates = [
         did for did in drone_ids
         if did != stop_id
-        and did in reachable
         and agents[did].state not in (DroneState.STOP, DroneState.SUPPORT)
     ]
     if not candidates:
         return []
 
     pos  = {did: agents[did].x_est[:3] for did in drone_ids}
-    dist = {did: float("inf") for did in drone_ids}
-    dist[stop_id] = 0.0
+    dist = {
+        i: {c: (0.0 if i == c else float("inf")) for c in candidates}
+        for i in drone_ids
+    }
 
     for _ in range(k_max):
-        dist_new = dist.copy()
-        for did in drone_ids:
-            for jid in drone_ids:
-                if did == jid:
+        dist_new = {i: dist[i].copy() for i in drone_ids}
+        for i in drone_ids:
+            for j in drone_ids:
+                if i == j:
                     continue
-                if np.linalg.norm(pos[did] - pos[jid]) <= comm_radius:
-                    d_via = dist[jid] + np.linalg.norm(pos[jid] - pos[did])
-                    if d_via < dist_new[did]:
-                        dist_new[did] = d_via
+                d_ij = np.linalg.norm(pos[i] - pos[j])
+                if d_ij <= comm_radius:
+                    for c in candidates:
+                        d_via = dist[j][c] + d_ij
+                        if d_via < dist_new[i][c]:
+                            dist_new[i][c] = d_via
         dist = dist_new
 
-    candidates.sort(key=lambda did: dist[did])
-    return candidates[:n_partners]
+    stop_view = dist[stop_id]
+    reachable_candidates = [c for c in candidates if stop_view[c] < float("inf")]
+    reachable_candidates.sort(key=lambda c: stop_view[c])
+    return reachable_candidates[:n_partners]
 
 
 def _transition_to_support(
