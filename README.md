@@ -131,7 +131,7 @@ Total: 2 × 3 × 3 × 2 × 3 × 5 × 23 = **12 420 runs**.
 After the sweep completes, generate figures:
 
 ```bash
-python plot_results.py results.csv
+python3 plot_results.py results12420.csv --timeout 600
 ```
 
 ---
